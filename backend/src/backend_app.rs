@@ -191,10 +191,12 @@ fn spawn_game_stream(
 impl AppLoadBackend for LichessBackend {
     async fn handle_message(&mut self, replier: &BackendReplier<Self>, message: Message) {
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
-            if let Ok(saved_token) = std::fs::read_to_string(&self.token_path) {
-                let saved_token = saved_token.trim().to_string();
-                if !saved_token.is_empty() {
-                    self.activate_token(replier, saved_token).await;
+            if self.client.is_none() {
+                if let Ok(saved_token) = std::fs::read_to_string(&self.token_path) {
+                    let saved_token = saved_token.trim().to_string();
+                    if !saved_token.is_empty() {
+                        self.activate_token(replier, saved_token).await;
+                    }
                 }
             }
             return;
