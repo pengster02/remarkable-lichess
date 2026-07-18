@@ -16,6 +16,7 @@
 - Legal moves are computed once per position update and cached — tap-to-highlight must be a pure local lookup on the frontend, never a network round-trip.
 - Deployment for v1: direct `scp` of the built app bundle into `/home/root/xovi/exthome/appload/<app>/` — no Vellum packaging required to get this running.
 - Definition of "v1 done" (from spec): one full real rapid game against a second account, covering seek creation, both sides moving, at least one promotion, and a clean game-over transition back to Home.
+- Build-environment constraint (discovered during Task 1): the dev machine is macOS with only the `aarch64-apple-darwin` Rust toolchain installed — no `cross`, no Docker, no Linux cross-target. `appload-client` (the AppLoad transport crate) uses Linux-only raw sockets (`SOCK_SEQPACKET`, `sockaddr_un` layout) that do not compile on macOS. **Every module that touches `appload_client` types (`main.rs` and `backend_app.rs`) is gated behind a Cargo `transport` feature** (`required-features = ["transport"]` on the `[[bin]]`; `#[cfg(feature = "transport")]` on the `backend_app` module declaration in `lib.rs`) — everything else (`protocol`, `lichess::*`, `game::*`) has zero dependency on `appload-client` and is always compiled. Plain `cargo build`/`cargo test` (no flags) therefore builds and tests all the pure logic and automatically skips both gated pieces — standard, documented Cargo behavior, not a workaround. `main.rs` and `backend_app.rs` can only be compiled (with `--features transport`) and tested against real Linux cross-compilation/device tooling, which this sandbox doesn't have — their correctness is verified in Task 14, not earlier.
 
 ---
 
@@ -26,7 +27,8 @@ remarkable-lichess/
   backend/
     Cargo.toml
     src/
-      main.rs               # entrypoint: AppLoad::new(...).run()
+      lib.rs                # declares pub mod for every pure-logic module below; no appload-client dependency
+      main.rs               # [[bin]], required-features = ["transport"]: entrypoint, AppLoad::new(...).run()
       protocol.rs            # IPC message enums shared between frontend and backend
       lichess/
         mod.rs
@@ -37,7 +39,7 @@ remarkable-lichess/
         mod.rs
         rules.rs              # shakmaty wrapper: legal moves, UCI apply/replay
         session.rs            # GameSession state machine
-      backend_app.rs          # AppLoadBackend impl wiring protocol + lichess + game together
+      backend_app.rs          # AppLoadBackend impl wiring protocol + lichess + game together — `#[cfg(feature = "transport")]`, needs appload_client (see Task 8)
   frontend/
     manifest.json
     application.qrc
@@ -55,14 +57,17 @@ remarkable-lichess/
 
 ---
 
-### Task 1: Backend project scaffold — AppLoad echo skeleton
+### Task 1: Backend project scaffold — feature-gated echo skeleton
 
 **Files:**
 - Create: `backend/Cargo.toml`
+- Create: `backend/src/lib.rs`
 - Create: `backend/src/main.rs`
 
 **Interfaces:**
-- Produces: a buildable `backend` binary that connects to an AppLoad coordinator socket path given as `argv[1]`, using the real `appload-client` crate (`asivery/rm-appload`, path `backends/appload-clients/rust-backend`).
+- Produces: a `backend` package with a `[lib]` target (empty for now — later tasks add modules to it) that always compiles with no `appload-client` dependency, and a `[[bin]]` target gated behind a `transport` Cargo feature containing the AppLoad echo handler, using the real `appload-client` crate (`asivery/rm-appload`, path `backends/appload-clients/rust-backend`).
+
+This split exists because `appload-client` uses Linux-only raw sockets (`SOCK_SEQPACKET`) that do not compile on macOS — see this plan's Global Constraints. Gating it behind a feature means plain `cargo build`/`cargo test` (what every later task's pure-logic modules use) never touches it.
 
 - [ ] **Step 1: Write `backend/Cargo.toml`**
 
@@ -72,16 +77,38 @@ name = "backend"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "backend"
+path = "src/main.rs"
+required-features = ["transport"]
+
 [dependencies]
-appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client" }
+appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client", optional = true }
 async-trait = "0.1.83"
 tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread"] }
 anyhow = "1"
+
+[features]
+transport = ["dep:appload-client"]
 ```
 
-Note: `appload-client` is not published on crates.io; if the `git`+`package` form above doesn't resolve because the crate lives at a subpath, clone `asivery/rm-appload` locally and use a `path = "../rm-appload/backends/appload-clients/rust-backend"` dependency instead — check the repo's actual `Cargo.toml` `[package] name` field to confirm the package name matches `appload-client`.
+Note: `appload-client` is not published on crates.io; if the `git`+`package` form above doesn't resolve because the crate lives at a subpath, clone `asivery/rm-appload` locally and use a `path = "../rm-appload/backends/appload-clients/rust-backend"` dependency instead (keep it `optional = true` either way) — check the repo's actual `Cargo.toml` `[package] name` field to confirm the package name matches `appload-client`. Since this dependency is optional and only resolved/compiled when `--features transport` is passed, do not vendor, fork, or patch the crate's source to work around host-platform (e.g. macOS) compilation issues — that produces an unreproducible build for anyone else who checks out this repo. If it doesn't resolve at all (not even as a git dependency), report BLOCKED rather than working around it by modifying the dependency's own source.
 
-- [ ] **Step 2: Write `backend/src/main.rs`**
+- [ ] **Step 2: Write `backend/src/lib.rs`**
+
+```rust
+//! Pure application logic for the reMarkable Lichess client.
+//! Deliberately has no dependency on `appload-client` — see this plan's
+//! Global Constraints. Later tasks add `pub mod protocol;`, `pub mod lichess;`,
+//! `pub mod game;` here, and `#[cfg(feature = "transport")] pub mod backend_app;`
+//! once Task 8 introduces it.
+```
+
+- [ ] **Step 3: Write `backend/src/main.rs`**
 
 ```rust
 use appload_client::{AppLoad, AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
@@ -110,21 +137,21 @@ impl AppLoadBackend for EchoBackend {
 }
 ```
 
-- [ ] **Step 3: Verify it builds**
+- [ ] **Step 4: Verify the lib builds on this machine with no transport dependency involved**
 
 Run: `cd backend && cargo build`
-Expected: compiles with no errors (warnings about unused imports are fine at this stage).
+Expected: compiles with no errors. This builds the (currently empty) `lib` target only — Cargo automatically skips the `backend` bin target because its `required-features = ["transport"]` isn't satisfied by the default feature set. No `appload-client` code is compiled by this command.
 
-- [ ] **Step 4: Verify the connect path fails predictably against a nonexistent socket**
+- [ ] **Step 5: Record that the transport binary is unverifiable on this machine**
 
-Run: `cd backend && cargo run -- /tmp/does-not-exist.sock`
-Expected: the process exits with an `unwrap()` panic showing a `No such file or directory (os error 2)` connect error — this confirms argv parsing and the socket-connect call are wired correctly. Full request/response wiring against a real AppLoad coordinator is verified on-device in Task 14.
+Run: `cd backend && cargo build --features transport`
+Expected: this is expected to fail on macOS (no Linux target, `appload-client`'s raw-socket code doesn't compile here) — that failure is not a defect in this task. Do not attempt to fix it by patching `appload-client` or by installing a cross-compilation toolchain as part of this task; cross-compilation setup belongs to Task 14, using real device/cross tooling. Confirm only that the failure is specifically about `appload-client`'s platform-specific code (not a typo or syntax error in `main.rs`), and note the exact error in your report for the record.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add backend/Cargo.toml backend/src/main.rs
-git commit -m "Scaffold AppLoad backend with echo handler"
+git add backend/Cargo.toml backend/src/lib.rs backend/src/main.rs
+git commit -m "Scaffold feature-gated AppLoad backend with echo handler"
 ```
 
 ---
@@ -229,12 +256,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Register the module in `backend/src/main.rs`**
+- [ ] **Step 3: Register the module in `backend/src/lib.rs`**
 
-Add near the top of `backend/src/main.rs`:
+Add to `backend/src/lib.rs` (below the doc comment from Task 1):
 
 ```rust
-mod protocol;
+pub mod protocol;
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -245,7 +272,7 @@ Expected: `2 passed`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/Cargo.toml backend/src/protocol.rs backend/src/main.rs
+git add backend/Cargo.toml backend/src/protocol.rs backend/src/lib.rs
 git commit -m "Add IPC protocol message types with serde round-trip tests"
 ```
 
@@ -387,9 +414,9 @@ Note: these structs cover only the fields this app uses (Lichess responses inclu
 pub mod models;
 ```
 
-- [ ] **Step 3: Register in `backend/src/main.rs`**
+- [ ] **Step 3: Register in `backend/src/lib.rs`**
 
-Add: `mod lichess;` below `mod protocol;`
+Add: `pub mod lichess;` below `pub mod protocol;`
 
 - [ ] **Step 4: Run the tests**
 
@@ -399,7 +426,7 @@ Expected: `3 passed`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add backend/src/lichess/mod.rs backend/src/lichess/models.rs backend/src/main.rs
+git add backend/src/lichess/mod.rs backend/src/lichess/models.rs backend/src/lib.rs
 git commit -m "Add Lichess Board API model structs with deserialization tests"
 ```
 
@@ -780,9 +807,9 @@ mod tests {
 pub mod rules;
 ```
 
-- [ ] **Step 4: Register in `backend/src/main.rs`**
+- [ ] **Step 4: Register in `backend/src/lib.rs`**
 
-Add: `mod game;` below `mod lichess;`
+Add: `pub mod game;` below `pub mod lichess;`
 
 - [ ] **Step 5: Run the tests**
 
@@ -792,7 +819,7 @@ Expected: `3 passed`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/Cargo.toml backend/src/game/mod.rs backend/src/game/rules.rs backend/src/main.rs
+git add backend/Cargo.toml backend/src/game/mod.rs backend/src/game/rules.rs backend/src/lib.rs
 git commit -m "Add shakmaty-based chess rules wrapper with legal-move tests"
 ```
 
@@ -1004,11 +1031,14 @@ git commit -m "Add GameSession state machine translating Lichess updates to Boar
 
 **Files:**
 - Create: `backend/src/backend_app.rs`
+- Modify: `backend/src/lib.rs`
 - Modify: `backend/src/main.rs`
 
 **Interfaces:**
 - Consumes: everything from Tasks 2–7 (`protocol`, `lichess::client::LichessClient`, `lichess::stream::parse_ndjson_line`, `lichess::models::*`, `game::session::GameSession`).
 - Produces: `LichessBackend`, the real `AppLoadBackend` implementation replacing Task 1's echo handler — this is what actually runs on-device.
+
+Note: `backend_app.rs` imports `appload_client` types directly, so — per this plan's Global Constraints — it is only ever compiled behind the `transport` feature. It cannot be built or tested on this dev machine (no Linux target); its correctness is verified in Task 14. What *is* verifiable here is everything this task adds to `client.rs` (`create_seek`/`create_challenge`), since `lichess::client` remains an always-on module.
 
 - [ ] **Step 1: Write `backend/src/backend_app.rs`**
 
@@ -1161,16 +1191,20 @@ pub async fn create_challenge(&self, username: &str, minutes: u32, increment: u3
 
 Note: `/api/board/seek` and `/api/challenge/{username}` are themselves long-lived streaming requests in the real Lichess API (the connection stays open until matched). This simplified version treats them as fire-and-forget POSTs — acceptable for v1 because the frontend learns about the actual game start from the account event stream (wired in a follow-up task), not from this call's response. Revisit if testing in Task 14 shows the connection needs to be kept open explicitly.
 
-- [ ] **Step 2: Replace the echo handler in `backend/src/main.rs`**
+- [ ] **Step 2: Register `backend_app` behind the transport feature in `backend/src/lib.rs`**
+
+Add below the `pub mod game;` line from Task 6:
 
 ```rust
-mod backend_app;
-mod game;
-mod lichess;
-mod protocol;
+#[cfg(feature = "transport")]
+pub mod backend_app;
+```
 
+- [ ] **Step 3: Replace the echo handler in `backend/src/main.rs`**
+
+```rust
 use appload_client::AppLoad;
-use backend_app::LichessBackend;
+use backend::backend_app::LichessBackend;
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -1183,7 +1217,7 @@ async fn main() {
 }
 ```
 
-- [ ] **Step 3: Add `create_seek`/`create_challenge` tests to `backend/src/lichess/client.rs`**
+- [ ] **Step 4: Add `create_seek`/`create_challenge` tests to `backend/src/lichess/client.rs`**
 
 ```rust
 #[tokio::test]
@@ -1200,15 +1234,15 @@ async fn create_seek_posts_form_encoded_time_control() {
 }
 ```
 
-- [ ] **Step 4: Run the full test suite**
+- [ ] **Step 5: Run the always-on test suite**
 
 Run: `cd backend && cargo build && cargo test`
-Expected: all tests from Tasks 2–8 pass (protocol: 2, lichess::models: 3, lichess::stream: 3, lichess::client: 4, game::rules: 3, game::session: 4).
+Expected: both commands build/test the `lib` target only (the bin is skipped per its `required-features`, and `backend_app` is skipped per its own `#[cfg(feature = "transport")]`) — all tests from Tasks 2–7 plus this task's two new `client::` tests pass (protocol: 2, lichess::models: 3, lichess::stream: 3, lichess::client: 6, game::rules: 3, game::session: 4). This does **not** verify `backend_app.rs` or the rewritten `main.rs` compile — record in your report that those two files are unverified on this machine, same as Task 1's bin target, pending Task 14.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add backend/src/backend_app.rs backend/src/main.rs backend/src/lichess/client.rs
+git add backend/src/backend_app.rs backend/src/lib.rs backend/src/main.rs backend/src/lichess/client.rs
 git commit -m "Wire real LichessBackend handler replacing the echo skeleton"
 ```
 
@@ -1348,7 +1382,7 @@ self.spawn_streams(replier.clone());
 - [ ] **Step 4: Build and run the existing test suite**
 
 Run: `cd backend && cargo build && cargo test`
-Expected: still all passing (this task adds runtime wiring, not new pure-logic units — no new automated tests here; full verification of the live streaming loop happens on-device in Task 14).
+Expected: still all passing — this exercises Step 1's addition to `client.rs` (an always-on module) along with everything from Tasks 2–8. It does **not** exercise Step 2/3's changes to `backend_app.rs`, which stay unverifiable on this machine for the same reason as Task 8's `backend_app.rs` work (transport-gated, needs Linux). Note in your report that the streaming-loop wiring itself is unverified until Task 14's on-device pass.
 
 - [ ] **Step 5: Commit**
 
@@ -1910,7 +1944,11 @@ set -euo pipefail
 # device family. Adjust the target triple if `cross` reports a mismatch for
 # your specific rm-appload toolchain image.
 cd "$(dirname "$0")/../backend"
-cross build --release --target aarch64-unknown-linux-gnu
+# --features transport is required here: the bin target (and backend_app.rs)
+# are gated behind it since they depend on appload-client (see Global Constraints
+# and Task 1) — this is the first point in the whole plan where that feature is
+# actually compiled, since the dev machine used for Tasks 1-9 had no Linux target.
+cross build --release --target aarch64-unknown-linux-gnu --features transport --bin backend
 
 mkdir -p ../dist/remarkable-lichess
 cp target/aarch64-unknown-linux-gnu/release/backend ../dist/remarkable-lichess/backend
@@ -1968,3 +2006,4 @@ If any step fails, treat it as a bug against the relevant task above (e.g. a `Bo
 - **Spec coverage:** all four QML screens, the backend's Lichess client + rules engine + IPC protocol, casual-only seeks/challenges, no-background-notification behavior (the app only streams while its `LichessBackend` process is alive, which AppLoad only runs while the app is foregrounded), and the deployment path are each covered by a task above.
 - **Fixed during review:** Task 8 initially omitted `create_seek`/`create_challenge` implementations that Task 5's interface promised — added inline as part of Task 8 Step 1 rather than silently leaving them missing.
 - **Known follow-ups flagged explicitly in-place (not silently deferred):** the `HomeScreen.qml` relative-parent screen navigation path (Task 11), the simplified non-buffering line-splitting in `stream_lines` (Task 9), and queen-only promotion pending a real picker UI (Task 13) are each called out with a concrete note on what to verify or build next, rather than left as unmarked gaps.
+- **Fixed after Task 1's implementer surfaced a real environment constraint:** the dev machine has no Linux target and no `cross`/Docker, and `appload-client` only compiles on Linux. Task 1's implementer initially worked around this by vendoring and hand-patching a local clone of `rm-appload` outside git tracking — unreproducible for anyone else building this repo, including later tasks' own cross-compilation step. Fixed by restructuring the backend into a `[lib]` (no `appload-client` dependency, always compiled/tested) plus a `transport`-feature-gated `[[bin]]` and `backend_app` module (only compiled with real Linux cross-compilation, in Task 14). This is reflected in the Global Constraints, File Structure, and Tasks 1/2/3/6/8/9/14 above — Task 1 needs to be re-implemented against the corrected brief before continuing.
