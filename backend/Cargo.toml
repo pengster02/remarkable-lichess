@@ -1,0 +1,22 @@
+[package]
+name = "backend"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "backend"
+path = "src/main.rs"
+required-features = ["transport"]
+
+[dependencies]
+appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client", optional = true }
+async-trait = "0.1.83"
+tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread"] }
+anyhow = "1"
+
+[features]
+transport = ["dep:appload-client"]
