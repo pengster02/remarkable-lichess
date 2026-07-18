@@ -6,16 +6,18 @@ use crate::protocol::{BackendMessage, FrontendMessage, MSG_TYPE_BACKEND_TO_FRONT
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct LichessBackend {
     token_path: PathBuf,
     client: Option<LichessClient>,
-    session: Option<GameSession>,
+    session: Arc<Mutex<Option<GameSession>>>,
 }
 
 impl LichessBackend {
     pub fn new(token_path: PathBuf) -> Self {
-        Self { token_path, client: None, session: None }
+        Self { token_path, client: None, session: Arc::new(Mutex::new(None)) }
     }
 
     fn send(&self, replier: &BackendReplier<Self>, msg: &BackendMessage) {
@@ -61,14 +63,20 @@ impl LichessBackend {
     }
 
     async fn handle_make_move(&mut self, replier: &BackendReplier<Self>, from: String, to: String, promotion: Option<String>) {
-        let (Some(client), Some(session)) = (&self.client, &self.session) else { return };
-        match session.try_move(&from, &to, promotion.as_deref()) {
-            Ok(uci) => {
-                if let Err(e) = client.make_move(&session.game_id, &uci).await {
+        let Some(client) = self.client.clone() else { return };
+        let result = {
+            let guard = self.session.lock().await;
+            let Some(session) = guard.as_ref() else { return };
+            session
+                .try_move(&from, &to, promotion.as_deref())
+                .map(|uci| (uci, session.game_id.clone()))
+        };
+        match result {
+            Ok((uci, game_id)) => {
+                if let Err(e) = client.make_move(&game_id, &uci).await {
                     self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
                 }
-                // The authoritative BoardState update arrives via the game stream
-                // (wired in a follow-up task covering the streaming loop), not here.
+                // The authoritative BoardState update arrives via the game stream, not here.
             }
             Err(rejected) => self.send(replier, &rejected),
         }
@@ -76,6 +84,7 @@ impl LichessBackend {
 
     pub fn spawn_streams(&self, replier: BackendReplier<Self>) {
         let Some(client) = self.client.clone() else { return };
+        let session_handle = self.session.clone();
         tokio::spawn(async move {
             loop {
                 match client.stream_lines("/api/stream/event").await {
@@ -85,7 +94,7 @@ impl LichessBackend {
                             if let Some(EventStreamMessage::GameStart { game }) =
                                 parse_ndjson_line::<EventStreamMessage>(&line)
                             {
-                                spawn_game_stream(client.clone(), game.id, replier.clone());
+                                spawn_game_stream(client.clone(), game.id, replier.clone(), session_handle.clone());
                             }
                         }
                     }
@@ -100,18 +109,23 @@ impl LichessBackend {
     }
 }
 
-fn spawn_game_stream(client: LichessClient, game_id: String, replier: BackendReplier<LichessBackend>) {
+fn spawn_game_stream(
+    client: LichessClient,
+    game_id: String,
+    replier: BackendReplier<LichessBackend>,
+    session_handle: Arc<Mutex<Option<GameSession>>>,
+) {
     tokio::spawn(async move {
         use futures_util::StreamExt;
         if let Ok(mut lines) = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
-            let mut session: Option<GameSession> = None;
             while let Some(line) = lines.next().await {
                 if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
-                    let board_msg = match (&mut session, msg) {
+                    let mut guard = session_handle.lock().await;
+                    let board_msg = match (&mut *guard, msg) {
                         (None, GameStreamMessage::Full(full)) => {
                             match GameSession::from_game_full(&full) {
                                 Ok((s, board_msg)) => {
-                                    session = Some(s);
+                                    *guard = Some(s);
                                     Some(board_msg)
                                 }
                                 Err(_) => None,
@@ -131,6 +145,7 @@ fn spawn_game_stream(client: LichessClient, game_id: String, replier: BackendRep
                         }
                         _ => None,
                     };
+                    drop(guard);
                     if let Some(m) = board_msg {
                         let json = serde_json::to_string(&m).unwrap();
                         let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
@@ -168,8 +183,14 @@ impl AppLoadBackend for LichessBackend {
                 self.handle_make_move(replier, from, to, promotion).await
             }
             FrontendMessage::Resign => {
-                if let (Some(client), Some(session)) = (&self.client, &self.session) {
-                    let _ = client.resign(&session.game_id).await;
+                if let Some(client) = self.client.clone() {
+                    let game_id = {
+                        let guard = self.session.lock().await;
+                        guard.as_ref().map(|s| s.game_id.clone())
+                    };
+                    if let Some(game_id) = game_id {
+                        let _ = client.resign(&game_id).await;
+                    }
                 }
             }
         }
