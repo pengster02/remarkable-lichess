@@ -1,6 +1,8 @@
 use crate::lichess::models::{Account, PlayingGame, PlayingResponse};
 use anyhow::{bail, Result};
+use futures_util::StreamExt;
 
+#[derive(Clone)]
 pub struct LichessClient {
     http: reqwest::Client,
     base_url: String,
@@ -101,6 +103,25 @@ impl LichessClient {
             bail!("create_challenge failed with status {}", resp.status());
         }
         Ok(())
+    }
+
+    pub async fn stream_lines(&self, url_path: &str) -> Result<impl futures_util::Stream<Item = String>> {
+        let resp = self
+            .bearer(self.http.get(format!("{}{}", self.base_url, url_path)))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            bail!("stream {} failed with status {}", url_path, resp.status());
+        }
+        let byte_stream = resp.bytes_stream();
+        Ok(byte_stream
+            .filter_map(|chunk| async move { chunk.ok() })
+            .flat_map(|bytes| {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                futures_util::stream::iter(
+                    text.lines().map(str::to_string).collect::<Vec<_>>(),
+                )
+            }))
     }
 }
 

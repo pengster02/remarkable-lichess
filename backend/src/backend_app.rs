@@ -1,5 +1,7 @@
 use crate::game::session::GameSession;
 use crate::lichess::client::LichessClient;
+use crate::lichess::models::{EventStreamMessage, GameStreamMessage};
+use crate::lichess::stream::parse_ndjson_line;
 use crate::protocol::{BackendMessage, FrontendMessage, MSG_TYPE_BACKEND_TO_FRONTEND};
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
@@ -27,6 +29,7 @@ impl LichessBackend {
             Ok(account) => {
                 let _ = std::fs::write(&self.token_path, &token);
                 self.client = Some(client);
+                self.spawn_streams(replier.clone());
                 self.send(replier, &BackendMessage::TokenVerified { username: account.username });
             }
             Err(e) => {
@@ -70,6 +73,72 @@ impl LichessBackend {
             Err(rejected) => self.send(replier, &rejected),
         }
     }
+
+    pub fn spawn_streams(&self, replier: BackendReplier<Self>) {
+        let Some(client) = self.client.clone() else { return };
+        tokio::spawn(async move {
+            loop {
+                match client.stream_lines("/api/stream/event").await {
+                    Ok(mut lines) => {
+                        use futures_util::StreamExt;
+                        while let Some(line) = lines.next().await {
+                            if let Some(EventStreamMessage::GameStart { game }) =
+                                parse_ndjson_line::<EventStreamMessage>(&line)
+                            {
+                                spawn_game_stream(client.clone(), game.id, replier.clone());
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let json = serde_json::to_string(&BackendMessage::Reconnecting).unwrap();
+                        let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+        });
+    }
+}
+
+fn spawn_game_stream(client: LichessClient, game_id: String, replier: BackendReplier<LichessBackend>) {
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+        if let Ok(mut lines) = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
+            let mut session: Option<GameSession> = None;
+            while let Some(line) = lines.next().await {
+                if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
+                    let board_msg = match (&mut session, msg) {
+                        (None, GameStreamMessage::Full(full)) => {
+                            match GameSession::from_game_full(&full) {
+                                Ok((s, board_msg)) => {
+                                    session = Some(s);
+                                    Some(board_msg)
+                                }
+                                Err(_) => None,
+                            }
+                        }
+                        (Some(s), GameStreamMessage::State(state)) => {
+                            let is_over = state.status != "started";
+                            let result = s.apply_state_update(&state).ok();
+                            if is_over {
+                                Some(BackendMessage::GameOver {
+                                    result: state.winner.clone().unwrap_or_else(|| "draw".into()),
+                                    reason: state.status.clone(),
+                                })
+                            } else {
+                                result
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(m) = board_msg {
+                        let json = serde_json::to_string(&m).unwrap();
+                        let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[async_trait]
