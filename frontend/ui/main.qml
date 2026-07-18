@@ -32,6 +32,9 @@ Rectangle {
             } else if (msg.type === "TokenInvalid") {
                 hasToken = false
                 screenLoader.source = "SetupScreen.qml"
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
+                }
             } else if (msg.type === "HomeState" || msg.type === "SeekCreated" || msg.type === "ChallengeCreated") {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
@@ -56,6 +59,10 @@ Rectangle {
         endpoint.sendMessage(1, JSON.stringify(obj))
     }
 
+    function navigateTo(screenName) {
+        screenLoader.source = screenName
+    }
+
     Loader {
         id: screenLoader
         anchors.fill: parent
@@ -63,6 +70,9 @@ Rectangle {
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = sendToBackend
+            }
+            if (item.hasOwnProperty("navigateTo")) {
+                item.navigateTo = navigateTo
             }
         }
     }
