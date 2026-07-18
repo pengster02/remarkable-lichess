@@ -105,7 +105,10 @@ impl LichessClient {
         Ok(())
     }
 
-    pub async fn stream_lines(&self, url_path: &str) -> Result<impl futures_util::Stream<Item = String>> {
+    pub async fn stream_lines(
+        &self,
+        url_path: &str,
+    ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
         let resp = self
             .bearer(self.http.get(format!("{}{}", self.base_url, url_path)))
             .send()
@@ -114,14 +117,17 @@ impl LichessClient {
             bail!("stream {} failed with status {}", url_path, resp.status());
         }
         let byte_stream = resp.bytes_stream();
-        Ok(byte_stream
+        // Boxed and pinned so the returned stream is `Unpin` (the `filter_map`/`flat_map`
+        // combinator chain below is not, since it embeds a per-chunk async closure) —
+        // callers need `Unpin` to call `StreamExt::next()` in a `while let` loop.
+        Ok(Box::pin(byte_stream
             .filter_map(|chunk| async move { chunk.ok() })
             .flat_map(|bytes| {
                 let text = String::from_utf8_lossy(&bytes).to_string();
                 futures_util::stream::iter(
                     text.lines().map(str::to_string).collect::<Vec<_>>(),
                 )
-            }))
+            })))
     }
 }
 
@@ -216,6 +222,48 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let result = client.create_seek(10, 0).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_lines_yields_ndjson_lines_and_skips_blank_keepalives() {
+        use futures_util::StreamExt;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/stream/event"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "{\"type\":\"gameStart\",\"game\":{\"id\":\"g1\"}}\n\n{\"type\":\"gameFinish\",\"game\":{\"id\":\"g1\"}}\n",
+            ))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let mut lines = client.stream_lines("/api/stream/event").await.unwrap();
+        let mut collected = Vec::new();
+        while let Some(line) = lines.next().await {
+            collected.push(line);
+        }
+        assert_eq!(
+            collected,
+            vec![
+                r#"{"type":"gameStart","game":{"id":"g1"}}"#.to_string(),
+                "".to_string(),
+                r#"{"type":"gameFinish","game":{"id":"g1"}}"#.to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_lines_bails_on_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/stream/event"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let result = client.stream_lines("/api/stream/event").await;
         assert!(result.is_err());
     }
 }
