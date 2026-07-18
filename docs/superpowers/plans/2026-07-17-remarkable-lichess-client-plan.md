@@ -169,13 +169,18 @@ git commit -m "Scaffold feature-gated AppLoad backend with echo handler"
 
 ```toml
 [dependencies]
-appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client" }
+appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client", optional = true }
 async-trait = "0.1.83"
 tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+transport = ["dep:appload-client"]
 ```
+
+(This re-lists the full `[dependencies]` block per Task 1's actual `backend/Cargo.toml` — keep the `[lib]`/`[[bin]]`/`[features]` sections from Task 1 unchanged; only the `[dependencies]` table gains `serde`/`serde_json` here.)
 
 - [ ] **Step 2: Write the failing test in `backend/src/protocol.rs`**
 
@@ -447,12 +452,15 @@ git commit -m "Add Lichess Board API model structs with deserialization tests"
 
 ```toml
 [dependencies]
-appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client" }
+appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client", optional = true }
 async-trait = "0.1.83"
 tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread", "io-util"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+transport = ["dep:appload-client"]
 ```
 
 - [ ] **Step 2: Write the failing test in `backend/src/lichess/stream.rs`**
@@ -531,7 +539,7 @@ git commit -m "Add NDJSON line parser for Lichess streaming endpoints"
 
 ```toml
 [dependencies]
-appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client" }
+appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client", optional = true }
 async-trait = "0.1.83"
 tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread", "io-util"] }
 anyhow = "1"
@@ -541,6 +549,9 @@ reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 wiremock = "0.6"
+
+[features]
+transport = ["dep:appload-client"]
 ```
 
 - [ ] **Step 2: Write the failing test in `backend/src/lichess/client.rs`**
@@ -712,7 +723,7 @@ git commit -m "Add Lichess HTTP client with wiremock-tested account/move endpoin
 
 ```toml
 [dependencies]
-appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client" }
+appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client", optional = true }
 async-trait = "0.1.83"
 tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread", "io-util"] }
 anyhow = "1"
@@ -723,6 +734,9 @@ shakmaty = "0.27"
 
 [dev-dependencies]
 wiremock = "0.6"
+
+[features]
+transport = ["dep:appload-client"]
 ```
 
 Note: the exact `shakmaty` method names below (`UciMove::from_move`, `pos.castles().mode()`, `fen.into_position(...)`) reflect the crate's well-established public API as of the versions around `0.27`, but were written from documentation knowledge rather than a real `cargo build` run against the live crate (unlike the earlier `appload-client`/Lichess snippets in this plan, which were fetched verbatim from real source). If `cargo build` in Step 4 reports a missing method or type mismatch, check `https://docs.rs/shakmaty` for the exact signatures in whatever version `cargo` resolves and adjust — the intent (compute legal moves, convert to/from UCI, parse/emit FEN) stays the same regardless of the exact call shape.
