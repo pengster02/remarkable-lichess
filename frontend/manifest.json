@@ -1,0 +1,8 @@
+{
+    "name": "Lichess",
+    "loadsBackend": true,
+    "entry": "/ui/main.qml",
+    "id": "remarkable-lichess",
+    "supportsScaling": false,
+    "canHaveMultipleFrontends": false
+}
