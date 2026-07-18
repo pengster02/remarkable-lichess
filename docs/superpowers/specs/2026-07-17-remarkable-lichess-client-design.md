@@ -77,8 +77,15 @@ Rationale: this is the platform's actively-maintained pattern (same one KOReader
 - **Frontend:** manual on-device testing; AppLoad supports on-PC compilation (`qmake6` per its README) for faster iteration than round-tripping to the tablet every time. No investment in automated UI testing for a personal project.
 - **Definition of "v1 done":** play one complete real rapid game start-to-finish against a second account — covering seek creation, both sides moving, at least one promotion, and a clean game-over transition back to Home.
 
+## Deployment / install path
+
+reManager installs the AppLoad/XOVI runtime the app depends on, but does not sideload unpublished apps itself (its package browser is index-driven, pointed at the public Vellum repo). For this app:
+
+- **v1 (development):** AppLoad apps live as a directory under `/home/root/xovi/exthome/appload/<app>/` (manifest.json, icon, QML, the Rust backend binary). Deploy by `scp`-ing the built bundle directly into that path over SSH after each build — fastest iteration loop, no packaging step.
+- **Later polish (optional):** wrap it as a real local Vellum package — a `VELBUILD` file (Alpine `APKBUILD` format) built via `./scripts/build-package.sh`, installed on-device with `vellum add <package>.apk` after copying Vellum's signing key once. Not required to get the app running; deferred until the app is stable.
+
 ## Open items carried into planning (not blocking, but explicit)
 
-- Exact AppLoad manifest fields/packaging steps for this app (will confirm against `rm-appload`'s example apps during implementation).
+- Exact AppLoad manifest fields for this app (will confirm against `rm-appload`'s example apps during implementation).
 - Whether `shakmaty` needs any ARM-cross-compile-specific handling — expected to be fine (pure Rust, no C deps) but not yet verified on-device.
 - Icon/visual asset creation for the board pieces — deferred to implementation, flat/minimal style suited to e-ink (no photorealistic pieces).
