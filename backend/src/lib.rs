@@ -6,3 +6,4 @@
 
 pub mod protocol;
 pub mod lichess;
+pub mod game;
