@@ -70,6 +70,38 @@ impl LichessClient {
         }
         Ok(())
     }
+
+    pub async fn create_seek(&self, minutes: u32, increment: u32) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/board/seek", self.base_url)))
+            .form(&[
+                ("rated", "false".to_string()),
+                ("time", minutes.to_string()),
+                ("increment", increment.to_string()),
+            ])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            bail!("create_seek failed with status {}", resp.status());
+        }
+        Ok(())
+    }
+
+    pub async fn create_challenge(&self, username: &str, minutes: u32, increment: u32) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/challenge/{}", self.base_url, username)))
+            .form(&[
+                ("rated", "false".to_string()),
+                ("clock.limit", (minutes * 60).to_string()),
+                ("clock.increment", increment.to_string()),
+            ])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            bail!("create_challenge failed with status {}", resp.status());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -124,5 +156,45 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         client.make_move("g1", "e2e4").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_seek_posts_form_encoded_time_control() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/seek"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.create_seek(10, 0).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_challenge_posts_to_username_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/challenge/opponent"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.create_challenge("opponent", 10, 5).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_seek_bails_on_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/seek"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let result = client.create_seek(10, 0).await;
+        assert!(result.is_err());
     }
 }
