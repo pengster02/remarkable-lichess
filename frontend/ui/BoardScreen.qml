@@ -73,7 +73,13 @@ Rectangle {
             var promo = null
             for (var i = 0; i < legalMoves.length; i++) {
                 if (legalMoves[i].from === selectedSquare && legalMoves[i].to === squareName && legalMoves[i].promotion) {
-                    promo = legalMoves[i].promotion
+                    if (promo === null) {
+                        promo = legalMoves[i].promotion
+                    }
+                    if (legalMoves[i].promotion === "q") {
+                        promo = legalMoves[i].promotion
+                        break
+                    }
                 }
             }
             backendSender({type: "MakeMove", from: selectedSquare, to: squareName, promotion: promo})
