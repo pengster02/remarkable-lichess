@@ -36,6 +36,14 @@ pub enum BackendMessage {
         black_time_ms: u64,
         legal_moves: Vec<LegalMove>,
         last_move: Option<(String, String)>,
+        // Which color the local account is playing in this game -- needed so the
+        // frontend can flip board orientation (every reference client does this;
+        // ours didn't parse enough of the Lichess payload to know until now).
+        your_color: String,
+        // Whether the side to move is currently in check. The frontend derives
+        // *which* square (scanning the FEN for the king matching `turn`) rather
+        // than us sending a square, since it already has that FEN-scanning logic.
+        in_check: bool,
     },
     GameOver { result: String, reason: String },
     MoveRejected { reason: String },
@@ -66,6 +74,8 @@ mod tests {
             black_time_ms: 600_000,
             legal_moves: vec![LegalMove { from: "e2".into(), to: "e4".into(), promotion: None }],
             last_move: None,
+            your_color: "white".into(),
+            in_check: false,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));

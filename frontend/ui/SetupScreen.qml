@@ -3,8 +3,9 @@ import QtQuick.Controls 2.5
 
 Rectangle {
     anchors.fill: parent
-    color: "white"
+    color: darkMode ? "#2b2b28" : "white"
     property var backendSender
+    property bool darkMode: false
 
     Column {
         anchors.centerIn: parent
@@ -16,6 +17,7 @@ Rectangle {
             font.pixelSize: 32
             wrapMode: Text.WordWrap
             width: parent.width
+            color: darkMode ? "#e6e2d8" : "black"
         }
 
         TextField {
@@ -27,7 +29,7 @@ Rectangle {
 
         Text {
             id: errorText
-            color: "black"
+            color: darkMode ? "#e6a0a0" : "black"
             font.pixelSize: 24
             visible: text.length > 0
         }
