@@ -1,24 +1,12 @@
-use appload_client::{AppLoad, AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
-use async_trait::async_trait;
+use appload_client::AppLoad;
+use backend::backend_app::LichessBackend;
+use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() {
-    AppLoad::new(EchoBackend).unwrap().run().await.unwrap();
-}
-
-struct EchoBackend;
-
-#[async_trait]
-impl AppLoadBackend for EchoBackend {
-    async fn handle_message(&mut self, functionality: &BackendReplier<EchoBackend>, message: Message) {
-        match message.msg_type {
-            MSG_SYSTEM_NEW_COORDINATOR => println!("A frontend has connected"),
-            1 => {
-                functionality
-                    .send_message(2, &format!("echo: {}", message.contents))
-                    .unwrap();
-            }
-            _ => println!("Unknown message received."),
-        }
+    let token_path = PathBuf::from("/home/root/.config/remarkable-lichess/token");
+    if let Some(parent) = token_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
+    AppLoad::new(LichessBackend::new(token_path)).unwrap().run().await.unwrap();
 }

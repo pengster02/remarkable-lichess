@@ -7,3 +7,6 @@
 pub mod protocol;
 pub mod lichess;
 pub mod game;
+
+#[cfg(feature = "transport")]
+pub mod backend_app;
