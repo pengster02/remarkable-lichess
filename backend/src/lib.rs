@@ -5,3 +5,4 @@
 //! once Task 8 introduces it.
 
 pub mod protocol;
+pub mod lichess;
