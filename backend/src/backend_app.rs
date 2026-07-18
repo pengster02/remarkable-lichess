@@ -25,7 +25,7 @@ impl LichessBackend {
         let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
     }
 
-    async fn handle_save_token(&mut self, replier: &BackendReplier<Self>, token: String) {
+    async fn activate_token(&mut self, replier: &BackendReplier<Self>, token: String) {
         let client = LichessClient::new(token.clone());
         match client.get_account().await {
             Ok(account) => {
@@ -38,6 +38,10 @@ impl LichessBackend {
                 self.send(replier, &BackendMessage::TokenInvalid { reason: e.to_string() });
             }
         }
+    }
+
+    async fn handle_save_token(&mut self, replier: &BackendReplier<Self>, token: String) {
+        self.activate_token(replier, token).await;
     }
 
     async fn handle_request_home(&mut self, replier: &BackendReplier<Self>) {
@@ -86,10 +90,12 @@ impl LichessBackend {
         let Some(client) = self.client.clone() else { return };
         let session_handle = self.session.clone();
         tokio::spawn(async move {
+            let mut backoff_secs: u64 = 1;
             loop {
                 match client.stream_lines("/api/stream/event").await {
                     Ok(mut lines) => {
                         use futures_util::StreamExt;
+                        backoff_secs = 1;
                         while let Some(line) = lines.next().await {
                             if let Some(EventStreamMessage::GameStart { game }) =
                                 parse_ndjson_line::<EventStreamMessage>(&line)
@@ -103,7 +109,8 @@ impl LichessBackend {
                         let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(30);
             }
         });
     }
@@ -117,41 +124,65 @@ fn spawn_game_stream(
 ) {
     tokio::spawn(async move {
         use futures_util::StreamExt;
-        if let Ok(mut lines) = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
-            while let Some(line) = lines.next().await {
-                if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
-                    let mut guard = session_handle.lock().await;
-                    let board_msg = match (&mut *guard, msg) {
-                        (None, GameStreamMessage::Full(full)) => {
-                            match GameSession::from_game_full(&full) {
-                                Ok((s, board_msg)) => {
-                                    *guard = Some(s);
-                                    Some(board_msg)
+        let mut backoff_secs: u64 = 1;
+        let mut game_over = false;
+        while !game_over {
+            match client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
+                Ok(mut lines) => {
+                    backoff_secs = 1;
+                    while let Some(line) = lines.next().await {
+                        if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
+                            let mut guard = session_handle.lock().await;
+                            let board_msg = match msg {
+                                GameStreamMessage::Full(full) => {
+                                    match GameSession::from_game_full(&full) {
+                                        Ok((s, board_msg)) => {
+                                            *guard = Some(s);
+                                            Some(board_msg)
+                                        }
+                                        Err(_) => None,
+                                    }
                                 }
-                                Err(_) => None,
+                                GameStreamMessage::State(state) => match guard.as_mut() {
+                                    Some(s) => {
+                                        let is_over = state.status != "started";
+                                        if is_over {
+                                            game_over = true;
+                                        }
+                                        let result = s.apply_state_update(&state).ok();
+                                        if is_over {
+                                            Some(BackendMessage::GameOver {
+                                                result: state.winner.clone().unwrap_or_else(|| "draw".into()),
+                                                reason: state.status.clone(),
+                                            })
+                                        } else {
+                                            result
+                                        }
+                                    }
+                                    None => None,
+                                },
+                            };
+                            drop(guard);
+                            if let Some(m) = board_msg {
+                                let json = serde_json::to_string(&m).unwrap();
+                                let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
+                            }
+                            if game_over {
+                                break;
                             }
                         }
-                        (Some(s), GameStreamMessage::State(state)) => {
-                            let is_over = state.status != "started";
-                            let result = s.apply_state_update(&state).ok();
-                            if is_over {
-                                Some(BackendMessage::GameOver {
-                                    result: state.winner.clone().unwrap_or_else(|| "draw".into()),
-                                    reason: state.status.clone(),
-                                })
-                            } else {
-                                result
-                            }
-                        }
-                        _ => None,
-                    };
-                    drop(guard);
-                    if let Some(m) = board_msg {
-                        let json = serde_json::to_string(&m).unwrap();
-                        let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
                     }
                 }
+                Err(_) => {
+                    let json = serde_json::to_string(&BackendMessage::Reconnecting).unwrap();
+                    let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
+                }
             }
+            if game_over {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+            backoff_secs = (backoff_secs * 2).min(30);
         }
     });
 }
@@ -160,6 +191,12 @@ fn spawn_game_stream(
 impl AppLoadBackend for LichessBackend {
     async fn handle_message(&mut self, replier: &BackendReplier<Self>, message: Message) {
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
+            if let Ok(saved_token) = std::fs::read_to_string(&self.token_path) {
+                let saved_token = saved_token.trim().to_string();
+                if !saved_token.is_empty() {
+                    self.activate_token(replier, saved_token).await;
+                }
+            }
             return;
         }
         let Ok(frontend_msg) = serde_json::from_str::<FrontendMessage>(&message.contents) else {

@@ -6,6 +6,7 @@ Rectangle {
     anchors.fill: parent
     color: "white"
     property var backendSender
+    property var navigateTo
 
     property string fen: ""
     property string turn: "white"
@@ -134,6 +135,25 @@ Rectangle {
         Button {
             text: "Resign"
             onClicked: backendSender({type: "Resign"})
+        }
+
+        Button {
+            text: "Back to Home"
+            visible: statusText.indexOf("Game over") === 0
+            onClicked: navigateTo("HomeScreen.qml")
+        }
+    }
+
+    Timer {
+        interval: 1000
+        running: fen !== "" && statusText.indexOf("Game over") !== 0
+        repeat: true
+        onTriggered: {
+            if (turn === "white") {
+                whiteTimeMs = Math.max(0, whiteTimeMs - 1000)
+            } else {
+                blackTimeMs = Math.max(0, blackTimeMs - 1000)
+            }
         }
     }
 
