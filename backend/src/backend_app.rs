@@ -31,7 +31,10 @@ impl LichessBackend {
             Ok(account) => {
                 let _ = std::fs::write(&self.token_path, &token);
                 self.client = Some(client);
-                self.spawn_streams(replier.clone());
+                // Needed so GameSession can work out which color the local account is
+                // playing (see game::session::resolve_your_color) and orient the board
+                // accordingly, instead of always assuming white.
+                self.spawn_streams(replier.clone(), account.id.clone());
                 self.send(replier, &BackendMessage::TokenVerified { username: account.username });
             }
             Err(e) => {
@@ -61,7 +64,10 @@ impl LichessBackend {
     async fn handle_create_seek(&mut self, replier: &BackendReplier<Self>, minutes: u32, increment: u32) {
         let Some(client) = &self.client else { return };
         match client.create_seek(minutes, increment).await {
-            Ok(()) => self.send(replier, &BackendMessage::SeekCreated),
+            Ok(lines) => {
+                self.send(replier, &BackendMessage::SeekCreated);
+                spawn_hold_connection_open(lines);
+            }
             Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
         }
     }
@@ -86,7 +92,7 @@ impl LichessBackend {
         }
     }
 
-    pub fn spawn_streams(&self, replier: BackendReplier<Self>) {
+    pub fn spawn_streams(&self, replier: BackendReplier<Self>, my_id: String) {
         let Some(client) = self.client.clone() else { return };
         let session_handle = self.session.clone();
         tokio::spawn(async move {
@@ -100,7 +106,13 @@ impl LichessBackend {
                             if let Some(EventStreamMessage::GameStart { game }) =
                                 parse_ndjson_line::<EventStreamMessage>(&line)
                             {
-                                spawn_game_stream(client.clone(), game.id, replier.clone(), session_handle.clone());
+                                spawn_game_stream(
+                                    client.clone(),
+                                    game.id,
+                                    replier.clone(),
+                                    session_handle.clone(),
+                                    my_id.clone(),
+                                );
                             }
                         }
                     }
@@ -116,11 +128,30 @@ impl LichessBackend {
     }
 }
 
+/// `/api/board/seek` and `/api/challenge/{username}` are long-poll endpoints --
+/// confirmed live against production Lichess, not just from reading the plan's own
+/// notes: a fire-and-forget POST that didn't drain its response never matched with
+/// an opponent, while holding the same request open for ~20s matched immediately.
+/// The seek/challenge stays active only while this connection is held. We don't
+/// need the stream's *content* (the real `gameStart` arrives separately via the
+/// account event stream already wired up in `spawn_streams`) -- just need to keep
+/// consuming it in the background so the connection doesn't close early, without
+/// blocking `handle_message` on however long it takes to get matched or time out.
+fn spawn_hold_connection_open(
+    mut lines: std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>,
+) {
+    tokio::spawn(async move {
+        use futures_util::StreamExt;
+        while lines.next().await.is_some() {}
+    });
+}
+
 fn spawn_game_stream(
     client: LichessClient,
     game_id: String,
     replier: BackendReplier<LichessBackend>,
     session_handle: Arc<Mutex<Option<GameSession>>>,
+    my_id: String,
 ) {
     tokio::spawn(async move {
         use futures_util::StreamExt;
@@ -135,7 +166,7 @@ fn spawn_game_stream(
                             let mut guard = session_handle.lock().await;
                             let board_msg = match msg {
                                 GameStreamMessage::Full(full) => {
-                                    match GameSession::from_game_full(&full) {
+                                    match GameSession::from_game_full(&full, &my_id) {
                                         Ok((s, board_msg)) => {
                                             *guard = Some(s);
                                             Some(board_msg)
@@ -214,7 +245,10 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::CreateChallenge { username, minutes, increment } => {
                 let Some(client) = &self.client else { return };
                 match client.create_challenge(&username, minutes, increment).await {
-                    Ok(()) => self.send(replier, &BackendMessage::ChallengeCreated),
+                    Ok(lines) => {
+                        self.send(replier, &BackendMessage::ChallengeCreated);
+                        spawn_hold_connection_open(lines);
+                    }
                     Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
                 }
             }

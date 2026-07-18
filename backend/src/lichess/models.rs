@@ -37,6 +37,16 @@ pub struct GameState {
     pub winner: Option<String>,
 }
 
+// Real Lichess `gameFull` payloads carry much more per-player data (rating, title,
+// provisional flag, etc.) -- only modeling `id` since that's all this app needs to
+// work out which color the local account is playing. `id` is optional because an
+// AI opponent (see backend/src/lichess/client.rs's create-seek-adjacent testing in
+// this project's history) has no Lichess account id, only a name/level.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Player {
+    pub id: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GameFull {
     pub id: String,
@@ -44,6 +54,8 @@ pub struct GameFull {
     #[serde(rename = "initialFen")]
     pub initial_fen: String,
     pub clock: Option<Clock>,
+    pub white: Player,
+    pub black: Player,
     pub state: GameState,
 }
 
@@ -78,7 +90,7 @@ mod tests {
 
     #[test]
     fn parses_game_full_then_game_state() {
-        let full_json = r#"{"type":"gameFull","id":"abcd1234","rated":false,"initialFen":"startpos","clock":{"initial":600000,"increment":0},"state":{"type":"gameState","moves":"","wtime":600000,"btime":600000,"winc":0,"binc":0,"status":"started","winner":null}}"#;
+        let full_json = r#"{"type":"gameFull","id":"abcd1234","rated":false,"initialFen":"startpos","clock":{"initial":600000,"increment":0},"white":{"id":"myid"},"black":{"id":"oppid"},"state":{"type":"gameState","moves":"","wtime":600000,"btime":600000,"winc":0,"binc":0,"status":"started","winner":null}}"#;
         let msg: GameStreamMessage = serde_json::from_str(full_json).unwrap();
         match msg {
             GameStreamMessage::Full(full) => {

@@ -3,21 +3,22 @@ import QtQuick.Controls 2.5
 
 Rectangle {
     anchors.fill: parent
-    color: "white"
+    color: darkMode ? "#2b2b28" : "white"
     property var backendSender
+    property bool darkMode: false
 
     Column {
         anchors.centerIn: parent
         spacing: 24
         width: parent.width * 0.8
 
-        Text { text: "New rapid game"; font.pixelSize: 40 }
+        Text { text: "New rapid game"; font.pixelSize: 40; color: darkMode ? "#e6e2d8" : "black" }
 
         Row {
             spacing: 16
-            Text { text: "Minutes:"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "Minutes:"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter; color: darkMode ? "#e6e2d8" : "black" }
             TextField { id: minutesField; text: "10"; font.pixelSize: 24; width: 80 }
-            Text { text: "Increment:"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "Increment:"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter; color: darkMode ? "#e6e2d8" : "black" }
             TextField { id: incrementField; text: "0"; font.pixelSize: 24; width: 80 }
         }
 
