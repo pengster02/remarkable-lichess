@@ -127,12 +127,18 @@ Rectangle {
 
     function pieceAt(squareName) {
         // Minimal FEN board decode: walk the piece-placement field only.
+        // Deliberately computed from the square name's own characters, not from
+        // filesRanks()'s display-order arrays: FEN rows/columns are always absolute
+        // (row0 = rank8, col0 = a-file) regardless of board orientation. Indexing
+        // into filesRanks() instead only happened to work for the unflipped (white)
+        // case, where display order and FEN order coincide -- confirmed live via a
+        // real flipped (black) game: it showed the wrong rank's/file's pieces
+        // entirely (e.g. Queen and King visibly swapped on the back rank).
         var placement = boardScreen.fen.split(" ")[0]
         var rows = placement.split("/")
-        var fr = boardScreen.filesRanks()
-        var rankIndex = fr.ranks.indexOf(squareName[1])
-        var fileIndex = fr.files.indexOf(squareName[0])
-        if (rankIndex < 0 || fileIndex < 0) return ""
+        var rankIndex = 8 - parseInt(squareName[1])
+        var fileIndex = squareName.charCodeAt(0) - "a".charCodeAt(0)
+        if (rankIndex < 0 || rankIndex > 7 || fileIndex < 0 || fileIndex > 7) return ""
         var row = rows[rankIndex]
         // Guards an empty/not-yet-loaded fen (default ""): "".split("/") is a
         // single-element [""], so any rank past the first indexes out of bounds

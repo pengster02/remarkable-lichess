@@ -5,6 +5,7 @@
         <file>ui/HomeScreen.qml</file>
         <file>ui/SeekScreen.qml</file>
         <file>ui/SettingsScreen.qml</file>
+        <file>ui/GameHistoryScreen.qml</file>
         <file>ui/BoardScreen.qml</file>
         <file>ui/BoardSquare.qml</file>
         <file>assets/ChessGlyphs.ttf</file>
