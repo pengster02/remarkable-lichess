@@ -31,6 +31,7 @@ pub enum FrontendMessage {
     RequestChallenges,
     AcceptChallenge { id: String },
     DeclineChallenge { id: String },
+    SendChat { text: String },
 }
 
 // Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
@@ -73,6 +74,11 @@ pub enum BackendMessage {
         // so the frontend only needs one bool each instead of tracking both colors.
         draw_offered_by_opponent: bool,
         takeback_offered_by_opponent: bool,
+        // SAN per move so far (e.g. "e4", "Nf3", "O-O", "Qxh4#"). Sent in full each
+        // time (matching every other field here, all recomputed from Lichess's own
+        // always-whole-game `moves` string) -- the frontend just re-renders the same
+        // wrapped Text, no incremental diffing needed.
+        move_history: Vec<String>,
     },
     GameOver { result: String, reason: String },
     MoveRejected { reason: String },
@@ -86,6 +92,7 @@ pub enum BackendMessage {
     // reject an early claim, same as every other server-authoritative action here.
     OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
+    ChatMessage { username: String, text: String },
 }
 
 #[cfg(test)]
@@ -140,6 +147,7 @@ mod tests {
             in_check: false,
             draw_offered_by_opponent: false,
             takeback_offered_by_opponent: false,
+            move_history: vec![],
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));

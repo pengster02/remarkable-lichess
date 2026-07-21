@@ -43,6 +43,28 @@ Rectangle {
     property var pendingPromotion: null
     // Two-tap confirm so a single mistaken tap can't resign the game outright.
     property bool resignArmed: false
+    // "username: text" lines, player-room only (see backend_app.rs's chat.room
+    // == "player" filter) -- oldest first, matching Lichess's own chat panel.
+    property var chatMessages: []
+    // SAN per move, sent whole by the backend each BoardState (see
+    // game::session::GameSession.move_history) -- only re-rendered when it
+    // actually changes, same as everything else here.
+    property var moveHistory: []
+
+    // "1. e4 e5  2. Nf3 Nc6  ..." -- pairs white/black plies under one move
+    // number, standard chess notation, matching what cli-chess's MoveListModel
+    // and every mainstream client show.
+    function formattedMoveHistory() {
+        var out = []
+        for (var i = 0; i < boardScreen.moveHistory.length; i++) {
+            if (i % 2 === 0) {
+                out.push((i / 2 + 1) + ". " + boardScreen.moveHistory[i])
+            } else {
+                out[out.length - 1] += " " + boardScreen.moveHistory[i]
+            }
+        }
+        return out.join("  ")
+    }
 
     // Display-order files/ranks, flipped when playing black so the local player's
     // own pieces render at the bottom, matching standard chess-app convention.
@@ -268,6 +290,14 @@ Rectangle {
             color: boardScreen.darkMode ? "#e6e2d8" : "black"
         }
 
+        Text {
+            text: boardScreen.formattedMoveHistory()
+            font.pixelSize: 18
+            wrapMode: Text.WordWrap
+            width: parent.width
+            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+        }
+
         Row {
             spacing: 8
 
@@ -333,6 +363,32 @@ Rectangle {
                         boardScreen.resignArmed = false
                     } else {
                         boardScreen.resignArmed = true
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: boardScreen.chatMessages.join("\n")
+            font.pixelSize: 16
+            wrapMode: Text.WordWrap
+            width: parent.width
+            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+        }
+
+        Row {
+            spacing: 8
+            TextField {
+                id: chatInputField
+                width: 240
+                placeholderText: "Message opponent"
+            }
+            Button {
+                text: "Send"
+                onClicked: {
+                    if (chatInputField.text.length > 0) {
+                        boardScreen.backendSender({type: "SendChat", text: chatInputField.text})
+                        chatInputField.text = ""
                     }
                 }
             }
@@ -415,6 +471,7 @@ Rectangle {
             boardScreen.yourColor = msg.your_color || "white"
             boardScreen.drawOfferedByOpponent = msg.draw_offered_by_opponent || false
             boardScreen.takebackOfferedByOpponent = msg.takeback_offered_by_opponent || false
+            boardScreen.moveHistory = msg.move_history || []
             boardScreen.resignArmed = false
             boardScreen.statusText = ""
         } else if (msg.type === "GameOver") {
@@ -427,6 +484,8 @@ Rectangle {
         } else if (msg.type === "OpponentGone") {
             boardScreen.opponentGone = msg.gone
             boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
+        } else if (msg.type === "ChatMessage") {
+            boardScreen.chatMessages = boardScreen.chatMessages.concat([msg.username + ": " + msg.text])
         } else if (msg.type === "ErrorMsg") {
             // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
             // possible") only ever reached main.qml's console.warn -- invisible
