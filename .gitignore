@@ -1,3 +1,6 @@
 .superpowers/
 rm-appload/
 /backend/target/
+dist/
+*.core
+frontend/resources.rcc
