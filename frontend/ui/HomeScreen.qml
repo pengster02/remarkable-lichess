@@ -9,7 +9,16 @@ Rectangle {
     property var navigateTo
     property bool darkMode: false
     property var toggleDarkMode: function() {}
-    property string resumableGameId: ""
+    // Every now-playing game, not just one -- replaces the old singular
+    // resumableGameId, which silently dropped every game past the first for
+    // anyone with more than one correspondence game going (see protocol.rs's
+    // HomeState/OngoingGameSummary).
+    property var ongoingGames: []
+    // {speed, rating} pairs for whichever standard speed categories this
+    // account has actually played at least one game of (see backend_app.rs's
+    // ratings_from_perfs) -- shown so Home isn't just a blank slate between
+    // games, matching every reference client's own home/profile screen.
+    property var ratings: []
     property var pendingChallenges: []
 
     Column {
@@ -22,17 +31,50 @@ Rectangle {
             color: homeScreen.darkMode ? "#e6e2d8" : "black"
         }
 
-        Button {
-            text: "Resume game"
-            visible: homeScreen.resumableGameId.length > 0
-            onClicked: {
-                // There is no "resume" FrontendMessage: the per-game stream (Task 9) is
-                // already running server-side and will emit BoardState on its own, and
-                // main.qml's router (Task 10) auto-switches to BoardScreen.qml on the
-                // first BoardState/GameOver/etc. regardless. We still navigate here for
-                // an immediate UI transition instead of leaving Home showing while the
-                // first BoardState is in flight.
-                homeScreen.navigateTo("BoardScreen.qml")
+        Flow {
+            width: parent.width
+            spacing: 12
+            visible: homeScreen.ratings.length > 0
+            Repeater {
+                model: homeScreen.ratings
+                Text {
+                    required property var modelData
+                    text: modelData.speed + ": " + modelData.rating
+                    font.pixelSize: 18
+                    color: homeScreen.darkMode ? "#e6e2d8" : "black"
+                }
+            }
+        }
+
+        Repeater {
+            model: homeScreen.ongoingGames
+            // Same stacked-not-Row reasoning as pendingChallenges below -- a long
+            // opponent name plus a Resume button doesn't reliably fit the device's
+            // ~400px content width.
+            Column {
+                required property var modelData
+                spacing: 4
+
+                Text {
+                    text: (modelData.opponent_name || "Opponent") +
+                          (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
+                          (modelData.is_my_turn ? " -- your move" : " -- waiting")
+                    font.pixelSize: 20
+                    wrapMode: Text.WordWrap
+                    width: homeScreen.width * 0.9
+                    color: homeScreen.darkMode ? "#e6e2d8" : "black"
+                }
+                Button {
+                    text: "Resume"
+                    onClicked: {
+                        // No BoardState flows for an already-in-progress game until its
+                        // stream is (re)attached server-side -- see ResumeGame's own
+                        // comment in protocol.rs. We still navigate immediately after
+                        // for a responsive UI instead of waiting on the first BoardState.
+                        homeScreen.backendSender({type: "ResumeGame", game_id: modelData.game_id})
+                        homeScreen.navigateTo("BoardScreen.qml")
+                    }
+                }
             }
         }
 
@@ -40,6 +82,14 @@ Rectangle {
             text: "New game"
             onClicked: {
                 homeScreen.navigateTo("SeekScreen.qml")
+            }
+        }
+
+        Button {
+            text: "Game history"
+            onClicked: {
+                homeScreen.backendSender({type: "RequestGameHistory"})
+                homeScreen.navigateTo("GameHistoryScreen.qml")
             }
         }
 
@@ -93,7 +143,8 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
-            homeScreen.resumableGameId = msg.resumable_game_id || ""
+            homeScreen.ongoingGames = msg.ongoing_games || []
+            homeScreen.ratings = msg.ratings || []
         } else if (msg.type === "PendingChallenges") {
             homeScreen.pendingChallenges = msg.challenges || []
         }

@@ -15,6 +15,13 @@ pub struct LegalMove {
 pub enum FrontendMessage {
     SaveToken { token: String },
     RequestHome,
+    // Attaches this specific game's stream if it isn't already being tracked --
+    // replaces the old behavior of RequestHome always auto-attaching whichever
+    // game happened to be `now_playing.first()`, which only worked because Home
+    // only ever surfaced one resumable game to begin with. Now that Home lists
+    // every ongoing game (see HomeState's ongoing_games), the frontend has to
+    // say which one the user actually picked.
+    ResumeGame { game_id: String },
     // `color` is "white"/"black"/"random" -- same enum Lichess's own
     // ChallengeColor.yaml uses for both /api/board/seek and /api/challenge/{username}.
     CreateSeek { minutes: u32, increment: u32, rated: bool, color: String },
@@ -42,12 +49,29 @@ pub enum FrontendMessage {
     // and resets to the logged-out state -- there was previously no in-app way
     // to do this at all short of editing files on the device directly.
     LogOut,
-    // Sent on-demand (from HomeScreen's "Game history" button), not pushed
+    // Sent on-demand (from HomeScreen's "Game history" button, and again by
+    // GameHistoryScreen itself whenever a filter changes), not pushed
     // automatically on login like RequestHome/RequestSettings -- fetching and
-    // replaying 20 games' SAN history is real work nobody needs paid up front
-    // just to reach the Home screen. Backend fixes the page size server-side
-    // (see backend_app.rs's handle_request_game_history).
-    RequestGameHistory,
+    // replaying up to 20 games' SAN history is real work nobody needs paid up
+    // front just to reach the Home screen. Backend fixes the page size
+    // server-side (see backend_app.rs's handle_request_game_history); `rated`/
+    // `speed`/`color` are optional filters passed straight through to GET
+    // /api/games/user's own query params (None = that endpoint's own default
+    // of "no filter", not "false"/empty-string).
+    RequestGameHistory {
+        #[serde(default)]
+        rated: Option<bool>,
+        #[serde(default)]
+        speed: Option<String>,
+        #[serde(default)]
+        color: Option<String>,
+    },
+    // POST /api/challenge/open -- a shareable link either side can open to start
+    // the game, no destination username needed (unlike CreateChallenge). Uses
+    // the same minutes/increment/rated fields as CreateSeek/CreateChallenge; no
+    // `color` field since the *joiner* picks color by which of urlWhite/urlBlack
+    // they open, not the creator (see BackendMessage::OpenChallengeCreated).
+    CreateOpenChallenge { minutes: u32, increment: u32, rated: bool },
 }
 
 // Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
@@ -157,6 +181,11 @@ pub enum BackendMessage {
     ChatMessage { username: String, text: String },
     SettingsState { auto_queen_promotion: bool },
     GameHistory { games: Vec<HistoryGameSummary> },
+    // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- `url` opens
+    // to a color-choice/random assignment, `url_white`/`url_black` claim that
+    // color outright. Shown as plain text on SeekScreen for the user to read/
+    // share manually (this app has no clipboard/share-sheet integration).
+    OpenChallengeCreated { url: String, url_white: String, url_black: String },
 }
 
 #[cfg(test)]
@@ -201,6 +230,44 @@ mod tests {
         let json = serde_json::to_string(&BackendMessage::SettingsState { auto_queen_promotion: true }).unwrap();
         assert!(json.contains(r#""type":"SettingsState""#));
         assert!(json.contains(r#""auto_queen_promotion":true"#));
+    }
+
+    #[test]
+    fn request_game_history_parses_with_and_without_filters() {
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(r#"{"type":"RequestGameHistory"}"#).unwrap(),
+            FrontendMessage::RequestGameHistory { rated: None, speed: None, color: None }
+        );
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(
+                r#"{"type":"RequestGameHistory","rated":true,"speed":"rapid","color":"white"}"#
+            )
+            .unwrap(),
+            FrontendMessage::RequestGameHistory {
+                rated: Some(true),
+                speed: Some("rapid".into()),
+                color: Some("white".into())
+            }
+        );
+    }
+
+    #[test]
+    fn create_open_challenge_parses_and_open_challenge_created_serializes() {
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(
+                r#"{"type":"CreateOpenChallenge","minutes":10,"increment":0,"rated":false}"#
+            )
+            .unwrap(),
+            FrontendMessage::CreateOpenChallenge { minutes: 10, increment: 0, rated: false }
+        );
+        let json = serde_json::to_string(&BackendMessage::OpenChallengeCreated {
+            url: "https://lichess.org/abc".into(),
+            url_white: "https://lichess.org/abc?color=white".into(),
+            url_black: "https://lichess.org/abc?color=black".into(),
+        })
+        .unwrap();
+        assert!(json.contains(r#""type":"OpenChallengeCreated""#));
+        assert!(json.contains("color=white"));
     }
 
     #[test]

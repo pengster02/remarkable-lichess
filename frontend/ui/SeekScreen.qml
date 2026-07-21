@@ -17,6 +17,12 @@ Rectangle {
     // "white"/"black"/"random" -- same enum Lichess's own ChallengeColor.yaml
     // uses for both /api/board/seek and /api/challenge/{username}.
     property string selectedColor: "random"
+    // {url, url_white, url_black} once OpenChallengeCreated arrives, else null.
+    // Unlike waiting/waitingLabel above, an open challenge has no held-open
+    // connection backing it (see backend_app.rs's create_open_challenge) --
+    // the link stays valid on Lichess's side independent of this screen, so
+    // there's deliberately no "Cancel" for it, just Back to Home.
+    property var openChallengeUrls: null
 
     Column {
         anchors.centerIn: parent
@@ -80,6 +86,49 @@ Rectangle {
             }
         }
 
+        Button {
+            text: "Create open challenge link"
+            visible: !seekScreen.waiting && seekScreen.openChallengeUrls === null
+            onClicked: seekScreen.backendSender({
+                type: "CreateOpenChallenge",
+                minutes: parseInt(minutesField.text),
+                increment: parseInt(incrementField.text),
+                rated: seekScreen.rated
+            })
+        }
+
+        Column {
+            visible: seekScreen.openChallengeUrls !== null
+            width: parent.width
+            spacing: 8
+
+            Text {
+                text: "Share one of these links -- whoever opens it starts the game:"
+                font.pixelSize: 18
+                wrapMode: Text.WordWrap
+                width: parent.width
+                color: seekScreen.darkMode ? "#e6e2d8" : "black"
+            }
+            TextEdit {
+                readOnly: true
+                selectByMouse: true
+                width: parent.width
+                wrapMode: Text.WrapAnywhere
+                font.pixelSize: 16
+                color: seekScreen.darkMode ? "#e6e2d8" : "black"
+                text: "White: " + (seekScreen.openChallengeUrls ? seekScreen.openChallengeUrls.url_white : "")
+            }
+            TextEdit {
+                readOnly: true
+                selectByMouse: true
+                width: parent.width
+                wrapMode: Text.WrapAnywhere
+                font.pixelSize: 16
+                color: seekScreen.darkMode ? "#e6e2d8" : "black"
+                text: "Black: " + (seekScreen.openChallengeUrls ? seekScreen.openChallengeUrls.url_black : "")
+            }
+        }
+
         Row {
             spacing: 16
             visible: !seekScreen.waiting
@@ -137,6 +186,8 @@ Rectangle {
         } else if (msg.type === "ChallengeCreated") {
             seekScreen.waiting = true
             seekScreen.waitingLabel = "Challenge sent, waiting for a reply..."
+        } else if (msg.type === "OpenChallengeCreated") {
+            seekScreen.openChallengeUrls = {url: msg.url, url_white: msg.url_white, url_black: msg.url_black}
         }
     }
 }

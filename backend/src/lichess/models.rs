@@ -232,6 +232,18 @@ pub struct GameOpening {
     pub name: String,
 }
 
+// Request-side, not a Lichess response shape -- the subset of GET
+// /api/games/user/{username}'s real query params (confirmed against its
+// documented Filtering Options: since/until/max/vs/rated/perfType/color/
+// analysed/ongoing/finished/sort) that this app's history screen exposes.
+// `speed` maps to the endpoint's own `perfType` param name.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GameHistoryFilters {
+    pub rated: Option<bool>,
+    pub speed: Option<String>,
+    pub color: Option<String>,
+}
+
 // One row of GET /api/games/user/{username}'s NDJSON response (Accept:
 // application/x-ndjson -- without that header this endpoint returns PGN text
 // instead, see lichess::client::get_game_history). Confirmed against
@@ -250,6 +262,19 @@ pub struct HistoryGame {
     pub players: GamePlayers,
     pub winner: Option<String>,
     pub opening: Option<GameOpening>,
+}
+
+// Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- only the fields
+// needed to show/share the created link are modeled (variant/perf/timeControl
+// etc. aren't shown anywhere in this app).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ChallengeOpenJson {
+    pub id: String,
+    pub url: String,
+    #[serde(rename = "urlWhite")]
+    pub url_white: String,
+    #[serde(rename = "urlBlack")]
+    pub url_black: String,
 }
 
 #[cfg(test)]
@@ -341,6 +366,15 @@ mod tests {
         assert_eq!(game.winner.as_deref(), Some("white"));
         assert_eq!(game.players.white.user.as_ref().unwrap().id.as_deref(), Some("myuser"));
         assert_eq!(game.opening.unwrap().name, "Italian Game");
+    }
+
+    #[test]
+    fn parses_challenge_open_json_ignoring_unmodeled_fields() {
+        let json = r#"{"id":"ovdODEHx","url":"https://lichess.org/ovdODEHx","status":"created","challenger":null,"destUser":null,"variant":{"key":"standard","name":"Standard"},"rated":false,"speed":"rapid","timeControl":{"type":"clock","limit":600,"increment":0,"show":"10+0"},"color":"random","urlWhite":"https://lichess.org/ovdODEHx?color=white","urlBlack":"https://lichess.org/ovdODEHx?color=black"}"#;
+        let parsed: ChallengeOpenJson = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.id, "ovdODEHx");
+        assert_eq!(parsed.url_white, "https://lichess.org/ovdODEHx?color=white");
+        assert_eq!(parsed.url_black, "https://lichess.org/ovdODEHx?color=black");
     }
 
     #[test]

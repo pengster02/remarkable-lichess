@@ -1,5 +1,6 @@
 use crate::lichess::models::{
-    Account, ChallengeListResponse, HistoryGame, IncomingChallenge, PlayingGame, PlayingResponse,
+    Account, ChallengeListResponse, ChallengeOpenJson, GameHistoryFilters, HistoryGame,
+    IncomingChallenge, PlayingGame, PlayingResponse,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use anyhow::{anyhow, Result};
@@ -76,13 +77,33 @@ impl LichessClient {
     /// object per line, not a query param. Buffered as a single `.text()` rather than
     /// streamed line-by-line like `stream_lines` -- this is a bounded, one-shot page
     /// of `max` games, not an open-ended live connection.
-    pub async fn get_game_history(&self, username: &str, max: u32) -> Result<Vec<HistoryGame>> {
+    ///
+    /// `filters` are the subset of this endpoint's real query params this app's
+    /// history screen actually exposes (confirmed against the endpoint's own
+    /// filtering options: rated/perfType/color, among others this app doesn't
+    /// surface like since/until/vs/analysed/sort).
+    pub async fn get_game_history(
+        &self,
+        username: &str,
+        max: u32,
+        filters: &GameHistoryFilters,
+    ) -> Result<Vec<HistoryGame>> {
+        let mut query = vec![("max".to_string(), max.to_string())];
+        if let Some(rated) = filters.rated {
+            query.push(("rated".to_string(), rated.to_string()));
+        }
+        if let Some(speed) = &filters.speed {
+            query.push(("perfType".to_string(), speed.clone()));
+        }
+        if let Some(color) = &filters.color {
+            query.push(("color".to_string(), color.clone()));
+        }
         let resp = self
             .bearer(
                 self.http
                     .get(format!("{}/api/games/user/{}", self.base_url, username))
                     .header("Accept", "application/x-ndjson")
-                    .query(&[("max", max.to_string())]),
+                    .query(&query),
             )
             .send()
             .await?;
@@ -352,6 +373,34 @@ impl LichessClient {
         Ok(())
     }
 
+    /// Confirmed against lichess-org/api's ChallengeOpenJson.yaml: unlike
+    /// `create_seek`/`create_challenge`, this returns one plain JSON object
+    /// immediately, not a held-open stream -- the challenge itself stays open
+    /// server-side (shareable indefinitely via the returned urls) without this
+    /// client holding any connection for it. Whoever opens `urlWhite`/`urlBlack`
+    /// starts the game, which then arrives the same way any other game does, via
+    /// the account event stream's `gameStart` (already wired in spawn_streams).
+    pub async fn create_open_challenge(
+        &self,
+        minutes: u32,
+        increment: u32,
+        rated: bool,
+    ) -> Result<ChallengeOpenJson> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/challenge/open", self.base_url)))
+            .form(&[
+                ("rated", rated.to_string()),
+                ("clock.limit", (minutes * 60).to_string()),
+                ("clock.increment", increment.to_string()),
+            ])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("create_open_challenge", resp).await);
+        }
+        Ok(resp.json::<ChallengeOpenJson>().await?)
+    }
+
     pub async fn stream_lines(
         &self,
         url_path: &str,
@@ -425,6 +474,109 @@ mod tests {
         let games = client.get_playing().await.unwrap();
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].game_id, "g1");
+    }
+
+    #[tokio::test]
+    async fn get_game_history_sends_ndjson_accept_header_and_max_query_param() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let line = serde_json::json!({
+            "id": "abcd1234", "rated": true, "variant": "standard", "speed": "rapid",
+            "perf": "rapid", "createdAt": 1, "lastMoveAt": 2, "status": "mate",
+            "players": {
+                "white": {"user": {"id": "myuser", "name": "MyUser"}, "rating": 1600},
+                "black": {"user": {"id": "bob", "name": "Bob"}, "rating": 1580}
+            },
+            "winner": "white"
+        })
+        .to_string();
+        Mock::given(method("GET"))
+            .and(path("/api/games/user/myuser"))
+            .and(query_param("max", "20"))
+            .and(header("Accept", "application/x-ndjson"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(line))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let games = client.get_game_history("myuser", 20, &GameHistoryFilters::default()).await.unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].id, "abcd1234");
+    }
+
+    #[tokio::test]
+    async fn get_game_history_sends_rated_speed_and_color_query_params_when_set() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/games/user/myuser"))
+            .and(query_param("rated", "true"))
+            .and(query_param("perfType", "rapid"))
+            .and(query_param("color", "white"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let filters = GameHistoryFilters {
+            rated: Some(true),
+            speed: Some("rapid".to_string()),
+            color: Some("white".to_string()),
+        };
+        // The mock only matches if all three query params were actually sent --
+        // an unmatched request fails with a 404 from wiremock's default response,
+        // which .unwrap() below would catch.
+        client.get_game_history("myuser", 20, &filters).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_game_history_returns_empty_vec_for_a_player_with_no_games() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/games/user/newplayer"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let games = client.get_game_history("newplayer", 20, &GameHistoryFilters::default()).await.unwrap();
+        assert!(games.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_game_history_errors_distinctly_when_response_looks_like_pgn_not_ndjson() {
+        // Regression guard for the exact bug this Accept header exists to avoid --
+        // if Lichess (or a misbehaving proxy) ignores it and sends PGN text back,
+        // every line fails to parse and this must not be silently reported as
+        // "this player has never played a game".
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/games/user/myuser"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[Event \"?\"]\n[Site \"?\"]\n"))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let err = client.get_game_history("myuser", 20, &GameHistoryFilters::default()).await.unwrap_err();
+        assert!(err.to_string().contains("didn't parse as NDJSON"));
+    }
+
+    #[tokio::test]
+    async fn get_game_history_surfaces_lichess_error_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/games/user/myuser"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "No such user"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let err = client.get_game_history("myuser", 20, &GameHistoryFilters::default()).await.unwrap_err();
+        assert!(err.to_string().contains("No such user"));
     }
 
     #[tokio::test]
@@ -642,6 +794,43 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 3, "expected all keep-alive lines to be drainable from the stream");
+    }
+
+    #[tokio::test]
+    async fn create_open_challenge_posts_clock_and_rated_form_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/challenge/open"))
+            .and(body_string_contains("clock.limit=600"))
+            .and(body_string_contains("clock.increment=5"))
+            .and(body_string_contains("rated=false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ovdODEHx",
+                "url": "https://lichess.org/ovdODEHx",
+                "urlWhite": "https://lichess.org/ovdODEHx?color=white",
+                "urlBlack": "https://lichess.org/ovdODEHx?color=black"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let challenge = client.create_open_challenge(10, 5, false).await.unwrap();
+        assert_eq!(challenge.id, "ovdODEHx");
+        assert_eq!(challenge.url_white, "https://lichess.org/ovdODEHx?color=white");
+    }
+
+    #[tokio::test]
+    async fn create_open_challenge_bails_on_error_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/challenge/open"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let result = client.create_open_challenge(10, 0, false).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
