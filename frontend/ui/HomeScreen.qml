@@ -56,23 +56,31 @@ Rectangle {
 
         Repeater {
             model: homeScreen.pendingChallenges
-            Row {
+            // Stacked (text above buttons) rather than one Row -- a long
+            // challenger name plus two buttons doesn't reliably fit the
+            // device's ~400px content width, and a centered Column with no
+            // fixed width won't wrap an overflowing Row, it'll just clip.
+            Column {
                 required property var modelData
-                spacing: 8
+                spacing: 4
 
                 Text {
                     text: modelData.challenger + " challenges you (" + Math.floor((modelData.limit_seconds || 0) / 60) + "+" + (modelData.increment_seconds || 0) + ")"
                     font.pixelSize: 20
+                    wrapMode: Text.WordWrap
+                    width: homeScreen.width * 0.9
                     color: homeScreen.darkMode ? "#e6e2d8" : "black"
-                    anchors.verticalCenter: parent.verticalCenter
                 }
-                Button {
-                    text: "Accept"
-                    onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
-                }
-                Button {
-                    text: "Decline"
-                    onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
+                Row {
+                    spacing: 8
+                    Button {
+                        text: "Accept"
+                        onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
+                    }
+                    Button {
+                        text: "Decline"
+                        onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
+                    }
                 }
             }
         }
