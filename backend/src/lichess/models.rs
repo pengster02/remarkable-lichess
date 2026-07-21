@@ -58,14 +58,18 @@ pub struct OpponentGone {
     pub claim_win_in_seconds: Option<u64>,
 }
 
-// Real Lichess `gameFull` payloads carry much more per-player data (rating, title,
-// provisional flag, etc.) -- only modeling `id` since that's all this app needs to
-// work out which color the local account is playing. `id` is optional because an
-// AI opponent (see backend/src/lichess/client.rs's create-seek-adjacent testing in
-// this project's history) has no Lichess account id, only a name/level.
+// Confirmed against lichess-org/api's GameEventPlayer.yaml. That schema marks `id`
+// and `name` both required, but this project's own live testing already found `id`
+// absent for AI opponents (see backend/src/lichess/client.rs's create-seek-adjacent
+// testing history) -- specs can overstate what's *actually* always present, so
+// `name` gets the same defensive Option treatment rather than trusting the spec's
+// "required" at face value. `rating` is genuinely optional per the schema (an AI
+// opponent has a level, not a rating).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Player {
     pub id: Option<String>,
+    pub name: Option<String>,
+    pub rating: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

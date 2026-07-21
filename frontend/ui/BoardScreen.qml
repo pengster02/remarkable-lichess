@@ -50,6 +50,11 @@ Rectangle {
     // game::session::GameSession.move_history) -- only re-rendered when it
     // actually changes, same as everything else here.
     property var moveHistory: []
+    // Fixed for the game's lifetime (see game::session::GameSession) -- an AI
+    // opponent has no rating, only a name/level, hence the Option on the
+    // backend and the "" / null fallback here.
+    property string opponentName: ""
+    property var opponentRating: null
 
     // "1. e4 e5  2. Nf3 Nc6  ..." -- pairs white/black plies under one move
     // number, standard chess notation, matching what cli-chess's MoveListModel
@@ -173,6 +178,13 @@ Rectangle {
     }
 
     function onSquareTapped(squareName) {
+        // Not a correctness fix (legalMoves is always keyed to whoever's turn it
+        // actually is, per the current FEN, so a tap during the opponent's turn
+        // could never produce an illegal MakeMove) -- this is the UX gap flagged
+        // in docs/chess-ux-gaps-vs-reference-apps.md #5: every reference client
+        // disables input and shows whose turn it is rather than letting a player
+        // tap around pointlessly waiting for a reply that never comes.
+        if (boardScreen.turn !== boardScreen.yourColor) return
         if (boardScreen.selectedSquare === "") {
             if (boardScreen.pieceAt(squareName) !== "") boardScreen.selectedSquare = squareName
             return
@@ -201,6 +213,13 @@ Rectangle {
         anchors.fill: parent
         anchors.topMargin: 72
         spacing: 8
+
+        Text {
+            visible: boardScreen.opponentName.length > 0
+            text: "vs " + boardScreen.opponentName + (boardScreen.opponentRating !== null ? " (" + boardScreen.opponentRating + ")" : "")
+            font.pixelSize: 20
+            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+        }
 
         Text {
             // No local ticking (see the removed Timer's comment below): this shows
@@ -291,6 +310,16 @@ Rectangle {
         }
 
         Text {
+            // Only meaningful once a real game is loaded (turn/yourColor both
+            // default to "white" before the first BoardState) -- statusText
+            // (game-over/reject/reconnect messages) takes visual precedence
+            // above, this is just a steady turn indicator underneath it.
+            text: boardScreen.turn === boardScreen.yourColor ? "Your move" : "Waiting for opponent..."
+            font.pixelSize: 20
+            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+        }
+
+        Text {
             text: boardScreen.formattedMoveHistory()
             font.pixelSize: 18
             wrapMode: Text.WordWrap
@@ -298,7 +327,8 @@ Rectangle {
             color: boardScreen.darkMode ? "#e6e2d8" : "black"
         }
 
-        Row {
+        Flow {
+            width: parent.width
             spacing: 8
 
             Button {
@@ -312,7 +342,8 @@ Rectangle {
             }
         }
 
-        Row {
+        Flow {
+            width: parent.width
             spacing: 8
 
             Button {
@@ -326,7 +357,8 @@ Rectangle {
             }
         }
 
-        Row {
+        Flow {
+            width: parent.width
             spacing: 8
 
             // Lichess itself is the authority on whether an abort is still legal
@@ -472,6 +504,8 @@ Rectangle {
             boardScreen.drawOfferedByOpponent = msg.draw_offered_by_opponent || false
             boardScreen.takebackOfferedByOpponent = msg.takeback_offered_by_opponent || false
             boardScreen.moveHistory = msg.move_history || []
+            boardScreen.opponentName = msg.opponent_name || ""
+            boardScreen.opponentRating = msg.opponent_rating !== undefined ? msg.opponent_rating : null
             boardScreen.resignArmed = false
             boardScreen.statusText = ""
         } else if (msg.type === "GameOver") {

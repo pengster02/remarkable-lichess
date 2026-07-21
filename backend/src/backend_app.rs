@@ -13,11 +13,17 @@ pub struct LichessBackend {
     token_path: PathBuf,
     client: Option<LichessClient>,
     session: Arc<Mutex<Option<GameSession>>>,
+    // The held-open long-poll connection backing an outstanding seek or outgoing
+    // challenge (see spawn_hold_connection_open's comment on why holding it open
+    // is what keeps the seek/challenge alive on Lichess's side). Dropping/aborting
+    // this task closes that connection, which is exactly how a real Lichess client
+    // cancels a pending seek -- there's no separate "cancel" REST endpoint.
+    pending_seek: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl LichessBackend {
     pub fn new(token_path: PathBuf) -> Self {
-        Self { token_path, client: None, session: Arc::new(Mutex::new(None)) }
+        Self { token_path, client: None, session: Arc::new(Mutex::new(None)), pending_seek: None }
     }
 
     fn send(&self, replier: &BackendReplier<Self>, msg: &BackendMessage) {
@@ -66,9 +72,15 @@ impl LichessBackend {
         match client.create_seek(minutes, increment).await {
             Ok(lines) => {
                 self.send(replier, &BackendMessage::SeekCreated);
-                spawn_hold_connection_open(lines);
+                self.pending_seek = Some(spawn_hold_connection_open(lines));
             }
             Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
+        }
+    }
+
+    fn handle_cancel_seek(&mut self) {
+        if let Some(handle) = self.pending_seek.take() {
+            handle.abort();
         }
     }
 
@@ -174,11 +186,11 @@ async fn send_pending_challenges(client: &LichessClient, replier: &BackendReplie
 
 fn spawn_hold_connection_open(
     mut lines: std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use futures_util::StreamExt;
         while lines.next().await.is_some() {}
-    });
+    })
 }
 
 fn spawn_game_stream(
@@ -295,11 +307,12 @@ impl AppLoadBackend for LichessBackend {
                 match client.create_challenge(&username, minutes, increment).await {
                     Ok(lines) => {
                         self.send(replier, &BackendMessage::ChallengeCreated);
-                        spawn_hold_connection_open(lines);
+                        self.pending_seek = Some(spawn_hold_connection_open(lines));
                     }
                     Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
                 }
             }
+            FrontendMessage::CancelSeek => self.handle_cancel_seek(),
             FrontendMessage::MakeMove { from, to, promotion } => {
                 self.handle_make_move(replier, from, to, promotion).await
             }

@@ -15,6 +15,10 @@ pub struct GameSession {
     // incrementally, since Lichess's own `moves` field is always the full
     // game-so-far string, not a delta -- see replay_uci_moves_with_history.
     pub move_history: Vec<String>,
+    // Fixed for the life of the game (unlike everything above) -- computed once
+    // from gameFull, not re-derived on every gameState update.
+    pub opponent_name: Option<String>,
+    pub opponent_rating: Option<u32>,
 }
 
 fn turn_name(pos: &Chess) -> String {
@@ -35,6 +39,13 @@ fn resolve_your_color(full: &GameFull, my_id: &str) -> String {
     } else {
         "white".to_string()
     }
+}
+
+/// Whichever side *isn't* your_color -- deliberately independent of
+/// resolve_your_color's own id-matching logic (a Player's name/rating are just
+/// read off the other side, not re-derived from an id lookup).
+fn opponent<'a>(full: &'a GameFull, your_color: &str) -> &'a crate::lichess::models::Player {
+    if your_color == "black" { &full.white } else { &full.black }
 }
 
 // GameState carries wdraw/bdraw/wtakeback/btakeback for *both* colors; the frontend
@@ -63,6 +74,8 @@ fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
         draw_offered_by_opponent: draw_offered_by_opponent(state, &session.your_color),
         takeback_offered_by_opponent: takeback_offered_by_opponent(state, &session.your_color),
         move_history: session.move_history.clone(),
+        opponent_name: session.opponent_name.clone(),
+        opponent_rating: session.opponent_rating,
     }
 }
 
@@ -79,14 +92,18 @@ impl GameSession {
         let (position, move_history) = replay_uci_moves_with_history(&full.initial_fen, &full.state.moves)?;
         let legal = legal_moves(&position);
         let last_move = last_move_from_uci_list(&full.state.moves);
+        let your_color = resolve_your_color(full, my_id);
+        let opp = opponent(full, &your_color);
         let session = GameSession {
             game_id: full.id.clone(),
             initial_fen: full.initial_fen.clone(),
             position,
             legal,
             last_move,
-            your_color: resolve_your_color(full, my_id),
+            your_color,
             move_history,
+            opponent_name: opp.name.clone(),
+            opponent_rating: opp.rating,
         };
         let msg = to_board_state(&session, &full.state);
         Ok((session, msg))
@@ -300,6 +317,47 @@ mod tests {
         }
         match msg.unwrap() {
             BackendMessage::BoardState { in_check, .. } => assert!(in_check),
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn opponent_name_and_rating_are_read_from_the_side_that_isnt_your_color() {
+        let full: GameFull = serde_json::from_value(serde_json::json!({
+            "type": "gameFull",
+            "id": "g1",
+            "rated": false,
+            "initialFen": "startpos",
+            "clock": {"initial": 600000, "increment": 0},
+            "white": {"id": "my-id", "name": "MyName", "rating": 1500},
+            "black": {"id": "opponent-id", "name": "OpponentName", "rating": 1600},
+            "state": {
+                "type": "gameState", "moves": "", "wtime": 600000, "btime": 600000,
+                "winc": 0, "binc": 0, "status": "started", "winner": null
+            }
+        }))
+        .unwrap();
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { opponent_name, opponent_rating, .. } => {
+                assert_eq!(opponent_name, Some("OpponentName".to_string()));
+                assert_eq!(opponent_rating, Some(1600));
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn opponent_info_is_absent_without_error_when_the_payload_omits_it() {
+        // AI opponents (and this crate's own defensive Option handling) may have
+        // no name/rating at all -- shouldn't fail to parse or panic, just None.
+        let full = sample_full("");
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { opponent_name, opponent_rating, .. } => {
+                assert_eq!(opponent_name, None);
+                assert_eq!(opponent_rating, None);
+            }
             _ => panic!("expected BoardState"),
         }
     }
