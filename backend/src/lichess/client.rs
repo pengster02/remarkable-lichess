@@ -208,6 +208,19 @@ impl LichessClient {
         Ok(())
     }
 
+    /// Always posts to the "player" room -- this app has no spectator mode.
+    pub async fn send_chat(&self, game_id: &str, text: &str) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/board/game/{}/chat", self.base_url, game_id)))
+            .form(&[("room", "player"), ("text", text)])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("send_chat", resp).await);
+        }
+        Ok(())
+    }
+
     /// `/api/board/seek` is a long-poll endpoint, confirmed live against production:
     /// a fire-and-forget POST that doesn't keep reading the response never matched
     /// with an opponent in testing, while holding the same request open for ~20s
@@ -610,6 +623,19 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         client.decline_challenge("c1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_chat_posts_room_and_text() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/chat"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.send_chat("g1", "gg").await.unwrap();
     }
 
     #[tokio::test]

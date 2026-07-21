@@ -110,16 +110,22 @@ impl LichessBackend {
                         use futures_util::StreamExt;
                         backoff_secs = 1;
                         while let Some(line) = lines.next().await {
-                            if let Some(EventStreamMessage::GameStart { game }) =
-                                parse_ndjson_line::<EventStreamMessage>(&line)
-                            {
-                                spawn_game_stream(
-                                    client.clone(),
-                                    game.id,
-                                    replier.clone(),
-                                    session_handle.clone(),
-                                    my_id.clone(),
-                                );
+                            match parse_ndjson_line::<EventStreamMessage>(&line) {
+                                Some(EventStreamMessage::GameStart { game }) => {
+                                    spawn_game_stream(
+                                        client.clone(),
+                                        game.id,
+                                        replier.clone(),
+                                        session_handle.clone(),
+                                        my_id.clone(),
+                                    );
+                                }
+                                Some(EventStreamMessage::Challenge)
+                                | Some(EventStreamMessage::ChallengeCanceled)
+                                | Some(EventStreamMessage::ChallengeDeclined) => {
+                                    send_pending_challenges(&client, &replier).await;
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -144,6 +150,28 @@ impl LichessBackend {
 /// account event stream already wired up in `spawn_streams`) -- just need to keep
 /// consuming it in the background so the connection doesn't close early, without
 /// blocking `handle_message` on however long it takes to get matched or time out.
+/// Shared by the RequestChallenges dispatch and the account event stream's
+/// challenge/challengeCanceled/challengeDeclined handling below -- both just need
+/// a fresh GET /api/challenge snapshot pushed to the frontend.
+async fn send_pending_challenges(client: &LichessClient, replier: &BackendReplier<LichessBackend>) {
+    let msg = match client.get_challenges().await {
+        Ok(challenges) => BackendMessage::PendingChallenges {
+            challenges: challenges
+                .into_iter()
+                .map(|c| crate::protocol::ChallengeInfo {
+                    id: c.id,
+                    challenger: c.challenger.name,
+                    limit_seconds: c.time_control.limit,
+                    increment_seconds: c.time_control.increment,
+                })
+                .collect(),
+        },
+        Err(e) => BackendMessage::ErrorMsg { message: e.to_string() },
+    };
+    let json = serde_json::to_string(&msg).expect("BackendMessage always serializes");
+    let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
+}
+
 fn spawn_hold_connection_open(
     mut lines: std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>,
 ) {
@@ -205,6 +233,13 @@ fn spawn_game_stream(
                                     gone: gone.gone,
                                     claim_win_in_seconds: gone.claim_win_in_seconds,
                                 }),
+                                // Only the "player" room is relevant -- this app has no
+                                // spectator mode, so a "spectator" room line has nowhere
+                                // meaningful to be shown.
+                                GameStreamMessage::Chat(chat) if chat.room == "player" => {
+                                    Some(BackendMessage::ChatMessage { username: chat.username, text: chat.text })
+                                }
+                                GameStreamMessage::Chat(_) => None,
                             };
                             drop(guard);
                             if let Some(m) = board_msg {
@@ -326,22 +361,8 @@ impl AppLoadBackend for LichessBackend {
                 }
             }
             FrontendMessage::RequestChallenges => {
-                let Some(client) = &self.client else { return };
-                match client.get_challenges().await {
-                    Ok(challenges) => {
-                        let challenges = challenges
-                            .into_iter()
-                            .map(|c| crate::protocol::ChallengeInfo {
-                                id: c.id,
-                                challenger: c.challenger.name,
-                                limit_seconds: c.time_control.limit,
-                                increment_seconds: c.time_control.increment,
-                            })
-                            .collect();
-                        self.send(replier, &BackendMessage::PendingChallenges { challenges });
-                    }
-                    Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
-                }
+                let Some(client) = self.client.clone() else { return };
+                send_pending_challenges(&client, replier).await;
             }
             FrontendMessage::AcceptChallenge { id } => {
                 if let Some(client) = &self.client {
@@ -354,6 +375,15 @@ impl AppLoadBackend for LichessBackend {
                 if let Some(client) = &self.client {
                     if let Err(e) = client.decline_challenge(&id).await {
                         self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                    }
+                }
+            }
+            FrontendMessage::SendChat { text } => {
+                if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        if let Err(e) = client.send_chat(&game_id, &text).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
                     }
                 }
             }

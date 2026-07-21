@@ -80,6 +80,14 @@ pub struct GameFull {
     pub state: GameState,
 }
 
+// Confirmed against lichess-org/api's ChatLineEvent.yaml.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ChatLine {
+    pub room: String,
+    pub username: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum GameStreamMessage {
@@ -89,6 +97,8 @@ pub enum GameStreamMessage {
     State(GameState),
     #[serde(rename = "opponentGone")]
     Gone(OpponentGone),
+    #[serde(rename = "chatLine")]
+    Chat(ChatLine),
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -125,6 +135,10 @@ pub struct ChallengeListResponse {
     pub incoming: Vec<IncomingChallenge>,
 }
 
+// Challenge/ChallengeCanceled/ChallengeDeclined confirmed against lichess-org/api's
+// ChallengeEvent.yaml / ChallengeCanceledEvent.yaml / ChallengeDeclinedEvent.yaml --
+// unit variants since we only need to know *that* the pending list changed, then
+// re-fetch it via GET /api/challenge rather than tracking the full ChallengeJson here.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum EventStreamMessage {
@@ -132,6 +146,12 @@ pub enum EventStreamMessage {
     GameStart { game: EventGame },
     #[serde(rename = "gameFinish")]
     GameFinish { game: EventGame },
+    #[serde(rename = "challenge")]
+    Challenge,
+    #[serde(rename = "challengeCanceled")]
+    ChallengeCanceled,
+    #[serde(rename = "challengeDeclined")]
+    ChallengeDeclined,
     #[serde(other)]
     Other,
 }
@@ -165,6 +185,18 @@ mod tests {
         let json = r#"{"type":"gameStart","game":{"id":"abcd1234"}}"#;
         let msg: EventStreamMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg, EventStreamMessage::GameStart { game: EventGame { id: "abcd1234".into() } });
+    }
+
+    #[test]
+    fn parses_challenge_lifecycle_events_ignoring_extra_fields() {
+        let json = r#"{"type":"challenge","challenge":{"id":"H9fIRZUk","challenger":{"id":"bot1","name":"Bot1"}}}"#;
+        assert_eq!(serde_json::from_str::<EventStreamMessage>(json).unwrap(), EventStreamMessage::Challenge);
+
+        let json = r#"{"type":"challengeCanceled","challenge":{"id":"H9fIRZUk"}}"#;
+        assert_eq!(serde_json::from_str::<EventStreamMessage>(json).unwrap(), EventStreamMessage::ChallengeCanceled);
+
+        let json = r#"{"type":"challengeDeclined","challenge":{"id":"H9fIRZUk"}}"#;
+        assert_eq!(serde_json::from_str::<EventStreamMessage>(json).unwrap(), EventStreamMessage::ChallengeDeclined);
     }
 
     #[test]

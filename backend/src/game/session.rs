@@ -1,4 +1,4 @@
-use crate::game::rules::{apply_uci_move, legal_moves, replay_uci_moves};
+use crate::game::rules::{apply_uci_move, legal_moves, replay_uci_moves_with_history};
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{BackendMessage, LegalMove};
 use shakmaty::Chess;
@@ -10,6 +10,11 @@ pub struct GameSession {
     pub legal: Vec<LegalMove>,
     pub last_move: Option<(String, String)>,
     pub your_color: String,
+    // SAN per move (e.g. "Nf3", "O-O", "Qxh4#"), in play order. Recomputed
+    // wholesale on every update (same as `position` itself) rather than
+    // incrementally, since Lichess's own `moves` field is always the full
+    // game-so-far string, not a delta -- see replay_uci_moves_with_history.
+    pub move_history: Vec<String>,
 }
 
 fn turn_name(pos: &Chess) -> String {
@@ -57,6 +62,7 @@ fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
         in_check: session.position.is_check(),
         draw_offered_by_opponent: draw_offered_by_opponent(state, &session.your_color),
         takeback_offered_by_opponent: takeback_offered_by_opponent(state, &session.your_color),
+        move_history: session.move_history.clone(),
     }
 }
 
@@ -70,7 +76,7 @@ fn last_move_from_uci_list(moves: &str) -> Option<(String, String)> {
 
 impl GameSession {
     pub fn from_game_full(full: &GameFull, my_id: &str) -> anyhow::Result<(Self, BackendMessage)> {
-        let position = replay_uci_moves(&full.initial_fen, &full.state.moves)?;
+        let (position, move_history) = replay_uci_moves_with_history(&full.initial_fen, &full.state.moves)?;
         let legal = legal_moves(&position);
         let last_move = last_move_from_uci_list(&full.state.moves);
         let session = GameSession {
@@ -80,13 +86,16 @@ impl GameSession {
             legal,
             last_move,
             your_color: resolve_your_color(full, my_id),
+            move_history,
         };
         let msg = to_board_state(&session, &full.state);
         Ok((session, msg))
     }
 
     pub fn apply_state_update(&mut self, state: &GameState) -> anyhow::Result<BackendMessage> {
-        self.position = replay_uci_moves(&self.initial_fen, &state.moves)?;
+        let (position, move_history) = replay_uci_moves_with_history(&self.initial_fen, &state.moves)?;
+        self.position = position;
+        self.move_history = move_history;
         self.legal = legal_moves(&self.position);
         self.last_move = last_move_from_uci_list(&state.moves);
         Ok(to_board_state(self, state))
@@ -162,6 +171,28 @@ mod tests {
             BackendMessage::BoardState { legal_moves, turn, .. } => {
                 assert_eq!(legal_moves.len(), 20);
                 assert_eq!(turn, "white");
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn move_history_flows_through_to_board_state_and_grows_on_updates() {
+        let full = sample_full("e2e4");
+        let (mut session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { move_history, .. } => assert_eq!(move_history, vec!["e4".to_string()]),
+            _ => panic!("expected BoardState"),
+        }
+        let state: GameState = serde_json::from_value(serde_json::json!({
+            "moves": "e2e4 e7e5", "wtime": 600000, "btime": 600000, "winc": 0, "binc": 0,
+            "status": "started", "winner": null
+        }))
+        .unwrap();
+        let msg = session.apply_state_update(&state).unwrap();
+        match msg {
+            BackendMessage::BoardState { move_history, .. } => {
+                assert_eq!(move_history, vec!["e4".to_string(), "e5".to_string()])
             }
             _ => panic!("expected BoardState"),
         }
