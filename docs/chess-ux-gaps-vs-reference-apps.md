@@ -61,7 +61,20 @@ projects' actual source/docs, not guessing from general chess-app familiarity.
    so this isn't a correctness bug, but every reference client disables input and clearly indicates
    whose turn it is rather than relying on the server to catch a confusing tap.
 
-6. **Piece rendering is a font-glyph gamble, not the standard approach.** `BoardScreen.qml`'s
+6. **Piece rendering is a font-glyph gamble, not the standard approach — this gamble was lost on
+   real hardware.** The user ran the app on the actual reMarkable and reported seeing "squares" where
+   pieces should be: the classic symptom of a font missing a Unicode code point (`.notdef`/tofu glyph,
+   which renders as a small hollow box). Confirmed via `fonttools`: the 12 chess code points
+   (U+2654-265F) are present in desktop DejaVu Sans but there was no guarantee the device's actual
+   on-device font stack includes them, and evidently it doesn't. **Fixed** (stopgap, not the ideal
+   long-term fix): subset DejaVu Sans down to just those 12 glyphs (~7KB), renamed to `ChessGlyphs`
+   per DejaVu's license (subsetting = modifying, and the Bitstream Vera license forbids keeping the
+   "DejaVu"/"Bitstream"/"Vera" name on a modified font), bundled at `frontend/assets/ChessGlyphs.ttf`
+   + `LICENSE-ChessGlyphs.txt`, registered in `application.qrc`, and loaded via a `FontLoader` in
+   `BoardSquare.qml` using a path relative to that QML file (not a hardcoded `qrc:/...` path — AppLoad
+   mounts each app's `resources.rcc` under a per-app namespace per `scripts/build-rm.sh`'s own comment,
+   so an absolute `qrc:/assets/...` reference would silently fail to resolve). This guarantees glyph
+   coverage regardless of what the device ships by default. **Still worth doing later:** the original
    `glyphFor()` renders pieces as Unicode chess characters (♔♕♖♗♘♙/♚♛♜♝♞♟) via plain QML `Text`
    elements. This depends entirely on whichever font Qt resolves on the actual device having full,
    correctly-shaped glyphs at those code points — never verified, since there's no Qt toolchain

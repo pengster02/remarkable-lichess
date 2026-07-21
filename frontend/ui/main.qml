@@ -58,10 +58,28 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "BoardState" || msg.type === "GameOver" || msg.type === "MoveRejected" || msg.type === "Reconnecting") {
-                if (screenLoader.source.toString().indexOf("BoardScreen") === -1) {
-                    screenLoader.source = "BoardScreen.qml"
+            } else if (msg.type === "BoardState" || msg.type === "GameOver" || msg.type === "MoveRejected") {
+                // Never force-navigate away from Home: a user who explicitly went
+                // back to Home (or never left it yet) should stay there even if a
+                // still-running per-game stream keeps delivering messages -- this
+                // was the root cause of "Back to Home doesn't work" (confirmed via
+                // the PC emulator: any lingering game message snapped the screen
+                // back to Board with no way out). Every other screen (Setup, Seek,
+                // Board itself) still auto-advances to Board normally, since that's
+                // the desired flow for a freshly-started/still-loading game.
+                if (screenLoader.source.toString().indexOf("HomeScreen") === -1) {
+                    if (screenLoader.source.toString().indexOf("BoardScreen") === -1) {
+                        screenLoader.source = "BoardScreen.qml"
+                    }
+                    if (screenLoader.item && screenLoader.item.handleMessage) {
+                        screenLoader.item.handleMessage(msg)
+                    }
                 }
+            } else if (msg.type === "Reconnecting") {
+                // Deliberately never navigates on its own (confirmed via the PC
+                // emulator: a bare Reconnecting with no real game yet threw the
+                // user onto a genuinely empty, un-escapable Board screen). Only
+                // ever forwarded to whichever screen is already showing.
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
