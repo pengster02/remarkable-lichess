@@ -80,6 +80,27 @@ Rectangle {
             }
         }
 
+        Row {
+            spacing: 16
+            visible: !seekScreen.waiting
+            Text { text: "Level (1-8):"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter; color: seekScreen.darkMode ? "#e6e2d8" : "black" }
+            TextField { id: aiLevelField; text: "3"; font.pixelSize: 24; width: 60 }
+            Button {
+                text: "Play vs Computer"
+                // Starts immediately -- no accept/decline step, so unlike the
+                // seek/challenge buttons above there's no "waiting" state to enter;
+                // the game arrives the same way any other game does, via the
+                // account event stream's gameStart, and main.qml's router switches
+                // to BoardScreen on the first BoardState like normal.
+                onClicked: seekScreen.backendSender({
+                    type: "ChallengeAi",
+                    level: parseInt(aiLevelField.text),
+                    minutes: parseInt(minutesField.text),
+                    increment: parseInt(incrementField.text)
+                })
+            }
+        }
+
         Text {
             text: seekScreen.waitingLabel
             visible: seekScreen.waiting

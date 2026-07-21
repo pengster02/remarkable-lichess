@@ -55,6 +55,12 @@ Rectangle {
     // backend and the "" / null fallback here.
     property string opponentName: ""
     property var opponentRating: null
+    // Pushed from main.qml's root state (see settings.rs / SettingsScreen.qml) --
+    // when on, a queen promotion is sent immediately instead of opening the
+    // picker popup below. Only skips the popup when "q" is actually one of the
+    // legal options; an underpromotion-only edge case (extremely rare, but real)
+    // still gets the picker regardless of this setting.
+    property bool autoQueenPromotion: false
 
     // "1. e4 e5  2. Nf3 Nc6  ..." -- pairs white/black plies under one move
     // number, standard chess notation, matching what cli-chess's MoveListModel
@@ -148,12 +154,20 @@ Rectangle {
         return ""
     }
 
-    function glyphFor(pieceChar) {
-        var map = {
-            "K": "♔", "Q": "♕", "R": "♖", "B": "♗", "N": "♘", "P": "♙",
-            "k": "♚", "q": "♛", "r": "♜", "b": "♝", "n": "♞", "p": "♟"
-        }
-        return map[pieceChar] || ""
+    // FEN piece char -> cburnett filename code (e.g. "K" -> "wK", "q" -> "bQ"),
+    // matching frontend/assets/pieces/<code>.png. Replaced the earlier
+    // Unicode-glyph glyphFor() map now that real piece art is bundled.
+    function pieceCodeFor(pieceChar) {
+        if (pieceChar === "") return ""
+        var isWhite = pieceChar === pieceChar.toUpperCase()
+        return (isWhite ? "w" : "b") + pieceChar.toUpperCase()
+    }
+
+    // Promotion letters from legalMoves are always lowercase ("q","r","b","n")
+    // regardless of side -- color comes from whose turn it is, same as the
+    // popup's own logic before this change.
+    function promotionPieceCode(letter) {
+        return (boardScreen.turn === "white" ? "w" : "b") + letter.toUpperCase()
     }
 
     function destinationsFrom(square) {
@@ -196,7 +210,10 @@ Rectangle {
         var dests = boardScreen.destinationsFrom(boardScreen.selectedSquare)
         if (dests.indexOf(squareName) !== -1) {
             var promoOptions = boardScreen.promotionOptionsFor(boardScreen.selectedSquare, squareName)
-            if (promoOptions.length > 0) {
+            if (promoOptions.length > 0 && boardScreen.autoQueenPromotion && promoOptions.indexOf("q") !== -1) {
+                boardScreen.backendSender({type: "MakeMove", from: boardScreen.selectedSquare, to: squareName, promotion: "q"})
+                boardScreen.selectedSquare = ""
+            } else if (promoOptions.length > 0) {
                 // Don't clear selectedSquare yet -- the promotion popup needs
                 // from/to; MakeMove is sent once the user picks a piece below.
                 boardScreen.pendingPromotion = {from: boardScreen.selectedSquare, to: squareName, options: promoOptions}
@@ -268,7 +285,7 @@ Rectangle {
                         squareName: boardScreen.filesRanks().files[fileIdx] + boardScreen.filesRanks().ranks[rankIdx]
                         isLight: (fileIdx + rankIdx) % 2 === 0
                         darkMode: boardScreen.darkMode
-                        pieceGlyph: boardScreen.glyphFor(boardScreen.pieceAt(squareName))
+                        pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
                         isHighlighted: boardScreen.selectedSquare === squareName || boardScreen.selectedDestinations.indexOf(squareName) !== -1
                         isLastMove: boardScreen.isLastMoveSquare(squareName)
                         isCheckSquare: squareName === boardScreen.checkedSquare
@@ -455,11 +472,13 @@ Rectangle {
                     border.width: 1
                     border.color: boardScreen.darkMode ? "#e6e2d8" : "black"
 
-                    Text {
+                    Image {
                         anchors.centerIn: parent
-                        text: boardScreen.glyphFor(boardScreen.turn === "white" ? modelData.toUpperCase() : modelData)
-                        font.pixelSize: 40
-                        color: boardScreen.darkMode ? "#e6e2d8" : "black"
+                        width: parent.width * 0.82
+                        height: parent.height * 0.82
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
+                        source: "../assets/pieces/" + boardScreen.promotionPieceCode(modelData) + ".png"
                     }
 
                     MouseArea {

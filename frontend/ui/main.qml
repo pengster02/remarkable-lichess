@@ -12,9 +12,20 @@ Rectangle {
 
     property bool hasToken: false
     property bool darkMode: false
+    // Persisted server-side (see backend/src/settings.rs) -- pushed into any
+    // loaded screen that declares it, same pattern as darkMode below.
+    property bool autoQueenPromotion: false
 
     function toggleDarkMode() {
         root.darkMode = !root.darkMode
+    }
+
+    // Optimistically updates root state immediately (so the toggle UI responds
+    // without waiting on a round trip) -- SaveSettings's own SettingsState echo
+    // (handled below) will correct this if the write actually failed.
+    function setAutoQueenPromotion(value) {
+        root.autoQueenPromotion = value
+        root.sendToBackend({type: "SaveSettings", auto_queen_promotion: value})
     }
 
     // Screens are re-created fresh by the Loader on every navigation (Task 10's
@@ -25,6 +36,15 @@ Rectangle {
     onDarkModeChanged: {
         if (screenLoader.item && screenLoader.item.hasOwnProperty("darkMode")) {
             screenLoader.item.darkMode = root.darkMode
+        }
+    }
+
+    // Same re-sync-the-already-loaded-screen reasoning as onDarkModeChanged --
+    // SettingsScreen toggles this from inside itself, so its own local copy
+    // needs to be pushed back in by hand, same as dark mode.
+    onAutoQueenPromotionChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("autoQueenPromotion")) {
+            screenLoader.item.autoQueenPromotion = root.autoQueenPromotion
         }
     }
 
@@ -48,7 +68,13 @@ Rectangle {
                 root.hasToken = true
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestHome"}))
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestChallenges"}))
+                endpoint.sendMessage(1, JSON.stringify({type: "RequestSettings"}))
                 screenLoader.source = "HomeScreen.qml"
+            } else if (msg.type === "SettingsState") {
+                // Updates root state (not just forwarded to the current screen)
+                // since it needs to persist across navigation, same as darkMode --
+                // onAutoQueenPromotionChanged above re-syncs whatever's loaded.
+                root.autoQueenPromotion = msg.auto_queen_promotion || false
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
                 screenLoader.source = "SetupScreen.qml"
@@ -117,6 +143,12 @@ Rectangle {
             }
             if (item.hasOwnProperty("toggleDarkMode")) {
                 item.toggleDarkMode = root.toggleDarkMode
+            }
+            if (item.hasOwnProperty("autoQueenPromotion")) {
+                item.autoQueenPromotion = root.autoQueenPromotion
+            }
+            if (item.hasOwnProperty("setAutoQueenPromotion")) {
+                item.setAutoQueenPromotion = root.setAutoQueenPromotion
             }
         }
     }

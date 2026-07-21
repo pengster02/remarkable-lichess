@@ -4,8 +4,21 @@
         <file>ui/SetupScreen.qml</file>
         <file>ui/HomeScreen.qml</file>
         <file>ui/SeekScreen.qml</file>
+        <file>ui/SettingsScreen.qml</file>
         <file>ui/BoardScreen.qml</file>
         <file>ui/BoardSquare.qml</file>
         <file>assets/ChessGlyphs.ttf</file>
+        <file>assets/pieces/wK.png</file>
+        <file>assets/pieces/wQ.png</file>
+        <file>assets/pieces/wR.png</file>
+        <file>assets/pieces/wB.png</file>
+        <file>assets/pieces/wN.png</file>
+        <file>assets/pieces/wP.png</file>
+        <file>assets/pieces/bK.png</file>
+        <file>assets/pieces/bQ.png</file>
+        <file>assets/pieces/bR.png</file>
+        <file>assets/pieces/bB.png</file>
+        <file>assets/pieces/bN.png</file>
+        <file>assets/pieces/bP.png</file>
     </qresource>
 </RCC>

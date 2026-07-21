@@ -1,0 +1,11 @@
+The 12 SVGs in this directory (wK, wQ, wR, wB, wN, wP, bK, bQ, bR, bB, bN, bP)
+are the "cburnett" chess piece set by Colin M.L. Burnett
+(https://en.wikipedia.org/wiki/User:Cburnett), as shipped by Lichess itself
+at public/piece/cburnett in lichess-org/lila -- confirmed against lila's own
+COPYING.md, which lists that directory under GPLv2+.
+
+---
+
+GNU GENERAL PUBLIC LICENSE, version 2, June 1991
+
+See https://www.gnu.org/licenses/gpl-2.0.txt for the full license text.
