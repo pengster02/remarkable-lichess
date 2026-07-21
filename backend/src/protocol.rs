@@ -15,8 +15,10 @@ pub struct LegalMove {
 pub enum FrontendMessage {
     SaveToken { token: String },
     RequestHome,
-    CreateSeek { minutes: u32, increment: u32 },
-    CreateChallenge { username: String, minutes: u32, increment: u32 },
+    // `color` is "white"/"black"/"random" -- same enum Lichess's own
+    // ChallengeColor.yaml uses for both /api/board/seek and /api/challenge/{username}.
+    CreateSeek { minutes: u32, increment: u32, rated: bool, color: String },
+    CreateChallenge { username: String, minutes: u32, increment: u32, rated: bool, color: String },
     CancelSeek,
     MakeMove { from: String, to: String, promotion: Option<String> },
     Resign,

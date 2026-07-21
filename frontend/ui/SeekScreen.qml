@@ -13,6 +13,10 @@ Rectangle {
     // backend_app.rs's pending_seek) -- Cancel only makes sense while it's live.
     property bool waiting: false
     property string waitingLabel: ""
+    property bool rated: false
+    // "white"/"black"/"random" -- same enum Lichess's own ChallengeColor.yaml
+    // uses for both /api/board/seek and /api/challenge/{username}.
+    property string selectedColor: "random"
 
     Column {
         anchors.centerIn: parent
@@ -30,13 +34,32 @@ Rectangle {
             TextField { id: incrementField; text: "0"; font.pixelSize: 24; width: 80 }
         }
 
+        CheckBox {
+            text: "Rated"
+            visible: !seekScreen.waiting
+            checked: seekScreen.rated
+            onCheckedChanged: seekScreen.rated = checked
+        }
+
+        Flow {
+            width: parent.width
+            spacing: 8
+            visible: !seekScreen.waiting
+            Text { text: "Color:"; font.pixelSize: 24; color: seekScreen.darkMode ? "#e6e2d8" : "black" }
+            Button { text: "White"; highlighted: seekScreen.selectedColor === "white"; onClicked: seekScreen.selectedColor = "white" }
+            Button { text: "Black"; highlighted: seekScreen.selectedColor === "black"; onClicked: seekScreen.selectedColor = "black" }
+            Button { text: "Random"; highlighted: seekScreen.selectedColor === "random"; onClicked: seekScreen.selectedColor = "random" }
+        }
+
         Button {
             text: "Open seek (auto-pair)"
             visible: !seekScreen.waiting
             onClicked: seekScreen.backendSender({
                 type: "CreateSeek",
                 minutes: parseInt(minutesField.text),
-                increment: parseInt(incrementField.text)
+                increment: parseInt(incrementField.text),
+                rated: seekScreen.rated,
+                color: seekScreen.selectedColor
             })
         }
 
@@ -50,7 +73,9 @@ Rectangle {
                     type: "CreateChallenge",
                     username: usernameField.text,
                     minutes: parseInt(minutesField.text),
-                    increment: parseInt(incrementField.text)
+                    increment: parseInt(incrementField.text),
+                    rated: seekScreen.rated,
+                    color: seekScreen.selectedColor
                 })
             }
         }

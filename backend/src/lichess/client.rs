@@ -233,14 +233,23 @@ impl LichessClient {
         &self,
         minutes: u32,
         increment: u32,
+        rated: bool,
+        color: &str,
     ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
+        let mut form = vec![
+            ("rated", rated.to_string()),
+            ("time", minutes.to_string()),
+            ("increment", increment.to_string()),
+        ];
+        // Confirmed against api-board-seek.yaml: "Better left empty to automatically
+        // get 50% white" -- an explicit "random" isn't documented as equivalent, so
+        // omit the field rather than send a value the spec doesn't actually mention.
+        if color != "random" {
+            form.push(("color", color.to_string()));
+        }
         let resp = self
             .bearer(self.http.post(format!("{}/api/board/seek", self.base_url)))
-            .form(&[
-                ("rated", "false".to_string()),
-                ("time", minutes.to_string()),
-                ("increment", increment.to_string()),
-            ])
+            .form(&form)
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -249,21 +258,28 @@ impl LichessClient {
         Ok(response_to_lines(resp))
     }
 
-    /// Same long-poll caveat as `create_seek` -- `/api/challenge/{username}` also
-    /// keeps the connection open until the challenge is accepted, declined, or
-    /// expires; callers must keep draining the returned stream.
+    /// Unlike `create_seek`, `/api/challenge/{username}` does NOT long-poll by
+    /// default -- confirmed against lichess-org/api's api-challenge-username.yaml:
+    /// without `keepAliveStream=true` it returns one plain JSON object immediately
+    /// and the challenge expires after 20s regardless of what the client does
+    /// afterward. `keepAliveStream=true` switches the response to the same
+    /// held-open ndjson stream shape `create_seek` already relies on.
     pub async fn create_challenge(
         &self,
         username: &str,
         minutes: u32,
         increment: u32,
+        rated: bool,
+        color: &str,
     ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
         let resp = self
             .bearer(self.http.post(format!("{}/api/challenge/{}", self.base_url, username)))
             .form(&[
-                ("rated", "false".to_string()),
+                ("rated", rated.to_string()),
                 ("clock.limit", (minutes * 60).to_string()),
                 ("clock.increment", increment.to_string()),
+                ("keepAliveStream", "true".to_string()),
+                ("color", color.to_string()),
             ])
             .send()
             .await?;
@@ -310,7 +326,7 @@ fn response_to_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -455,7 +471,42 @@ mod tests {
         // Deliberately not draining the returned stream here -- the point of this
         // test is just the request shape. Draining/holding-open behavior is covered
         // by `create_seek_keeps_the_stream_open_until_the_server_closes_it` below.
-        let _stream = client.create_seek(10, 0).await.unwrap();
+        let _stream = client.create_seek(10, 0, false, "random").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_seek_posts_rated_and_color_when_not_random() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/seek"))
+            .and(body_string_contains("rated=true"))
+            .and(body_string_contains("color=white"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let _stream = client.create_seek(10, 0, true, "white").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_seek_omits_color_when_random() {
+        // Confirmed against api-board-seek.yaml: color is "Better left empty to
+        // automatically get 50% white" -- an explicit "random" isn't documented as
+        // equivalent, so this should omit the field entirely rather than send it.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/seek"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let _stream = client.create_seek(10, 0, false, "random").await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body = String::from_utf8(requests[0].body.clone()).unwrap();
+        assert!(!body.contains("color="), "expected no color field, got body: {body}");
     }
 
     #[tokio::test]
@@ -468,7 +519,25 @@ mod tests {
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let _stream = client.create_challenge("opponent", 10, 5).await.unwrap();
+        let _stream = client.create_challenge("opponent", 10, 5, false, "random").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_challenge_sets_keep_alive_stream() {
+        // Regression test: without keepAliveStream=true, /api/challenge/{username}
+        // returns a single JSON object (not a stream) and the challenge expires
+        // after 20s regardless of what the client does afterward -- confirmed
+        // against lichess-org/api's api-challenge-username.yaml.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/challenge/opponent"))
+            .and(body_string_contains("keepAliveStream=true"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let _stream = client.create_challenge("opponent", 10, 5, false, "random").await.unwrap();
     }
 
     #[tokio::test]
@@ -488,7 +557,7 @@ mod tests {
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let mut lines = client.create_seek(10, 0).await.unwrap();
+        let mut lines = client.create_seek(10, 0, false, "random").await.unwrap();
         let mut count = 0;
         while lines.next().await.is_some() {
             count += 1;
@@ -506,7 +575,7 @@ mod tests {
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let result = client.create_seek(10, 0).await;
+        let result = client.create_seek(10, 0, false, "random").await;
         assert!(result.is_err());
     }
 

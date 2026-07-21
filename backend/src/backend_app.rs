@@ -67,9 +67,16 @@ impl LichessBackend {
         }
     }
 
-    async fn handle_create_seek(&mut self, replier: &BackendReplier<Self>, minutes: u32, increment: u32) {
+    async fn handle_create_seek(
+        &mut self,
+        replier: &BackendReplier<Self>,
+        minutes: u32,
+        increment: u32,
+        rated: bool,
+        color: String,
+    ) {
         let Some(client) = &self.client else { return };
-        match client.create_seek(minutes, increment).await {
+        match client.create_seek(minutes, increment, rated, &color).await {
             Ok(lines) => {
                 self.send(replier, &BackendMessage::SeekCreated);
                 self.pending_seek = Some(spawn_hold_connection_open(lines));
@@ -299,12 +306,12 @@ impl AppLoadBackend for LichessBackend {
         match frontend_msg {
             FrontendMessage::SaveToken { token } => self.handle_save_token(replier, token).await,
             FrontendMessage::RequestHome => self.handle_request_home(replier).await,
-            FrontendMessage::CreateSeek { minutes, increment } => {
-                self.handle_create_seek(replier, minutes, increment).await
+            FrontendMessage::CreateSeek { minutes, increment, rated, color } => {
+                self.handle_create_seek(replier, minutes, increment, rated, color).await
             }
-            FrontendMessage::CreateChallenge { username, minutes, increment } => {
+            FrontendMessage::CreateChallenge { username, minutes, increment, rated, color } => {
                 let Some(client) = &self.client else { return };
-                match client.create_challenge(&username, minutes, increment).await {
+                match client.create_challenge(&username, minutes, increment, rated, &color).await {
                     Ok(lines) => {
                         self.send(replier, &BackendMessage::ChallengeCreated);
                         self.pending_seek = Some(spawn_hold_connection_open(lines));
