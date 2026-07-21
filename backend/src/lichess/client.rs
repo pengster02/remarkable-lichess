@@ -1,4 +1,4 @@
-use crate::lichess::models::{Account, PlayingGame, PlayingResponse};
+use crate::lichess::models::{Account, ChallengeListResponse, IncomingChallenge, PlayingGame, PlayingResponse};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 
@@ -90,6 +90,120 @@ impl LichessClient {
             .await?;
         if !resp.status().is_success() {
             return Err(error_from_response("resign", resp).await);
+        }
+        Ok(())
+    }
+
+    /// Same endpoint handles both offering a draw (when none is pending) and
+    /// responding to the opponent's (accept=true to take it, false to decline) --
+    /// confirmed against lichess-org/api's `api-board-game-gameId-draw-accept.yaml`.
+    pub async fn draw(&self, game_id: &str, accept: bool) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!(
+                "{}/api/board/game/{}/draw/{}",
+                self.base_url, game_id, accept
+            )))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("draw", resp).await);
+        }
+        Ok(())
+    }
+
+    /// Offer/accept/decline takeback -- same offer-or-respond split as `draw`.
+    pub async fn takeback(&self, game_id: &str, accept: bool) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!(
+                "{}/api/board/game/{}/takeback/{}",
+                self.base_url, game_id, accept
+            )))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("takeback", resp).await);
+        }
+        Ok(())
+    }
+
+    /// Only legal before either side has made a move; Lichess itself rejects a
+    /// late abort rather than us trying to replicate that rule client-side.
+    pub async fn abort(&self, game_id: &str) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/board/game/{}/abort", self.base_url, game_id)))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("abort", resp).await);
+        }
+        Ok(())
+    }
+
+    /// Only legal after Lichess's own `opponentGone` stream event has fired and
+    /// its `claimWinInSeconds` has elapsed -- same "let the server be the
+    /// authority" approach as `abort`, rather than running a local countdown.
+    pub async fn claim_victory(&self, game_id: &str) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!(
+                "{}/api/board/game/{}/claim-victory",
+                self.base_url, game_id
+            )))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("claim_victory", resp).await);
+        }
+        Ok(())
+    }
+
+    /// Only legal while the game is drawable by the 50-move rule or repetition --
+    /// same "let the server be the authority" approach as `abort`/`claim_victory`.
+    pub async fn claim_draw(&self, game_id: &str) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!(
+                "{}/api/board/game/{}/claim-draw",
+                self.base_url, game_id
+            )))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("claim_draw", resp).await);
+        }
+        Ok(())
+    }
+
+    /// GET /api/challenge returns {"in": [...], "out": [...]} -- only "in"
+    /// (challenges targeted at you) matters here.
+    pub async fn get_challenges(&self) -> Result<Vec<IncomingChallenge>> {
+        let resp = self
+            .bearer(self.http.get(format!("{}/api/challenge", self.base_url)))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("get_challenges", resp).await);
+        }
+        let parsed = resp.json::<ChallengeListResponse>().await?;
+        Ok(parsed.incoming)
+    }
+
+    pub async fn accept_challenge(&self, id: &str) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/challenge/{}/accept", self.base_url, id)))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("accept_challenge", resp).await);
+        }
+        Ok(())
+    }
+
+    pub async fn decline_challenge(&self, id: &str) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/challenge/{}/decline", self.base_url, id)))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("decline_challenge", resp).await);
         }
         Ok(())
     }
@@ -235,6 +349,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn draw_posts_accept_true_to_offer_or_accept_a_draw() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/draw/true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.draw("g1", true).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn draw_posts_accept_false_to_decline() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/draw/false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.draw("g1", false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn takeback_posts_to_correct_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/takeback/true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.takeback("g1", true).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_posts_to_correct_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/abort"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.abort("g1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn claim_victory_posts_to_correct_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/claim-victory"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.claim_victory("g1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn takeback_surfaces_lichess_error_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/takeback/true"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "Takeback not possible"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let err = client.takeback("g1", true).await.unwrap_err();
+        assert!(err.to_string().contains("Takeback not possible"));
+    }
+
+    #[tokio::test]
     async fn create_seek_posts_form_encoded_time_control() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -352,6 +547,69 @@ mod tests {
                 r#"{"type":"gameFinish","game":{"id":"g1"}}"#.to_string(),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn claim_draw_posts_to_correct_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/claim-draw"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.claim_draw("g1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_challenges_parses_incoming_list() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/challenge"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "in": [{
+                    "id": "c1",
+                    "challenger": {"id": "opp", "name": "Opponent"},
+                    "timeControl": {"limit": 600, "increment": 0}
+                }],
+                "out": []
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let challenges = client.get_challenges().await.unwrap();
+        assert_eq!(challenges.len(), 1);
+        assert_eq!(challenges[0].id, "c1");
+        assert_eq!(challenges[0].challenger.name, "Opponent");
+        assert_eq!(challenges[0].time_control.limit, Some(600));
+    }
+
+    #[tokio::test]
+    async fn accept_challenge_posts_to_correct_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/challenge/c1/accept"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.accept_challenge("c1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn decline_challenge_posts_to_correct_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/challenge/c1/decline"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.decline_challenge("c1").await.unwrap();
     }
 
     #[tokio::test]

@@ -72,6 +72,13 @@ impl LichessBackend {
         }
     }
 
+    /// Shared by every in-game action (resign/draw/takeback/abort/claim-victory) --
+    /// they all just need the current game's id, nothing else from the session.
+    async fn current_game_id(&self) -> Option<String> {
+        let guard = self.session.lock().await;
+        guard.as_ref().map(|s| s.game_id.clone())
+    }
+
     async fn handle_make_move(&mut self, replier: &BackendReplier<Self>, from: String, to: String, promotion: Option<String>) {
         let Some(client) = self.client.clone() else { return };
         let result = {
@@ -192,6 +199,12 @@ fn spawn_game_stream(
                                     }
                                     None => None,
                                 },
+                                // Doesn't touch `guard` -- opponent-connection status is
+                                // orthogonal to the cached position/session state.
+                                GameStreamMessage::Gone(gone) => Some(BackendMessage::OpponentGone {
+                                    gone: gone.gone,
+                                    claim_win_in_seconds: gone.claim_win_in_seconds,
+                                }),
                             };
                             drop(guard);
                             if let Some(m) = board_msg {
@@ -257,12 +270,90 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::Resign => {
                 if let Some(client) = self.client.clone() {
-                    let game_id = {
-                        let guard = self.session.lock().await;
-                        guard.as_ref().map(|s| s.game_id.clone())
-                    };
-                    if let Some(game_id) = game_id {
-                        let _ = client.resign(&game_id).await;
+                    if let Some(game_id) = self.current_game_id().await {
+                        // Previously discarded the result entirely (`let _ = ...`) --
+                        // a failed resign (e.g. game already over) silently told the
+                        // player nothing, unlike every other action here.
+                        if let Err(e) = client.resign(&game_id).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::DrawAction { accept } => {
+                if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        if let Err(e) = client.draw(&game_id, accept).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::TakebackAction { accept } => {
+                if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        if let Err(e) = client.takeback(&game_id, accept).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::Abort => {
+                if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        if let Err(e) = client.abort(&game_id).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::ClaimVictory => {
+                if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        if let Err(e) = client.claim_victory(&game_id).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::ClaimDraw => {
+                if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        if let Err(e) = client.claim_draw(&game_id).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::RequestChallenges => {
+                let Some(client) = &self.client else { return };
+                match client.get_challenges().await {
+                    Ok(challenges) => {
+                        let challenges = challenges
+                            .into_iter()
+                            .map(|c| crate::protocol::ChallengeInfo {
+                                id: c.id,
+                                challenger: c.challenger.name,
+                                limit_seconds: c.time_control.limit,
+                                increment_seconds: c.time_control.increment,
+                            })
+                            .collect();
+                        self.send(replier, &BackendMessage::PendingChallenges { challenges });
+                    }
+                    Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
+                }
+            }
+            FrontendMessage::AcceptChallenge { id } => {
+                if let Some(client) = &self.client {
+                    if let Err(e) = client.accept_challenge(&id).await {
+                        self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                    }
+                }
+            }
+            FrontendMessage::DeclineChallenge { id } => {
+                if let Some(client) = &self.client {
+                    if let Err(e) = client.decline_challenge(&id).await {
+                        self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
                     }
                 }
             }

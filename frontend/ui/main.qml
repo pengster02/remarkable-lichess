@@ -47,6 +47,7 @@ Rectangle {
             if (msg.type === "TokenVerified") {
                 root.hasToken = true
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestHome"}))
+                endpoint.sendMessage(1, JSON.stringify({type: "RequestChallenges"}))
                 screenLoader.source = "HomeScreen.qml"
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
@@ -54,7 +55,7 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "HomeState" || msg.type === "SeekCreated" || msg.type === "ChallengeCreated") {
+            } else if (msg.type === "HomeState" || msg.type === "SeekCreated" || msg.type === "ChallengeCreated" || msg.type === "PendingChallenges") {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
@@ -75,7 +76,7 @@ Rectangle {
                         screenLoader.item.handleMessage(msg)
                     }
                 }
-            } else if (msg.type === "Reconnecting") {
+            } else if (msg.type === "Reconnecting" || msg.type === "OpponentGone") {
                 // Deliberately never navigates on its own (confirmed via the PC
                 // emulator: a bare Reconnecting with no real game yet threw the
                 // user onto a genuinely empty, un-escapable Board screen). Only
