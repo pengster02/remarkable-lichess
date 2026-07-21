@@ -3,7 +3,9 @@ import QtQuick 2.5
 Rectangle {
     id: square
     property string squareName: ""
-    property string pieceGlyph: ""
+    // "wK"/"bQ"/etc, or "" for an empty square -- see BoardScreen.qml's
+    // pieceCodeFor(). Matches the frontend/assets/pieces/<code>.png filenames.
+    property string pieceCode: ""
     property bool isLight: true
     property bool isHighlighted: false
     property bool isLastMove: false
@@ -25,27 +27,22 @@ Rectangle {
         return darkMode ? (isLight ? "#5a5648" : "#211f1a") : (isLight ? "#e8e0d0" : "#8a7f6a")
     }
 
-    // Bundled instead of trusting the device's default font to contain the
-    // chess Unicode block (U+2654-265F). It didn't on-device -- glyphs came
-    // back as tofu/.notdef boxes, i.e. exactly "squares" where pieces should
-    // be. This is a 7KB DejaVu Sans subset (see frontend/assets/, license
-    // there too); pixel-checked here that all 12 codepoints resolve.
-    // Relative, not "qrc:/assets/...": AppLoad mounts each app's resources.rcc
-    // under a per-app namespace (confirmed on-device per scripts/build-rm.sh --
-    // it requests qrc:/<app-namespace>/ui/main.qml, not qrc:/ui/main.qml), so a
-    // hardcoded absolute qrc: path here would silently fail to resolve. A
-    // relative path resolves against this file's own URL, namespace and all.
-    FontLoader {
-        id: chessFont
-        source: "../assets/ChessGlyphs.ttf"
-    }
-
-    Text {
+    // Rasterized cburnett PNGs (see frontend/assets/pieces/LICENSE-cburnett.txt),
+    // not the earlier Unicode-glyph/ChessGlyphs.ttf approach -- real piece art
+    // instead of text-rendered symbols. Relative path for the same AppLoad
+    // per-app-namespace reason as the old FontLoader source was (confirmed on
+    // device per scripts/build-rm.sh): a hardcoded "qrc:/assets/..." path would
+    // silently fail to resolve, a relative one resolves against this file's own
+    // (namespaced) URL.
+    Image {
         anchors.centerIn: parent
-        text: square.pieceGlyph
-        font.family: chessFont.name
-        font.pixelSize: parent.height * 0.6
-        color: square.darkMode ? "#e6e2d8" : "black"
+        anchors.margins: parent.height * 0.06
+        width: parent.width * 0.82
+        height: parent.height * 0.82
+        fillMode: Image.PreserveAspectFit
+        visible: square.pieceCode !== ""
+        source: square.pieceCode !== "" ? "../assets/pieces/" + square.pieceCode + ".png" : ""
+        smooth: true
     }
 
     MouseArea {

@@ -19,6 +19,7 @@ pub enum FrontendMessage {
     // ChallengeColor.yaml uses for both /api/board/seek and /api/challenge/{username}.
     CreateSeek { minutes: u32, increment: u32, rated: bool, color: String },
     CreateChallenge { username: String, minutes: u32, increment: u32, rated: bool, color: String },
+    ChallengeAi { level: u8, minutes: u32, increment: u32 },
     CancelSeek,
     MakeMove { from: String, to: String, promotion: Option<String> },
     Resign,
@@ -35,6 +36,18 @@ pub enum FrontendMessage {
     AcceptChallenge { id: String },
     DeclineChallenge { id: String },
     SendChat { text: String },
+    RequestSettings,
+    SaveSettings { auto_queen_promotion: bool },
+    // Clears the saved token (see backend/src/settings.rs's sibling token file)
+    // and resets to the logged-out state -- there was previously no in-app way
+    // to do this at all short of editing files on the device directly.
+    LogOut,
+    // Sent on-demand (from HomeScreen's "Game history" button), not pushed
+    // automatically on login like RequestHome/RequestSettings -- fetching and
+    // replaying 20 games' SAN history is real work nobody needs paid up front
+    // just to reach the Home screen. Backend fixes the page size server-side
+    // (see backend_app.rs's handle_request_game_history).
+    RequestGameHistory,
 }
 
 // Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
@@ -49,12 +62,53 @@ pub struct ChallengeInfo {
     pub increment_seconds: Option<u32>,
 }
 
+// One of a real account's rated speed categories (bullet/blitz/rapid/classical/
+// correspondence) with at least one game played -- built from Account's `perfs`
+// map (confirmed against lichess-org/api's Perfs.yaml/Perf.yaml schemas). A perf
+// with zero games played is left out entirely rather than shown as "0", same as
+// every reference client's own profile page.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RatingSummary {
+    pub speed: String,
+    pub rating: u32,
+}
+
+// A single now-playing game from GET /api/account/playing, as shown on Home --
+// replaces the old singular `resumable_game_id`, which silently dropped every
+// game past the first for anyone with more than one correspondence game going.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct OngoingGameSummary {
+    pub game_id: String,
+    pub opponent_name: Option<String>,
+    pub opponent_rating: Option<u32>,
+    pub is_my_turn: bool,
+}
+
+// One past game from GET /api/games/user/{username} (confirmed against
+// lichess-org/api's GameJson.yaml/GamePlayers.yaml/GamePlayerUser.yaml schemas),
+// already reduced to this account's point of view server-side (your_color/result)
+// so the frontend never needs to know its own username to render this list.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HistoryGameSummary {
+    pub game_id: String,
+    pub opponent_name: Option<String>,
+    pub opponent_rating: Option<u32>,
+    pub your_color: String,
+    // "win"/"loss"/"draw", or the raw Lichess game status (e.g. "aborted",
+    // "noStart") for the rare case where there's no winner and it wasn't a draw.
+    pub result: String,
+    pub rated: bool,
+    pub speed: Option<String>,
+    pub opening_name: Option<String>,
+    pub created_at_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum BackendMessage {
     TokenVerified { username: String },
     TokenInvalid { reason: String },
-    HomeState { resumable_game_id: Option<String> },
+    HomeState { ongoing_games: Vec<OngoingGameSummary>, ratings: Vec<RatingSummary> },
     SeekCreated,
     ChallengeCreated,
     BoardState {
@@ -101,6 +155,8 @@ pub enum BackendMessage {
     OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
     ChatMessage { username: String, text: String },
+    SettingsState { auto_queen_promotion: bool },
+    GameHistory { games: Vec<HistoryGameSummary> },
 }
 
 #[cfg(test)]
@@ -132,6 +188,19 @@ mod tests {
             serde_json::from_str::<FrontendMessage>(r#"{"type":"ClaimVictory"}"#).unwrap(),
             FrontendMessage::ClaimVictory
         );
+    }
+
+    #[test]
+    fn settings_messages_round_trip() {
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(r#"{"type":"SaveSettings","auto_queen_promotion":true}"#)
+                .unwrap(),
+            FrontendMessage::SaveSettings { auto_queen_promotion: true }
+        );
+        assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"LogOut"}"#).unwrap(), FrontendMessage::LogOut);
+        let json = serde_json::to_string(&BackendMessage::SettingsState { auto_queen_promotion: true }).unwrap();
+        assert!(json.contains(r#""type":"SettingsState""#));
+        assert!(json.contains(r#""auto_queen_promotion":true"#));
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use crate::lichess::models::{Account, ChallengeListResponse, IncomingChallenge, PlayingGame, PlayingResponse};
+use crate::lichess::models::{
+    Account, ChallengeListResponse, HistoryGame, IncomingChallenge, PlayingGame, PlayingResponse,
+};
+use crate::lichess::stream::parse_ndjson_line;
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 
@@ -64,6 +67,43 @@ impl LichessClient {
         }
         let parsed = resp.json::<PlayingResponse>().await?;
         Ok(parsed.now_playing)
+    }
+
+    /// GET /api/games/user/{username} defaults to returning PGN text -- confirmed
+    /// via real-world reports of this exact footgun (lichess.org/forum/lichess-feedback
+    /// "Lichess API returns x-chess-pgn, even if get request asks for json"). The
+    /// documented fix is an explicit `Accept: application/x-ndjson` header, one JSON
+    /// object per line, not a query param. Buffered as a single `.text()` rather than
+    /// streamed line-by-line like `stream_lines` -- this is a bounded, one-shot page
+    /// of `max` games, not an open-ended live connection.
+    pub async fn get_game_history(&self, username: &str, max: u32) -> Result<Vec<HistoryGame>> {
+        let resp = self
+            .bearer(
+                self.http
+                    .get(format!("{}/api/games/user/{}", self.base_url, username))
+                    .header("Accept", "application/x-ndjson")
+                    .query(&[("max", max.to_string())]),
+            )
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("get_game_history", resp).await);
+        }
+        let body = resp.text().await?;
+        let games: Vec<HistoryGame> =
+            body.lines().filter_map(parse_ndjson_line::<HistoryGame>).collect();
+        // If Lichess fell back to PGN text (the exact bug the Accept header above is
+        // meant to prevent), every line fails to parse as JSON and `games` comes back
+        // silently empty even though real games exist -- surface that distinctly
+        // instead of reporting "no games played".
+        if games.is_empty() && !body.trim().is_empty() {
+            return Err(anyhow!(
+                "get_game_history: response body didn't parse as NDJSON (got {} bytes) -- \
+                 Lichess may have ignored the Accept: application/x-ndjson header",
+                body.len()
+            ));
+        }
+        Ok(games)
     }
 
     pub async fn make_move(&self, game_id: &str, uci: &str) -> Result<()> {
@@ -287,6 +327,29 @@ impl LichessClient {
             return Err(error_from_response("create_challenge", resp).await);
         }
         Ok(response_to_lines(resp))
+    }
+
+    /// Confirmed against lichess-org/api's api-challenge-ai.yaml: unlike seeks/user
+    /// challenges, this starts a real game immediately (no accept/decline step, no
+    /// long-poll to hold open) and isn't subject to the seek-only Rapid-speed floor
+    /// (confirmed against lichess-org/lila's own SetupForm.scala/misc.scala -- that
+    /// restriction only applies to `isBoardCompatible` seeks, not challenge/ai).
+    /// The started game is still reported on the account event stream's `gameStart`
+    /// like any other game, so no extra plumbing is needed beyond this POST.
+    pub async fn challenge_ai(&self, level: u8, minutes: u32, increment: u32) -> Result<()> {
+        let resp = self
+            .bearer(self.http.post(format!("{}/api/challenge/ai", self.base_url)))
+            .form(&[
+                ("level", level.to_string()),
+                ("clock.limit", (minutes * 60).to_string()),
+                ("clock.increment", increment.to_string()),
+            ])
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("challenge_ai", resp).await);
+        }
+        Ok(())
     }
 
     pub async fn stream_lines(
@@ -520,6 +583,22 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let _stream = client.create_challenge("opponent", 10, 5, false, "random").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn challenge_ai_posts_level_and_clock() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/challenge/ai"))
+            .and(body_string_contains("level=3"))
+            .and(body_string_contains("clock.limit=300"))
+            .and(body_string_contains("clock.increment=2"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.challenge_ai(3, 5, 2).await.unwrap();
     }
 
     #[tokio::test]

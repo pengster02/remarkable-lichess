@@ -1,9 +1,44 @@
 use serde::Deserialize;
 
+// Confirmed against lichess-org/api's Perf.yaml (games/rating/rd/prog required,
+// prov/rank only appear conditionally). Only the four fields this app actually
+// displays are modeled -- prov/rank aren't shown anywhere yet.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Perf {
+    pub games: u32,
+    pub rating: u32,
+    pub rd: u32,
+    #[serde(default)]
+    pub prog: i32,
+}
+
+// Confirmed against lichess-org/api's Perfs.yaml -- only the 5 standard (non-variant,
+// non-puzzle) speed categories are modeled, matching what Home actually shows.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct Perfs {
+    pub bullet: Option<Perf>,
+    pub blitz: Option<Perf>,
+    pub rapid: Option<Perf>,
+    pub classical: Option<Perf>,
+    pub correspondence: Option<Perf>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Account {
     pub id: String,
     pub username: String,
+    #[serde(default)]
+    pub perfs: Option<Perfs>,
+}
+
+// The exact NowPlayingGame schema file couldn't be located in lichess-org/api's
+// spec repo during this pass (only the `nowPlaying` wrapper's shape was
+// confirmed) -- `opponent` is added defensively as fully Option, same posture
+// as Player's fields above, rather than assumed to always be present.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct PlayingOpponent {
+    pub username: Option<String>,
+    pub rating: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -12,6 +47,8 @@ pub struct PlayingGame {
     pub game_id: String,
     #[serde(rename = "isMyTurn")]
     pub is_my_turn: bool,
+    #[serde(default)]
+    pub opponent: Option<PlayingOpponent>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -160,6 +197,61 @@ pub enum EventStreamMessage {
     Other,
 }
 
+// Confirmed against lichess-org/api's LightUser.yaml. `id` is the canonical
+// lowercased username Lichess itself uses for identity comparisons -- used
+// server-side to work out your_color for a history entry, rather than `name`
+// (display-cased, only used for showing the opponent's name to the user).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LightUser {
+    pub id: Option<String>,
+    pub name: Option<String>,
+}
+
+// Confirmed against lichess-org/api's GamePlayerUser.yaml. `user` is absent for
+// an AI opponent (only `aiLevel` is present then), matching Player's AI-opponent
+// posture elsewhere in this file.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GamePlayerUser {
+    pub user: Option<LightUser>,
+    pub rating: Option<u32>,
+    #[serde(rename = "aiLevel")]
+    pub ai_level: Option<u8>,
+}
+
+// Confirmed against lichess-org/api's GamePlayers.yaml.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GamePlayers {
+    pub white: GamePlayerUser,
+    pub black: GamePlayerUser,
+}
+
+// Confirmed against lichess-org/api's GameOpening.yaml -- only `name` is shown
+// anywhere in this app, `eco`/`ply` aren't modeled.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GameOpening {
+    pub name: String,
+}
+
+// One row of GET /api/games/user/{username}'s NDJSON response (Accept:
+// application/x-ndjson -- without that header this endpoint returns PGN text
+// instead, see lichess::client::get_game_history). Confirmed against
+// lichess-org/api's GameJson.yaml; only the fields this app's history list
+// actually shows are modeled. `winner`/`opening` are genuinely optional per
+// the schema (winner absent on a draw; opening absent for some variants).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct HistoryGame {
+    pub id: String,
+    #[serde(default)]
+    pub rated: bool,
+    pub speed: Option<String>,
+    pub status: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: Option<i64>,
+    pub players: GamePlayers,
+    pub winner: Option<String>,
+    pub opening: Option<GameOpening>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +302,55 @@ mod tests {
         assert_eq!(parsed.now_playing.len(), 1);
         assert_eq!(parsed.now_playing[0].game_id, "abcd1234");
         assert!(parsed.now_playing[0].is_my_turn);
+        assert_eq!(parsed.now_playing[0].opponent, None);
+    }
+
+    #[test]
+    fn parses_playing_response_with_opponent_info() {
+        let json = r#"{"nowPlaying":[{"gameId":"abcd1234","isMyTurn":false,"opponent":{"username":"Bob","rating":1500}}]}"#;
+        let parsed: PlayingResponse = serde_json::from_str(json).unwrap();
+        let opponent = parsed.now_playing[0].opponent.as_ref().unwrap();
+        assert_eq!(opponent.username.as_deref(), Some("Bob"));
+        assert_eq!(opponent.rating, Some(1500));
+    }
+
+    #[test]
+    fn parses_account_with_perfs() {
+        let json = r#"{"id":"myid","username":"MyUser","perfs":{"rapid":{"games":42,"rating":1600,"rd":45,"prog":12},"puzzle":{"games":1,"rating":1000,"rd":300,"prog":0}}}"#;
+        let account: Account = serde_json::from_str(json).unwrap();
+        let perfs = account.perfs.unwrap();
+        assert_eq!(perfs.rapid.unwrap().rating, 1600);
+        // bullet wasn't in the payload at all -- must default to None, not error.
+        assert_eq!(perfs.bullet, None);
+    }
+
+    #[test]
+    fn parses_account_without_perfs() {
+        let json = r#"{"id":"myid","username":"MyUser"}"#;
+        let account: Account = serde_json::from_str(json).unwrap();
+        assert_eq!(account.perfs, None);
+    }
+
+    #[test]
+    fn parses_history_game_ndjson_line() {
+        let json = r#"{"id":"abcd1234","rated":true,"variant":"standard","speed":"rapid","perf":"rapid","createdAt":1700000000000,"lastMoveAt":1700000600000,"status":"mate","players":{"white":{"user":{"id":"myuser","name":"MyUser"},"rating":1600},"black":{"user":{"id":"bob","name":"Bob"},"rating":1580}},"winner":"white","opening":{"eco":"C50","name":"Italian Game","ply":4}}"#;
+        let game: HistoryGame = serde_json::from_str(json).unwrap();
+        assert_eq!(game.id, "abcd1234");
+        assert!(game.rated);
+        assert_eq!(game.speed.as_deref(), Some("rapid"));
+        assert_eq!(game.winner.as_deref(), Some("white"));
+        assert_eq!(game.players.white.user.as_ref().unwrap().id.as_deref(), Some("myuser"));
+        assert_eq!(game.opening.unwrap().name, "Italian Game");
+    }
+
+    #[test]
+    fn parses_history_game_with_ai_opponent_and_no_winner() {
+        // Draws (and AI opponents) omit `winner`/`user` -- must not fail to parse.
+        let json = r#"{"id":"xyz","rated":false,"variant":"standard","speed":"blitz","perf":"blitz","createdAt":1,"lastMoveAt":2,"status":"draw","players":{"white":{"user":{"id":"myuser","name":"MyUser"},"rating":1600},"black":{"aiLevel":5}}}"#;
+        let game: HistoryGame = serde_json::from_str(json).unwrap();
+        assert_eq!(game.winner, None);
+        assert_eq!(game.players.black.user, None);
+        assert_eq!(game.players.black.ai_level, Some(5));
     }
 
     #[test]

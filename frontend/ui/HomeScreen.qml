@@ -54,6 +54,11 @@ Rectangle {
             onClicked: homeScreen.toggleDarkMode()
         }
 
+        Button {
+            text: "Settings"
+            onClicked: homeScreen.navigateTo("SettingsScreen.qml")
+        }
+
         Repeater {
             model: homeScreen.pendingChallenges
             // Stacked (text above buttons) rather than one Row -- a long

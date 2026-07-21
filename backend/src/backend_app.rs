@@ -11,7 +11,16 @@ use tokio::sync::Mutex;
 
 pub struct LichessBackend {
     token_path: PathBuf,
+    // Sibling file next to the token (see settings::load/save) -- app-level
+    // preferences (see backend/src/settings.rs), not per-account like the token.
+    settings_path: PathBuf,
     client: Option<LichessClient>,
+    // Needed to re-attach a game stream on RequestHome for an already-in-progress
+    // resumable game (see handle_request_home) -- gameStart only fires once, when a
+    // game *begins*, so simply reconnecting the account event stream after this
+    // backend process restarts (or after any RequestHome navigation) never re-tells
+    // us about a game that started earlier in the same session or a prior one.
+    my_id: Option<String>,
     session: Arc<Mutex<Option<GameSession>>>,
     // The held-open long-poll connection backing an outstanding seek or outgoing
     // challenge (see spawn_hold_connection_open's comment on why holding it open
@@ -23,7 +32,15 @@ pub struct LichessBackend {
 
 impl LichessBackend {
     pub fn new(token_path: PathBuf) -> Self {
-        Self { token_path, client: None, session: Arc::new(Mutex::new(None)), pending_seek: None }
+        let settings_path = token_path.with_file_name("settings.json");
+        Self {
+            token_path,
+            settings_path,
+            client: None,
+            my_id: None,
+            session: Arc::new(Mutex::new(None)),
+            pending_seek: None,
+        }
     }
 
     fn send(&self, replier: &BackendReplier<Self>, msg: &BackendMessage) {
@@ -37,6 +54,7 @@ impl LichessBackend {
             Ok(account) => {
                 let _ = std::fs::write(&self.token_path, &token);
                 self.client = Some(client);
+                self.my_id = Some(account.id.clone());
                 // Needed so GameSession can work out which color the local account is
                 // playing (see game::session::resolve_your_color) and orient the board
                 // accordingly, instead of always assuming white.
@@ -54,13 +72,25 @@ impl LichessBackend {
     }
 
     async fn handle_request_home(&mut self, replier: &BackendReplier<Self>) {
-        let Some(client) = &self.client else {
+        let Some(client) = self.client.clone() else {
             self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
             return;
         };
         match client.get_playing().await {
             Ok(games) => {
                 let resumable = games.first().map(|g| g.game_id.clone());
+                // gameStart (see spawn_streams) only fires once, when a game *begins* --
+                // it never re-announces an already-in-progress game, so a resumable game
+                // found here needs its own stream actively (re)attached, or "Resume game"
+                // just navigates to an empty BoardScreen with nothing feeding it.
+                if let Some(game_id) = &resumable {
+                    let already_tracking = self.session.lock().await.as_ref().is_some_and(|s| &s.game_id == game_id);
+                    if !already_tracking {
+                        if let Some(my_id) = self.my_id.clone() {
+                            spawn_game_stream(client, game_id.clone(), replier.clone(), self.session.clone(), my_id);
+                        }
+                    }
+                }
                 self.send(replier, &BackendMessage::HomeState { resumable_game_id: resumable });
             }
             Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
@@ -89,6 +119,34 @@ impl LichessBackend {
         if let Some(handle) = self.pending_seek.take() {
             handle.abort();
         }
+    }
+
+    fn handle_request_settings(&self, replier: &BackendReplier<Self>) {
+        let settings = crate::settings::load(&self.settings_path);
+        self.send(replier, &BackendMessage::SettingsState { auto_queen_promotion: settings.auto_queen_promotion });
+    }
+
+    fn handle_save_settings(&self, replier: &BackendReplier<Self>, auto_queen_promotion: bool) {
+        let settings = crate::settings::AppSettings { auto_queen_promotion };
+        if let Err(e) = crate::settings::save(&self.settings_path, &settings) {
+            self.send(replier, &BackendMessage::ErrorMsg { message: format!("failed to save settings: {e}") });
+            return;
+        }
+        // Echoed back rather than assumed -- the frontend already optimistically
+        // shows the new toggle state, but this confirms the write actually
+        // succeeded instead of silently drifting from what's on disk.
+        self.send(replier, &BackendMessage::SettingsState { auto_queen_promotion });
+    }
+
+    /// There was previously no in-app way to do this at all -- switching
+    /// accounts or recovering from a revoked token meant editing files on the
+    /// device directly. Reuses TokenInvalid to drive the frontend back to
+    /// SetupScreen, same message it already handles for a rejected token.
+    fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
+        let _ = std::fs::remove_file(&self.token_path);
+        self.client = None;
+        self.handle_cancel_seek();
+        self.send(replier, &BackendMessage::TokenInvalid { reason: "logged out".into() });
     }
 
     /// Shared by every in-game action (resign/draw/takeback/abort/claim-victory) --
@@ -319,6 +377,16 @@ impl AppLoadBackend for LichessBackend {
                     Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
                 }
             }
+            FrontendMessage::ChallengeAi { level, minutes, increment } => {
+                let Some(client) = &self.client else { return };
+                if let Err(e) = client.challenge_ai(level, minutes, increment).await {
+                    self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                }
+                // No ack sent on success: unlike a seek/challenge there's no waiting
+                // step -- the game starts immediately and arrives the same way any
+                // other game does, via the account event stream's gameStart (already
+                // wired in spawn_streams).
+            }
             FrontendMessage::CancelSeek => self.handle_cancel_seek(),
             FrontendMessage::MakeMove { from, to, promotion } => {
                 self.handle_make_move(replier, from, to, promotion).await
@@ -407,6 +475,11 @@ impl AppLoadBackend for LichessBackend {
                     }
                 }
             }
+            FrontendMessage::RequestSettings => self.handle_request_settings(replier),
+            FrontendMessage::SaveSettings { auto_queen_promotion } => {
+                self.handle_save_settings(replier, auto_queen_promotion)
+            }
+            FrontendMessage::LogOut => self.handle_log_out(replier),
         }
     }
 }
