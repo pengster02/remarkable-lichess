@@ -83,6 +83,13 @@ Rectangle {
         var fileIndex = fr.files.indexOf(squareName[0])
         if (rankIndex < 0 || fileIndex < 0) return ""
         var row = rows[rankIndex]
+        // Guards an empty/not-yet-loaded fen (default ""): "".split("/") is a
+        // single-element [""], so any rank past the first indexes out of bounds
+        // here. Confirmed live via the PC emulator -- reproducibly threw
+        // "Cannot read property 'length' of undefined" on every square whose
+        // rank wasn't the first, every single frame, before a real BoardState
+        // ever arrives.
+        if (row === undefined) return ""
         var col = 0
         for (var i = 0; i < row.length; i++) {
             var c = row[i]

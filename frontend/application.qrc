@@ -6,5 +6,6 @@
         <file>ui/SeekScreen.qml</file>
         <file>ui/BoardScreen.qml</file>
         <file>ui/BoardSquare.qml</file>
+        <file>assets/ChessGlyphs.ttf</file>
     </qresource>
 </RCC>
