@@ -32,6 +32,17 @@ fn resolve_your_color(full: &GameFull, my_id: &str) -> String {
     }
 }
 
+// GameState carries wdraw/bdraw/wtakeback/btakeback for *both* colors; the frontend
+// only cares whether *the opponent* has an offer on the table, so fold the your_color
+// lookup in here instead of making every caller re-derive it.
+fn draw_offered_by_opponent(state: &GameState, your_color: &str) -> bool {
+    if your_color == "black" { state.wdraw } else { state.bdraw }
+}
+
+fn takeback_offered_by_opponent(state: &GameState, your_color: &str) -> bool {
+    if your_color == "black" { state.wtakeback } else { state.btakeback }
+}
+
 fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
     use shakmaty::Position;
     BackendMessage::BoardState {
@@ -44,6 +55,8 @@ fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
         last_move: session.last_move.clone(),
         your_color: session.your_color.clone(),
         in_check: session.position.is_check(),
+        draw_offered_by_opponent: draw_offered_by_opponent(state, &session.your_color),
+        takeback_offered_by_opponent: takeback_offered_by_opponent(state, &session.your_color),
     }
 }
 
@@ -256,6 +269,62 @@ mod tests {
         }
         match msg.unwrap() {
             BackendMessage::BoardState { in_check, .. } => assert!(in_check),
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn draw_offer_from_black_surfaces_as_opponent_offer_when_you_are_white() {
+        let full = sample_full("");
+        let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let state: GameState = serde_json::from_value(serde_json::json!({
+            "moves": "", "wtime": 600000, "btime": 600000, "winc": 0, "binc": 0,
+            "status": "started", "winner": null, "bdraw": true
+        }))
+        .unwrap();
+        let msg = session.apply_state_update(&state).unwrap();
+        match msg {
+            BackendMessage::BoardState { draw_offered_by_opponent, takeback_offered_by_opponent, .. } => {
+                assert!(draw_offered_by_opponent);
+                assert!(!takeback_offered_by_opponent);
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn own_draw_offer_does_not_surface_as_an_opponent_offer() {
+        // wdraw=true means *you* (white here) offered -- shouldn't flip
+        // draw_offered_by_opponent, or a client would show "accept/decline"
+        // buttons for its own outgoing offer.
+        let full = sample_full("");
+        let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let state: GameState = serde_json::from_value(serde_json::json!({
+            "moves": "", "wtime": 600000, "btime": 600000, "winc": 0, "binc": 0,
+            "status": "started", "winner": null, "wdraw": true
+        }))
+        .unwrap();
+        let msg = session.apply_state_update(&state).unwrap();
+        match msg {
+            BackendMessage::BoardState { draw_offered_by_opponent, .. } => assert!(!draw_offered_by_opponent),
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn takeback_offer_is_relative_to_your_color_when_playing_black() {
+        let full = sample_full("");
+        // "opponent-id" is black in sample_full(), so playing as "opponent-id" means
+        // you're black and white's wtakeback flag is the *opponent's* offer.
+        let (mut session, _msg) = GameSession::from_game_full(&full, "opponent-id").unwrap();
+        let state: GameState = serde_json::from_value(serde_json::json!({
+            "moves": "", "wtime": 600000, "btime": 600000, "winc": 0, "binc": 0,
+            "status": "started", "winner": null, "wtakeback": true
+        }))
+        .unwrap();
+        let msg = session.apply_state_update(&state).unwrap();
+        match msg {
+            BackendMessage::BoardState { takeback_offered_by_opponent, .. } => assert!(takeback_offered_by_opponent),
             _ => panic!("expected BoardState"),
         }
     }

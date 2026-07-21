@@ -26,6 +26,23 @@ Rectangle {
     // this change -- last_move was simply never read by this screen.
     property var lastMove: null
     property bool inCheck: false
+    property bool drawOfferedByOpponent: false
+    property bool takebackOfferedByOpponent: false
+    // Set from the backend's OpponentGone message. No local countdown against
+    // claim_win_in_seconds -- same no-idle-redraw reasoning as the clock below;
+    // Lichess's own claim-victory endpoint rejects an early claim regardless.
+    property bool opponentGone: false
+    property int claimWinInSeconds: 0
+    // User-controlled override, independent of yourColor -- XORed with the
+    // yourColor-based orientation below, same as every reference client's
+    // "flip board" action.
+    property bool manualFlip: false
+    // {from, to, options: [promotion letters]} while a promotion piece choice is
+    // pending, else null. Set instead of immediately sending MakeMove whenever a
+    // pawn move has more than one legal promotion option.
+    property var pendingPromotion: null
+    // Two-tap confirm so a single mistaken tap can't resign the game outright.
+    property bool resignArmed: false
 
     // Display-order files/ranks, flipped when playing black so the local player's
     // own pieces render at the bottom, matching standard chess-app convention.
@@ -33,7 +50,8 @@ Rectangle {
     // infers a QVariantList type for these array literals under Qt6's stricter
     // QML type system, which doesn't reliably expose Array.prototype methods.
     function filesRanks() {
-        if (boardScreen.yourColor === "black") {
+        var showBlackAtBottom = (boardScreen.yourColor === "black") !== boardScreen.manualFlip
+        if (showBlackAtBottom) {
             return {files: ["h","g","f","e","d","c","b","a"], ranks: ["1","2","3","4","5","6","7","8"]}
         }
         return {files: ["a","b","c","d","e","f","g","h"], ranks: ["8","7","6","5","4","3","2","1"]}
@@ -119,6 +137,19 @@ Rectangle {
         return out
     }
 
+    // Distinct promotion letters legal for this exact from/to pair (queen, rook,
+    // bishop, knight when this is a promoting pawn move; empty otherwise).
+    // Previously the tap handler always auto-picked "q" here, silently making
+    // underpromotion impossible -- every reference client offers a real choice.
+    function promotionOptionsFor(from, to) {
+        var opts = []
+        for (var i = 0; i < boardScreen.legalMoves.length; i++) {
+            var m = boardScreen.legalMoves[i]
+            if (m.from === from && m.to === to && m.promotion) opts.push(m.promotion)
+        }
+        return opts
+    }
+
     function onSquareTapped(squareName) {
         if (boardScreen.selectedSquare === "") {
             if (boardScreen.pieceAt(squareName) !== "") boardScreen.selectedSquare = squareName
@@ -130,20 +161,15 @@ Rectangle {
         }
         var dests = boardScreen.destinationsFrom(boardScreen.selectedSquare)
         if (dests.indexOf(squareName) !== -1) {
-            var promo = null
-            for (var i = 0; i < boardScreen.legalMoves.length; i++) {
-                if (boardScreen.legalMoves[i].from === boardScreen.selectedSquare && boardScreen.legalMoves[i].to === squareName && boardScreen.legalMoves[i].promotion) {
-                    if (promo === null) {
-                        promo = boardScreen.legalMoves[i].promotion
-                    }
-                    if (boardScreen.legalMoves[i].promotion === "q") {
-                        promo = boardScreen.legalMoves[i].promotion
-                        break
-                    }
-                }
+            var promoOptions = boardScreen.promotionOptionsFor(boardScreen.selectedSquare, squareName)
+            if (promoOptions.length > 0) {
+                // Don't clear selectedSquare yet -- the promotion popup needs
+                // from/to; MakeMove is sent once the user picks a piece below.
+                boardScreen.pendingPromotion = {from: boardScreen.selectedSquare, to: squareName, options: promoOptions}
+            } else {
+                boardScreen.backendSender({type: "MakeMove", from: boardScreen.selectedSquare, to: squareName, promotion: null})
+                boardScreen.selectedSquare = ""
             }
-            boardScreen.backendSender({type: "MakeMove", from: boardScreen.selectedSquare, to: squareName, promotion: promo})
-            boardScreen.selectedSquare = ""
         } else {
             boardScreen.selectedSquare = boardScreen.pieceAt(squareName) !== "" ? squareName : ""
         }
@@ -242,15 +268,127 @@ Rectangle {
             color: boardScreen.darkMode ? "#e6e2d8" : "black"
         }
 
-        Button {
-            text: "Resign"
-            onClicked: boardScreen.backendSender({type: "Resign"})
+        Row {
+            spacing: 8
+
+            Button {
+                text: boardScreen.drawOfferedByOpponent ? "Accept draw" : "Offer draw"
+                onClicked: boardScreen.backendSender({type: "DrawAction", accept: true})
+            }
+            Button {
+                text: "Decline draw"
+                visible: boardScreen.drawOfferedByOpponent
+                onClicked: boardScreen.backendSender({type: "DrawAction", accept: false})
+            }
+        }
+
+        Row {
+            spacing: 8
+
+            Button {
+                text: boardScreen.takebackOfferedByOpponent ? "Accept takeback" : "Offer takeback"
+                onClicked: boardScreen.backendSender({type: "TakebackAction", accept: true})
+            }
+            Button {
+                text: "Decline takeback"
+                visible: boardScreen.takebackOfferedByOpponent
+                onClicked: boardScreen.backendSender({type: "TakebackAction", accept: false})
+            }
+        }
+
+        Row {
+            spacing: 8
+
+            // Lichess itself is the authority on whether an abort is still legal
+            // (before either side's first move) -- lastMove is just a cheap,
+            // already-available client-side hint to hide the button once it
+            // clearly no longer applies, not a full replication of that rule.
+            Button {
+                text: "Abort"
+                visible: boardScreen.lastMove === null
+                onClicked: boardScreen.backendSender({type: "Abort"})
+            }
+
+            Button {
+                text: "Claim victory" + (boardScreen.claimWinInSeconds > 0 ? " (~" + boardScreen.claimWinInSeconds + "s)" : "")
+                visible: boardScreen.opponentGone
+                onClicked: boardScreen.backendSender({type: "ClaimVictory"})
+            }
+
+            Button {
+                text: "Claim draw"
+                onClicked: boardScreen.backendSender({type: "ClaimDraw"})
+            }
+
+            Button {
+                text: "Flip board"
+                onClicked: boardScreen.manualFlip = !boardScreen.manualFlip
+            }
+
+            Button {
+                text: boardScreen.resignArmed ? "Tap again to resign" : "Resign"
+                onClicked: {
+                    if (boardScreen.resignArmed) {
+                        boardScreen.backendSender({type: "Resign"})
+                        boardScreen.resignArmed = false
+                    } else {
+                        boardScreen.resignArmed = true
+                    }
+                }
+            }
         }
 
         Button {
             text: "Back to Home"
             visible: boardScreen.statusText.indexOf("Game over") === 0
             onClicked: boardScreen.navigateTo("HomeScreen.qml")
+        }
+    }
+
+    // Modal piece picker for promotion -- see promotionOptionsFor()/onSquareTapped.
+    // Blocks board taps underneath while open (modal: true) so a second tap can't
+    // land on the board mid-choice.
+    Popup {
+        id: promotionPopup
+        visible: boardScreen.pendingPromotion !== null
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        anchors.centerIn: parent
+
+        Row {
+            spacing: 8
+            Repeater {
+                model: boardScreen.pendingPromotion ? boardScreen.pendingPromotion.options : []
+                Rectangle {
+                    required property string modelData
+                    width: 64
+                    height: 64
+                    color: boardScreen.darkMode ? "#3a382e" : "#e8e0d0"
+                    border.width: 1
+                    border.color: boardScreen.darkMode ? "#e6e2d8" : "black"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: boardScreen.glyphFor(boardScreen.turn === "white" ? modelData.toUpperCase() : modelData)
+                        font.pixelSize: 40
+                        color: boardScreen.darkMode ? "#e6e2d8" : "black"
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: {
+                            boardScreen.backendSender({
+                                type: "MakeMove",
+                                from: boardScreen.pendingPromotion.from,
+                                to: boardScreen.pendingPromotion.to,
+                                promotion: modelData
+                            })
+                            boardScreen.pendingPromotion = null
+                            boardScreen.selectedSquare = ""
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -275,6 +413,9 @@ Rectangle {
             boardScreen.lastMove = msg.last_move || null
             boardScreen.inCheck = msg.in_check || false
             boardScreen.yourColor = msg.your_color || "white"
+            boardScreen.drawOfferedByOpponent = msg.draw_offered_by_opponent || false
+            boardScreen.takebackOfferedByOpponent = msg.takeback_offered_by_opponent || false
+            boardScreen.resignArmed = false
             boardScreen.statusText = ""
         } else if (msg.type === "GameOver") {
             boardScreen.statusText = "Game over: " + msg.result + " (" + msg.reason + ")"
@@ -283,6 +424,14 @@ Rectangle {
             boardScreen.selectedSquare = ""
         } else if (msg.type === "Reconnecting") {
             boardScreen.statusText = "Reconnecting..."
+        } else if (msg.type === "OpponentGone") {
+            boardScreen.opponentGone = msg.gone
+            boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
+        } else if (msg.type === "ErrorMsg") {
+            // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
+            // possible") only ever reached main.qml's console.warn -- invisible
+            // to an actual player on-device.
+            boardScreen.statusText = msg.message
         }
     }
 }

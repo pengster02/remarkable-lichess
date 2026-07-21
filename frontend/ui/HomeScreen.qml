@@ -10,6 +10,7 @@ Rectangle {
     property bool darkMode: false
     property var toggleDarkMode: function() {}
     property string resumableGameId: ""
+    property var pendingChallenges: []
 
     Column {
         anchors.centerIn: parent
@@ -52,11 +53,36 @@ Rectangle {
             text: homeScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
             onClicked: homeScreen.toggleDarkMode()
         }
+
+        Repeater {
+            model: homeScreen.pendingChallenges
+            Row {
+                required property var modelData
+                spacing: 8
+
+                Text {
+                    text: modelData.challenger + " challenges you (" + Math.floor((modelData.limit_seconds || 0) / 60) + "+" + (modelData.increment_seconds || 0) + ")"
+                    font.pixelSize: 20
+                    color: homeScreen.darkMode ? "#e6e2d8" : "black"
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                Button {
+                    text: "Accept"
+                    onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
+                }
+                Button {
+                    text: "Decline"
+                    onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
+                }
+            }
+        }
     }
 
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
             homeScreen.resumableGameId = msg.resumable_game_id || ""
+        } else if (msg.type === "PendingChallenges") {
+            homeScreen.pendingChallenges = msg.challenges || []
         }
     }
 }
