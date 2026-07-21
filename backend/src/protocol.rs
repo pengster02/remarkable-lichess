@@ -17,6 +17,7 @@ pub enum FrontendMessage {
     RequestHome,
     CreateSeek { minutes: u32, increment: u32 },
     CreateChallenge { username: String, minutes: u32, increment: u32 },
+    CancelSeek,
     MakeMove { from: String, to: String, promotion: Option<String> },
     Resign,
     // `accept: true` offers a draw/takeback when none is pending, or accepts the
@@ -79,6 +80,11 @@ pub enum BackendMessage {
         // always-whole-game `moves` string) -- the frontend just re-renders the same
         // wrapped Text, no incremental diffing needed.
         move_history: Vec<String>,
+        // Confirmed against lichess-org/api's GameEventPlayer.yaml. Fixed for the
+        // game's lifetime (see game::session::GameSession), unlike every field
+        // above -- an AI opponent has no rating, only a name/level, hence Option.
+        opponent_name: Option<String>,
+        opponent_rating: Option<u32>,
     },
     GameOver { result: String, reason: String },
     MoveRejected { reason: String },
@@ -148,6 +154,8 @@ mod tests {
             draw_offered_by_opponent: false,
             takeback_offered_by_opponent: false,
             move_history: vec![],
+            opponent_name: None,
+            opponent_rating: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));
