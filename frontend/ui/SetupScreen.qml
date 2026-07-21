@@ -2,8 +2,9 @@ import QtQuick 2.5
 import QtQuick.Controls 2.5
 
 Rectangle {
+    id: setupScreen
     anchors.fill: parent
-    color: darkMode ? "#2b2b28" : "white"
+    color: setupScreen.darkMode ? "#2b2b28" : "white"
     property var backendSender
     property bool darkMode: false
 
@@ -17,7 +18,7 @@ Rectangle {
             font.pixelSize: 32
             wrapMode: Text.WordWrap
             width: parent.width
-            color: darkMode ? "#e6e2d8" : "black"
+            color: setupScreen.darkMode ? "#e6e2d8" : "black"
         }
 
         TextField {
@@ -29,7 +30,7 @@ Rectangle {
 
         Text {
             id: errorText
-            color: darkMode ? "#e6a0a0" : "black"
+            color: setupScreen.darkMode ? "#e6a0a0" : "black"
             font.pixelSize: 24
             visible: text.length > 0
         }
@@ -38,7 +39,7 @@ Rectangle {
             text: "Save"
             onClicked: {
                 errorText.text = ""
-                backendSender({type: "SaveToken", token: tokenField.text})
+                setupScreen.backendSender({type: "SaveToken", token: tokenField.text})
             }
         }
     }

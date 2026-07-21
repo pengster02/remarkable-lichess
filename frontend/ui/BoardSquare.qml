@@ -27,9 +27,9 @@ Rectangle {
 
     Text {
         anchors.centerIn: parent
-        text: pieceGlyph
+        text: square.pieceGlyph
         font.pixelSize: parent.height * 0.6
-        color: darkMode ? "#e6e2d8" : "black"
+        color: square.darkMode ? "#e6e2d8" : "black"
     }
 
     MouseArea {

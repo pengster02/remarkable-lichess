@@ -2,8 +2,9 @@ import QtQuick 2.5
 import QtQuick.Controls 2.5
 
 Rectangle {
+    id: homeScreen
     anchors.fill: parent
-    color: darkMode ? "#2b2b28" : "white"
+    color: homeScreen.darkMode ? "#2b2b28" : "white"
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -17,12 +18,12 @@ Rectangle {
         Text {
             text: "Lichess"
             font.pixelSize: 48
-            color: darkMode ? "#e6e2d8" : "black"
+            color: homeScreen.darkMode ? "#e6e2d8" : "black"
         }
 
         Button {
             text: "Resume game"
-            visible: resumableGameId.length > 0
+            visible: homeScreen.resumableGameId.length > 0
             onClicked: {
                 // There is no "resume" FrontendMessage: the per-game stream (Task 9) is
                 // already running server-side and will emit BoardState on its own, and
@@ -30,14 +31,14 @@ Rectangle {
                 // first BoardState/GameOver/etc. regardless. We still navigate here for
                 // an immediate UI transition instead of leaving Home showing while the
                 // first BoardState is in flight.
-                navigateTo("BoardScreen.qml")
+                homeScreen.navigateTo("BoardScreen.qml")
             }
         }
 
         Button {
             text: "New game"
             onClicked: {
-                navigateTo("SeekScreen.qml")
+                homeScreen.navigateTo("SeekScreen.qml")
             }
         }
 
@@ -48,14 +49,14 @@ Rectangle {
             // app's own palette to a darker, e-ink-friendly (not pure black)
             // scheme. Unverified on real e-ink until an on-device pass; dark
             // fills are a plausible ghosting risk worth watching for.
-            text: darkMode ? "Dark mode: On" : "Dark mode: Off"
-            onClicked: toggleDarkMode()
+            text: homeScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
+            onClicked: homeScreen.toggleDarkMode()
         }
     }
 
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
-            resumableGameId = msg.resumable_game_id || ""
+            homeScreen.resumableGameId = msg.resumable_game_id || ""
         }
     }
 }

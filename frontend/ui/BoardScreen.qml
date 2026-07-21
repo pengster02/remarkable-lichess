@@ -4,7 +4,7 @@ import QtQuick.Controls 2.5
 Rectangle {
     id: boardScreen
     anchors.fill: parent
-    color: darkMode ? "#2b2b28" : "white"
+    color: boardScreen.darkMode ? "#2b2b28" : "white"
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -29,17 +29,18 @@ Rectangle {
 
     // Display-order files/ranks, flipped when playing black so the local player's
     // own pieces render at the bottom, matching standard chess-app convention.
+    // Written as two plain literals rather than slice().reverse() -- qmllint
+    // infers a QVariantList type for these array literals under Qt6's stricter
+    // QML type system, which doesn't reliably expose Array.prototype methods.
     function filesRanks() {
-        var filesAsc = ["a","b","c","d","e","f","g","h"]
-        var ranksDesc = ["8","7","6","5","4","3","2","1"]
-        if (yourColor === "black") {
-            return {files: filesAsc.slice().reverse(), ranks: ranksDesc.slice().reverse()}
+        if (boardScreen.yourColor === "black") {
+            return {files: ["h","g","f","e","d","c","b","a"], ranks: ["1","2","3","4","5","6","7","8"]}
         }
-        return {files: filesAsc, ranks: ranksDesc}
+        return {files: ["a","b","c","d","e","f","g","h"], ranks: ["8","7","6","5","4","3","2","1"]}
     }
 
     function isLastMoveSquare(sq) {
-        return lastMove !== null && (sq === lastMove[0] || sq === lastMove[1])
+        return boardScreen.lastMove !== null && (sq === boardScreen.lastMove[0] || sq === boardScreen.lastMove[1])
     }
 
     // Finds the square of whichever king is currently in check (always the side
@@ -47,14 +48,14 @@ Rectangle {
     // fixed absolute a1..h8 sweep rather than the display-order filesRanks(), since
     // square *names* don't depend on board orientation, only where they're drawn.
     function checkedKingSquare() {
-        if (!inCheck) return ""
-        var kingChar = turn === "white" ? "K" : "k"
+        if (!boardScreen.inCheck) return ""
+        var kingChar = boardScreen.turn === "white" ? "K" : "k"
         var files = ["a","b","c","d","e","f","g","h"]
         var ranks = ["1","2","3","4","5","6","7","8"]
         for (var r = 0; r < ranks.length; r++) {
             for (var f = 0; f < files.length; f++) {
                 var sq = files[f] + ranks[r]
-                if (pieceAt(sq) === kingChar) return sq
+                if (boardScreen.pieceAt(sq) === kingChar) return sq
             }
         }
         return ""
@@ -70,14 +71,14 @@ Rectangle {
     // happen (Qt Quick already skips repainting a square whose computed color
     // didn't actually change either way) -- it only cuts redundant CPU work,
     // which matters for how quickly a frame is ready to hand to the display.
-    property var selectedDestinations: destinationsFrom(selectedSquare)
-    property string checkedSquare: checkedKingSquare()
+    property var selectedDestinations: boardScreen.destinationsFrom(boardScreen.selectedSquare)
+    property string checkedSquare: boardScreen.checkedKingSquare()
 
     function pieceAt(squareName) {
         // Minimal FEN board decode: walk the piece-placement field only.
-        var placement = fen.split(" ")[0]
+        var placement = boardScreen.fen.split(" ")[0]
         var rows = placement.split("/")
-        var fr = filesRanks()
+        var fr = boardScreen.filesRanks()
         var rankIndex = fr.ranks.indexOf(squareName[1])
         var fileIndex = fr.files.indexOf(squareName[0])
         if (rankIndex < 0 || fileIndex < 0) return ""
@@ -105,39 +106,39 @@ Rectangle {
 
     function destinationsFrom(square) {
         var out = []
-        for (var i = 0; i < legalMoves.length; i++) {
-            if (legalMoves[i].from === square) out.push(legalMoves[i].to)
+        for (var i = 0; i < boardScreen.legalMoves.length; i++) {
+            if (boardScreen.legalMoves[i].from === square) out.push(boardScreen.legalMoves[i].to)
         }
         return out
     }
 
     function onSquareTapped(squareName) {
-        if (selectedSquare === "") {
-            if (pieceAt(squareName) !== "") selectedSquare = squareName
+        if (boardScreen.selectedSquare === "") {
+            if (boardScreen.pieceAt(squareName) !== "") boardScreen.selectedSquare = squareName
             return
         }
-        if (selectedSquare === squareName) {
-            selectedSquare = ""
+        if (boardScreen.selectedSquare === squareName) {
+            boardScreen.selectedSquare = ""
             return
         }
-        var dests = destinationsFrom(selectedSquare)
+        var dests = boardScreen.destinationsFrom(boardScreen.selectedSquare)
         if (dests.indexOf(squareName) !== -1) {
             var promo = null
-            for (var i = 0; i < legalMoves.length; i++) {
-                if (legalMoves[i].from === selectedSquare && legalMoves[i].to === squareName && legalMoves[i].promotion) {
+            for (var i = 0; i < boardScreen.legalMoves.length; i++) {
+                if (boardScreen.legalMoves[i].from === boardScreen.selectedSquare && boardScreen.legalMoves[i].to === squareName && boardScreen.legalMoves[i].promotion) {
                     if (promo === null) {
-                        promo = legalMoves[i].promotion
+                        promo = boardScreen.legalMoves[i].promotion
                     }
-                    if (legalMoves[i].promotion === "q") {
-                        promo = legalMoves[i].promotion
+                    if (boardScreen.legalMoves[i].promotion === "q") {
+                        promo = boardScreen.legalMoves[i].promotion
                         break
                     }
                 }
             }
-            backendSender({type: "MakeMove", from: selectedSquare, to: squareName, promotion: promo})
-            selectedSquare = ""
+            boardScreen.backendSender({type: "MakeMove", from: boardScreen.selectedSquare, to: squareName, promotion: promo})
+            boardScreen.selectedSquare = ""
         } else {
-            selectedSquare = pieceAt(squareName) !== "" ? squareName : ""
+            boardScreen.selectedSquare = boardScreen.pieceAt(squareName) !== "" ? squareName : ""
         }
     }
 
@@ -149,9 +150,9 @@ Rectangle {
             // No local ticking (see the removed Timer's comment below): this shows
             // the clock exactly as of the last authoritative BoardState from the
             // server -- i.e. it updates on moves/reconnects, not every second.
-            text: "Black: " + Math.floor(blackTimeMs / 1000) + "s"
+            text: "Black: " + Math.floor(boardScreen.blackTimeMs / 1000) + "s"
             font.pixelSize: 28
-            color: darkMode ? "#e6e2d8" : "black"
+            color: boardScreen.darkMode ? "#e6e2d8" : "black"
         }
 
         Row {
@@ -162,13 +163,14 @@ Rectangle {
                 Repeater {
                     model: 8
                     Text {
+                        required property int index
                         width: 24
                         height: grid.height / 8
                         verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
-                        text: filesRanks().ranks[index]
+                        text: boardScreen.filesRanks().ranks[index]
                         font.pixelSize: 16
-                        color: darkMode ? "#e6e2d8" : "black"
+                        color: boardScreen.darkMode ? "#e6e2d8" : "black"
                     }
                 }
             }
@@ -183,18 +185,19 @@ Rectangle {
                 Repeater {
                     model: 64
                     BoardSquare {
+                        required property int index
                         width: grid.width / 8
                         height: grid.height / 8
                         property int fileIdx: index % 8
                         property int rankIdx: Math.floor(index / 8)
-                        squareName: filesRanks().files[fileIdx] + filesRanks().ranks[rankIdx]
+                        squareName: boardScreen.filesRanks().files[fileIdx] + boardScreen.filesRanks().ranks[rankIdx]
                         isLight: (fileIdx + rankIdx) % 2 === 0
                         darkMode: boardScreen.darkMode
-                        pieceGlyph: glyphFor(pieceAt(squareName))
-                        isHighlighted: selectedSquare === squareName || selectedDestinations.indexOf(squareName) !== -1
-                        isLastMove: isLastMoveSquare(squareName)
-                        isCheckSquare: squareName === checkedSquare
-                        onTapped: onSquareTapped(squareName)
+                        pieceGlyph: boardScreen.glyphFor(boardScreen.pieceAt(squareName))
+                        isHighlighted: boardScreen.selectedSquare === squareName || boardScreen.selectedDestinations.indexOf(squareName) !== -1
+                        isLastMove: boardScreen.isLastMoveSquare(squareName)
+                        isCheckSquare: squareName === boardScreen.checkedSquare
+                        onTapped: boardScreen.onSquareTapped(squareName)
                     }
                 }
             }
@@ -208,37 +211,38 @@ Rectangle {
                 Repeater {
                     model: 8
                     Text {
+                        required property int index
                         width: grid.width / 8
                         horizontalAlignment: Text.AlignHCenter
-                        text: filesRanks().files[index]
+                        text: boardScreen.filesRanks().files[index]
                         font.pixelSize: 16
-                        color: darkMode ? "#e6e2d8" : "black"
+                        color: boardScreen.darkMode ? "#e6e2d8" : "black"
                     }
                 }
             }
         }
 
         Text {
-            text: "White: " + Math.floor(whiteTimeMs / 1000) + "s"
+            text: "White: " + Math.floor(boardScreen.whiteTimeMs / 1000) + "s"
             font.pixelSize: 28
-            color: darkMode ? "#e6e2d8" : "black"
+            color: boardScreen.darkMode ? "#e6e2d8" : "black"
         }
 
         Text {
-            text: statusText
+            text: boardScreen.statusText
             font.pixelSize: 24
-            color: darkMode ? "#e6e2d8" : "black"
+            color: boardScreen.darkMode ? "#e6e2d8" : "black"
         }
 
         Button {
             text: "Resign"
-            onClicked: backendSender({type: "Resign"})
+            onClicked: boardScreen.backendSender({type: "Resign"})
         }
 
         Button {
             text: "Back to Home"
-            visible: statusText.indexOf("Game over") === 0
-            onClicked: navigateTo("HomeScreen.qml")
+            visible: boardScreen.statusText.indexOf("Game over") === 0
+            onClicked: boardScreen.navigateTo("HomeScreen.qml")
         }
     }
 
@@ -255,22 +259,22 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
-            fen = msg.fen
-            turn = msg.turn
-            whiteTimeMs = msg.white_time_ms
-            blackTimeMs = msg.black_time_ms
-            legalMoves = msg.legal_moves
-            lastMove = msg.last_move || null
-            inCheck = msg.in_check || false
-            yourColor = msg.your_color || "white"
-            statusText = ""
+            boardScreen.fen = msg.fen
+            boardScreen.turn = msg.turn
+            boardScreen.whiteTimeMs = msg.white_time_ms
+            boardScreen.blackTimeMs = msg.black_time_ms
+            boardScreen.legalMoves = msg.legal_moves
+            boardScreen.lastMove = msg.last_move || null
+            boardScreen.inCheck = msg.in_check || false
+            boardScreen.yourColor = msg.your_color || "white"
+            boardScreen.statusText = ""
         } else if (msg.type === "GameOver") {
-            statusText = "Game over: " + msg.result + " (" + msg.reason + ")"
+            boardScreen.statusText = "Game over: " + msg.result + " (" + msg.reason + ")"
         } else if (msg.type === "MoveRejected") {
-            statusText = "Move rejected: " + msg.reason
-            selectedSquare = ""
+            boardScreen.statusText = "Move rejected: " + msg.reason
+            boardScreen.selectedSquare = ""
         } else if (msg.type === "Reconnecting") {
-            statusText = "Reconnecting..."
+            boardScreen.statusText = "Reconnecting..."
         }
     }
 }

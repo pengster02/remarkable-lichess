@@ -12,13 +12,21 @@ cd "$(dirname "$0")/../backend"
 # actually compiled, since the dev machine used for Tasks 1-9 had no Linux target.
 cross build --release --target aarch64-unknown-linux-gnu --features transport --bin backend
 
-mkdir -p ../dist/remarkable-lichess
-cp target/aarch64-unknown-linux-gnu/release/backend ../dist/remarkable-lichess/backend
+mkdir -p ../dist/remarkable-lichess/backend
+cp target/aarch64-unknown-linux-gnu/release/backend ../dist/remarkable-lichess/backend/entry
 
 cd ../frontend
 cp manifest.json ../dist/remarkable-lichess/manifest.json
-# QML resource compilation (rcc) follows rm-appload's own example build
-# scripts (build-rm.sh / build-rmpp.sh in examples/appload/full/) — copy the
-# exact rcc invocation from whichever of those matches this device's XOVI
-# version once confirmed in Task 14 Step 3, rather than guessing the flags here.
-cp -r ui ../dist/remarkable-lichess/ui
+
+# AppLoad loads QML from a compiled Qt resource bundle (resources.rcc), not
+# loose .qml files on disk -- confirmed on-device (Task 14): it requests
+# qrc:/<app-namespace>/ui/main.qml, which only resolves if a real .rcc exists.
+# No Qt toolchain on the macOS dev machine, so compile it in a throwaway
+# Ubuntu container via Rancher/Docker instead.
+docker run --rm -e DEBIAN_FRONTEND=noninteractive \
+  -v "$(pwd):/frontend" \
+  ubuntu:24.04 bash -c "
+    apt-get update -qq && apt-get install -y -qq qt6-base-dev >/dev/null 2>&1
+    cd /frontend && /usr/lib/qt6/libexec/rcc --binary -o resources.rcc application.qrc
+  "
+cp resources.rcc ../dist/remarkable-lichess/resources.rcc
