@@ -151,6 +151,7 @@ Rectangle {
 
     Column {
         anchors.fill: parent
+        anchors.topMargin: 72
         spacing: 8
 
         Text {

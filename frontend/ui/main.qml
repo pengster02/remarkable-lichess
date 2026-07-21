@@ -130,7 +130,7 @@ Rectangle {
         width: 48
         height: 48
         anchors.top: parent.top
-        anchors.right: parent.right
+        anchors.left: parent.left
         anchors.margins: 12
         z: 1000
         radius: 4
