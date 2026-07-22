@@ -14,13 +14,23 @@ QtObject {
     id: theme
     property bool darkMode: false
 
-    readonly property color background: darkMode ? "#2b2b28" : "#eef1f0"
-    readonly property color text: darkMode ? "#e6e2d8" : "#15181a"
-    readonly property color textMuted: darkMode ? "#c8c4b8" : "#555550"
+    // One warm "paper" neutral family across the whole app (2026-07-22
+    // standardization pass): the light palette previously mixed a cool
+    // grey-green background/card family with the warm beige button family and
+    // the warm walnut/cream board -- two clashing temperature families on a
+    // panel that already has a warm yellow cast of its own. Everything
+    // neutral now sits in the same warm family the board and buttons were
+    // already in. textMuted also darkened: e-ink guidance from shipped
+    // readers (KOReader keeps its UI black-on-white and reserves grey for
+    // disabled states only) is to avoid mid-grey text -- the old #555550
+    // was a legibility risk on a panel with shallower black depth.
+    readonly property color background: darkMode ? "#2b2b28" : "#f2f0e9"
+    readonly property color text: darkMode ? "#e6e2d8" : "#191817"
+    readonly property color textMuted: darkMode ? "#c8c4b8" : "#403d36"
 
-    readonly property color cardBackground: darkMode ? "#332f26" : "#e2e7e6"
-    readonly property color cardBorder: darkMode ? "#5a5a55" : "#6b7472"
-    readonly property color cardTitleText: darkMode ? "#e6e2d8" : "#1f2422"
+    readonly property color cardBackground: darkMode ? "#332f26" : "#e9e5d8"
+    readonly property color cardBorder: darkMode ? "#5a5a55" : "#6f6a5c"
+    readonly property color cardTitleText: darkMode ? "#e6e2d8" : "#22201c"
     readonly property int cardRadius: 6
 
     // Button chrome -- same blue family as BoardSquare's isHighlighted/selected
@@ -29,7 +39,6 @@ QtObject {
     // selected board square, not an unrelated one-off color.
     readonly property color buttonBackground: darkMode ? "#3a3a30" : "#dcd6c4"
     readonly property color buttonBorder: darkMode ? "#7a705a" : "#8a7f6a"
-    readonly property color buttonPressedBackground: darkMode ? "#4a4838" : "#c8c0a8"
     readonly property color accentBackground: darkMode ? "#3a6485" : "#4f86ad"
     readonly property color accentText: "#f2ede0"
 
@@ -115,4 +124,22 @@ QtObject {
     readonly property int textFieldWidthNarrow: spacingLarge * 4
     readonly property int textFieldWidthMedium: spacingLarge * 6
     readonly property int textFieldWidthWide: spacingLarge * 10
+
+    // E-ink touch-target floor, from shipped e-ink software rather than
+    // phone guidelines alone: the accepted minimum finger target is ~9mm
+    // (81px at this panel's 229 PPI, matching Android's 48dp floor);
+    // comfortable is ~10.5mm. KOReader's full-width list rows land at 80px
+    // on a panel this size and stay hittable specifically because they're
+    // full-width. So: interactive rows span the full content width at
+    // listRowHeight minimum, and standalone buttons never shrink below
+    // touchTarget in either dimension (Button.qml already enforces height
+    // via exitButtonSize; width matters for short labels like "OK").
+    readonly property int touchTarget: 96
+    readonly property int listRowHeight: 120
+
+    // BoardScreen/GameReviewScreen player bars (opponent above the board,
+    // you below, lichess-mobile convention) -- tall enough for a name line
+    // plus a clock chip that itself stays a legible tap-free display size.
+    readonly property int playerBarHeight: 140
+    readonly property int fontClock: 64
 }

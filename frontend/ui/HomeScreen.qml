@@ -96,8 +96,12 @@ Rectangle {
                         model: homeScreen.ratings
                         Text {
                             required property var modelData
-                            text: modelData.speed.charAt(0).toUpperCase() + modelData.speed.slice(1) + ": " + modelData.rating
-                            font.pixelSize: theme.fontLabel
+                            // Rating number bold and a size class up from its
+                            // label -- the number is what someone actually
+                            // opens Home to check.
+                            text: modelData.speed.charAt(0).toUpperCase() + modelData.speed.slice(1) + "  <b>" + modelData.rating + "</b>"
+                            textFormat: Text.StyledText
+                            font.pixelSize: theme.fontBody
                             color: theme.text
                         }
                     }
@@ -129,7 +133,13 @@ Rectangle {
                             color: theme.text
                         }
                         Button {
+                            // Full-width row, not a shrink-wrapped button --
+                            // the e-ink list convention (KOReader et al.):
+                            // a row's hittability comes from spanning the
+                            // whole content width.
+                            width: parent.width
                             text: "Resume"
+                            highlighted: modelData.is_my_turn
                             onClicked: {
                                 // No BoardState flows for an already-in-progress game
                                 // until its stream is (re)attached server-side -- see
@@ -167,12 +177,18 @@ Rectangle {
                             color: theme.text
                         }
                         Row {
+                            width: parent.width
                             spacing: theme.spacingSmall
+                            // Two half-width targets filling the row -- Accept
+                            // gets the accent treatment as the primary action.
                             Button {
+                                width: (parent.width - theme.spacingSmall) / 2
                                 text: "Accept"
+                                highlighted: true
                                 onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
                             }
                             Button {
+                                width: (parent.width - theme.spacingSmall) / 2
                                 text: "Decline"
                                 onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
                             }
@@ -181,16 +197,24 @@ Rectangle {
                 }
             }
 
-            Flow {
+            // Full-width navigation rows (was a Flow of shrink-wrapped
+            // buttons whose widths varied with their own label lengths) --
+            // the e-ink list convention: every primary destination is one
+            // unmissable full-width target, stacked, identical in size.
+            // "New game" is the primary action and gets the accent.
+            Column {
                 width: parent.width
                 spacing: theme.spacingSmall
 
                 Button {
+                    width: parent.width
                     text: "New game"
+                    highlighted: true
                     onClicked: homeScreen.navigateTo("SeekScreen.qml")
                 }
 
                 Button {
+                    width: parent.width
                     text: "Game history"
                     onClicked: {
                         homeScreen.backendSender({type: "RequestGameHistory"})
@@ -206,11 +230,13 @@ Rectangle {
                     // black) scheme. Unverified on real e-ink until an on-device
                     // pass; dark fills are a plausible ghosting risk worth watching
                     // for.
+                    width: parent.width
                     text: homeScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
                     onClicked: homeScreen.toggleDarkMode()
                 }
 
                 Button {
+                    width: parent.width
                     text: "Settings"
                     onClicked: homeScreen.navigateTo("SettingsScreen.qml")
                 }

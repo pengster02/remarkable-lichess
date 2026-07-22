@@ -13,6 +13,7 @@
         <file>ui/GameReviewScreen.qml</file>
         <file>ui/BoardScreen.qml</file>
         <file>ui/BoardSquare.qml</file>
+        <file>ui/PlayerBar.qml</file>
         <file>assets/ChessGlyphs.ttf</file>
         <file>assets/pieces/wK.png</file>
         <file>assets/pieces/wQ.png</file>

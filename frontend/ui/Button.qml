@@ -34,13 +34,22 @@ QQC2.Button {
     rightPadding: theme.spacingLarge + theme.spacingMedium
     implicitHeight: Math.max(contentItem.implicitHeight + topPadding + bottomPadding, theme.exitButtonSize)
 
+    // Never narrower than a real touch target even for one-character labels.
+    implicitWidth: Math.max(contentItem.implicitWidth + leftPadding + rightPadding, theme.touchTarget * 2)
+
     background: Rectangle {
         radius: theme.cardRadius
-        border.width: 1
+        border.width: control.highlighted ? 3 : 1
         border.color: control.highlighted ? theme.accentBackground : theme.buttonBorder
-        color: control.highlighted
-            ? theme.accentBackground
-            : (control.pressed ? theme.buttonPressedBackground : theme.buttonBackground)
+        // Pressed = full inversion (bg and text swap), the canonical e-ink
+        // pressed state -- KOReader's shipped button widget flashes exactly
+        // this invert with a fast waveform rather than a grey tint, because a
+        // subtle mid-tone shift is easy to miss at e-ink refresh latency
+        // while a black/white swap is unmissable. The old
+        // buttonPressedBackground tint (a slightly darker beige) is gone.
+        color: control.pressed
+            ? theme.text
+            : (control.highlighted ? theme.accentBackground : theme.buttonBackground)
         // A disabled nav button (e.g. GameReviewScreen's Prev/Next at either
         // end) previously looked pixel-identical to an enabled one -- on
         // e-ink, a dead tap with zero visual feedback reads as "the app
@@ -50,8 +59,8 @@ QQC2.Button {
         // researched color the way every other Theme entry already has.
         opacity: control.enabled ? 1.0 : 0.45
 
-        // Every press/release flips buttonPressedBackground on and off --
-        // two Content-quality (slow, high-fidelity) waveform updates per tap
+        // Every press/release flips the invert on and off -- two
+        // Content-quality (slow, high-fidelity) waveform updates per tap
         // otherwise, for state that's purely transient tap feedback. See
         // docs/remarkable-appload-platform-notes.md §2.
         DisplayMethodArea {
@@ -63,7 +72,9 @@ QQC2.Button {
     contentItem: Text {
         text: control.text
         font: control.font
-        color: control.highlighted ? theme.accentText : theme.text
+        color: control.pressed
+            ? theme.background
+            : (control.highlighted ? theme.accentText : theme.text)
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         opacity: control.enabled ? 1.0 : 0.45

@@ -79,11 +79,18 @@ Rectangle {
             TextField { id: incrementField; text: "0"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
         }
 
-        CheckBox {
-            text: "Rated"
+        // Casual/Rated as a highlighted toggle pair, same pattern as the
+        // Color selector below -- the previous QtQuick Controls CheckBox was
+        // the one control on this screen still using the un-themed Basic
+        // style: a desktop-sized indicator well under this panel's touch
+        // floor, with built-in check animations to boot.
+        Flow {
+            width: parent.width
+            spacing: theme.spacingSmall
             visible: !seekScreen.waiting
-            checked: seekScreen.rated
-            onCheckedChanged: seekScreen.rated = checked
+            Text { text: "Game:"; font.pixelSize: theme.fontLarge; color: theme.text }
+            Button { text: "Casual"; highlighted: !seekScreen.rated; onClicked: seekScreen.rated = false }
+            Button { text: "Rated"; highlighted: seekScreen.rated; onClicked: seekScreen.rated = true }
         }
 
         Flow {
@@ -97,7 +104,9 @@ Rectangle {
         }
 
         Button {
+            width: parent.width
             text: "Open seek (auto-pair)"
+            highlighted: true
             visible: !seekScreen.waiting
             onClicked: seekScreen.backendSender({
                 type: "CreateSeek",
@@ -126,6 +135,7 @@ Rectangle {
         }
 
         Button {
+            width: parent.width
             text: "Create open challenge link"
             visible: !seekScreen.waiting && seekScreen.openChallengeUrls === null
             onClicked: seekScreen.backendSender({
@@ -197,6 +207,7 @@ Rectangle {
         }
 
         Button {
+            width: parent.width
             text: "Cancel"
             visible: seekScreen.waiting
             onClicked: {

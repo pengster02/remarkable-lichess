@@ -13,6 +13,10 @@ Rectangle {
 
     property string fen: ""
     property string turn: "white"
+    // Pushed from main.qml's root state (TokenVerified's username) -- shown
+    // on your own player bar below the board, matching every reference
+    // client's "your side is a real labeled player too" treatment.
+    property string username: ""
     property int whiteTimeMs: 0
     property int blackTimeMs: 0
     // Fixed for the game's lifetime (see game::session::GameSession) -- null
@@ -215,6 +219,29 @@ Rectangle {
     // which matters for how quickly a frame is ready to hand to the display.
     property var selectedDestinations: boardScreen.destinationsFrom(boardScreen.selectedSquare)
     property string checkedSquare: boardScreen.checkedKingSquare()
+    // Which color renders at the bottom of the board -- your side unless
+    // manually flipped. The player bars below key off this so they follow
+    // board orientation exactly (flip the board, the bars/clocks swap too),
+    // the same behavior lichess mobile documents for its own Flip board.
+    property string bottomColor: ((boardScreen.yourColor === "black") !== boardScreen.manualFlip) ? "black" : "white"
+    property string topColor: bottomColor === "white" ? "black" : "white"
+
+    // Player-bar lookups by side. Your own bar has no rating to show (the
+    // backend only sends the opponent's) -- null keeps the suffix off.
+    function nameFor(color) {
+        if (color === boardScreen.yourColor) {
+            return boardScreen.username.length > 0 ? boardScreen.username : "You"
+        }
+        return boardScreen.opponentName.length > 0 ? boardScreen.opponentName : "Opponent"
+    }
+
+    function ratingFor(color) {
+        return color === boardScreen.yourColor ? null : boardScreen.opponentRating
+    }
+
+    function clockFor(color) {
+        return color === "white" ? boardScreen.whiteTimeMs : boardScreen.blackTimeMs
+    }
     // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
     // rank/file labels every redraw, each call allocating two fresh arrays --
     // same "compute once, index many" reasoning as selectedDestinations above.
@@ -336,48 +363,28 @@ Rectangle {
     }
 
     Column {
-        // Bottom edge now stops above the fixed backButton below (was
-        // `anchors.fill: parent`, which let "Back to Home" just be whatever
-        // the last item in this same Column happened to be) -- same shared
-        // top/side margins as every other screen in this pass. Deliberately
-        // *not* wrapped in a Flickable here unlike the other screens this
-        // pass touched: the board Grid's own width formula
-        // (`boardScreen.height - 320`) already assumes a specific relationship
-        // to this Column's available height, and this is the one screen
-        // where a sizing mistake I can't visually verify would land mid-game,
-        // not just on a settings/setup screen -- lower risk to leave this
-        // screen's own internal overflow behavior as whatever it already was
-        // and only fix the two things actually asked for (margin consistency,
-        // Back to Home's position) than to restructure scrolling behavior
-        // here blind.
+        // Fixed (non-scrolling) chess frame: opponent bar, board, your bar --
+        // the standard sides arrangement every reference client uses. The
+        // action buttons / move list / chat below live in their own Flickable
+        // so every control stays reachable regardless of how much of it is
+        // visible at once; the board itself never scrolls off-screen.
+        id: boardColumn
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
-        anchors.bottomMargin: theme.spacingSmall
         spacing: theme.spacingXs
 
-        Text {
-            visible: boardScreen.opponentName.length > 0
-            text: "vs " + boardScreen.opponentName + (boardScreen.opponentRating !== null ? " (" + boardScreen.opponentRating + ")" : "")
-            font.pixelSize: theme.fontBody
-            color: theme.text
-        }
-
-        Text {
-            // No local ticking (see the removed Timer's comment below): this shows
-            // the clock exactly as of the last authoritative BoardState from the
-            // server -- i.e. it updates on moves/reconnects, not every second.
-            text: "Black: " + boardScreen.formatClock(boardScreen.blackTimeMs)
-            font.pixelSize: theme.fontLarge
-            color: boardScreen.isLowTime(boardScreen.blackTimeMs, boardScreen.initialClockMs) ? theme.errorText : theme.text
-
-            DisplayMethodArea {
-                anchors.fill: parent
-                displayMethod: DisplayMethodArea.Fast
-            }
+        PlayerBar {
+            width: parent.width
+            darkMode: boardScreen.darkMode
+            playerName: boardScreen.nameFor(boardScreen.topColor)
+            rating: boardScreen.ratingFor(boardScreen.topColor)
+            clockMs: boardScreen.clockFor(boardScreen.topColor)
+            showClock: boardScreen.initialClockMs !== null
+            active: boardScreen.turn === boardScreen.topColor
+            lowTime: boardScreen.isLowTime(boardScreen.clockFor(boardScreen.topColor), boardScreen.initialClockMs)
         }
 
         Row {
@@ -400,30 +407,50 @@ Rectangle {
                 }
             }
 
-            Grid {
-                id: grid
-                columns: 8
-                rows: 8
-                width: Math.min(boardScreen.width - rankLabels.width - theme.spacingXs, boardScreen.height - 320)
-                height: width
+            // Wraps the Grid rather than overlaying it from elsewhere in the
+            // tree: DisplayMethodArea's documented usage is as a wrapper
+            // around the region it hints (see the framework's own example
+            // wrapping a Text), and QML anchors can only target a parent or
+            // sibling anyway -- the previous root-level `anchors.fill: grid`
+            // overlay silently failed to anchor at all for exactly that
+            // reason. Selection/legal-destination/last-move/check
+            // highlighting is all transient state where speed beats fidelity
+            // -- the pieces themselves are flat black/white line art that
+            // survives a fast waveform fine. See
+            // docs/remarkable-appload-platform-notes.md §2.
+            DisplayMethodArea {
+                displayMethod: DisplayMethodArea.Fast
+                width: grid.width
+                height: grid.height
 
-                Repeater {
-                    model: 64
-                    BoardSquare {
-                        required property int index
-                        width: grid.width / 8
-                        height: grid.height / 8
-                        property int fileIdx: index % 8
-                        property int rankIdx: Math.floor(index / 8)
-                        squareName: boardScreen.fr.files[fileIdx] + boardScreen.fr.ranks[rankIdx]
-                        isLight: (fileIdx + rankIdx) % 2 === 0
-                        darkMode: boardScreen.darkMode
-                        pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
-                        isHighlighted: boardScreen.selectedSquare === squareName ||
-                            (!boardScreen.minimalHighlights && boardScreen.selectedDestinations.indexOf(squareName) !== -1)
-                        isLastMove: boardScreen.isLastMoveSquare(squareName)
-                        isCheckSquare: squareName === boardScreen.checkedSquare
-                        onTapped: boardScreen.onSquareTapped(squareName)
+                Grid {
+                    id: grid
+                    columns: 8
+                    rows: 8
+                    // Width-driven on the real (portrait) panel; the height
+                    // cap only exists so a shorter/landscape host (the PC
+                    // emulator) still gets a usable, non-overflowing board.
+                    width: Math.min(boardColumn.width - rankLabels.width - theme.spacingXs, boardScreen.height * 0.5)
+                    height: width
+
+                    Repeater {
+                        model: 64
+                        BoardSquare {
+                            required property int index
+                            width: grid.width / 8
+                            height: grid.height / 8
+                            property int fileIdx: index % 8
+                            property int rankIdx: Math.floor(index / 8)
+                            squareName: boardScreen.fr.files[fileIdx] + boardScreen.fr.ranks[rankIdx]
+                            isLight: (fileIdx + rankIdx) % 2 === 0
+                            darkMode: boardScreen.darkMode
+                            pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
+                            isHighlighted: boardScreen.selectedSquare === squareName ||
+                                (!boardScreen.minimalHighlights && boardScreen.selectedDestinations.indexOf(squareName) !== -1)
+                            isLastMove: boardScreen.isLastMoveSquare(squareName)
+                            isCheckSquare: squareName === boardScreen.checkedSquare
+                            onTapped: boardScreen.onSquareTapped(squareName)
+                        }
                     }
                 }
             }
@@ -448,20 +475,48 @@ Rectangle {
             }
         }
 
-        Text {
-            text: "White: " + boardScreen.formatClock(boardScreen.whiteTimeMs)
-            font.pixelSize: theme.fontLarge
-            color: boardScreen.isLowTime(boardScreen.whiteTimeMs, boardScreen.initialClockMs) ? theme.errorText : theme.text
-
-            DisplayMethodArea {
-                anchors.fill: parent
-                displayMethod: DisplayMethodArea.Fast
-            }
+        PlayerBar {
+            width: parent.width
+            darkMode: boardScreen.darkMode
+            playerName: boardScreen.nameFor(boardScreen.bottomColor)
+            rating: boardScreen.ratingFor(boardScreen.bottomColor)
+            clockMs: boardScreen.clockFor(boardScreen.bottomColor)
+            showClock: boardScreen.initialClockMs !== null
+            active: boardScreen.turn === boardScreen.bottomColor
+            lowTime: boardScreen.isLowTime(boardScreen.clockFor(boardScreen.bottomColor), boardScreen.initialClockMs)
         }
+    }
+
+    Flickable {
+        // Everything below the chess frame scrolls -- so the draw/takeback/
+        // resign controls, move list, and chat are all always reachable no
+        // matter how many of the conditional rows (offers, claim victory,
+        // confirm) happen to be visible at once. The board and player bars
+        // above never move.
+        anchors.top: boardColumn.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: backButton.top
+        anchors.margins: theme.pageSideMargin
+        anchors.topMargin: theme.spacingSmall
+        anchors.bottomMargin: theme.spacingSmall
+        contentWidth: width
+        contentHeight: actionsColumn.height
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
+
+        Column {
+        id: actionsColumn
+        width: parent.width
+        spacing: theme.spacingXs
 
         Text {
+            visible: boardScreen.statusText.length > 0
             text: boardScreen.statusText
             font.pixelSize: theme.fontLarge
+            font.bold: true
+            wrapMode: Text.WordWrap
+            width: parent.width
             color: theme.text
 
             DisplayMethodArea {
@@ -592,21 +647,7 @@ Rectangle {
             }
         }
 
-    }
-
-    // A root-level sibling anchored to `grid`'s own bounds, matching how
-    // backButton/promotionPopup below are also declared outside the main
-    // Column -- placing this *inside* Grid/Row (both positioners) would have
-    // it auto-positioned as an extra layout cell/row item instead of treated
-    // as a plain overlay, since positioners lay out every visible child of
-    // their own regardless of whether that child paints anything itself.
-    // Selection/legal-destination/last-move/check highlighting is all
-    // transient state where speed beats fidelity -- the pieces themselves
-    // are flat black/white line art that survives a fast waveform fine. See
-    // docs/remarkable-appload-platform-notes.md §2.
-    DisplayMethodArea {
-        anchors.fill: grid
-        displayMethod: DisplayMethodArea.Fast
+        }
     }
 
     Button {
