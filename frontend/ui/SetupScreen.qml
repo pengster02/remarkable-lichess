@@ -69,7 +69,9 @@ Rectangle {
             }
 
             Button {
+                width: parent.width
                 text: "Save"
+                highlighted: true
                 onClicked: {
                     errorText.text = ""
                     setupScreen.backendSender({type: "SaveToken", token: tokenField.text})

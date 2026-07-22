@@ -368,6 +368,16 @@ Rectangle {
                 }
             }
 
+            // Wraps the Grid -- DisplayMethodArea's documented usage, and the
+            // previous root-level `anchors.fill: grid` overlay could never
+            // anchor (QML anchors only target a parent or sibling). Same
+            // transient-highlight (here: last-move diff) reasoning as
+            // BoardScreen's board -- speed beats fidelity for it.
+            DisplayMethodArea {
+                displayMethod: DisplayMethodArea.Fast
+                width: grid.width
+                height: grid.height
+
             Grid {
                 id: grid
                 columns: 8
@@ -398,6 +408,7 @@ Rectangle {
                         isLastMove: gameReviewScreen.lastMoveSquaresCached.indexOf(squareName) !== -1
                     }
                 }
+            }
             }
         }
 
@@ -449,17 +460,6 @@ Rectangle {
                 onClicked: gameReviewScreen.manualFlip = !gameReviewScreen.manualFlip
             }
         }
-    }
-
-    // Root-level sibling anchored to `grid`'s own bounds -- same reasoning as
-    // BoardScreen.qml's own copy of this: placing it inside Grid/Row (both
-    // positioners) would have it auto-positioned as an extra layout cell
-    // instead of treated as a plain overlay. Same transient-highlight
-    // (here: last-move diff) reasoning as BoardScreen's board -- speed beats
-    // fidelity for it. See docs/remarkable-appload-platform-notes.md §2.
-    DisplayMethodArea {
-        anchors.fill: grid
-        displayMethod: DisplayMethodArea.Fast
     }
 
     Button {

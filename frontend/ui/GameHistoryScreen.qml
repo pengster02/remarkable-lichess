@@ -175,7 +175,9 @@ Rectangle {
         delegate: Rectangle {
                 required property var modelData
                 width: gameHistoryScreen.width - theme.pageSideMargin * 2
-                height: rowContent.height + theme.spacingMedium
+                // Never thinner than the shared list-row touch floor, however
+                // little text a row happens to have.
+                height: Math.max(rowContent.height + theme.spacingMedium, theme.listRowHeight)
                 color: theme.cardBackground
                 border.width: 1
                 border.color: theme.cardBorder

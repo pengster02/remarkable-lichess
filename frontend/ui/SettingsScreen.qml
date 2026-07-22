@@ -82,7 +82,14 @@ Rectangle {
                     // brightness-only, no adjustable color temperature (see
                     // docs/remarkable-appload-platform-notes.md). This just swaps this
                     // app's own palette to a darker, e-ink-friendly (not pure black) scheme.
+                    //
+                    // All four toggles here: full-width rows (e-ink list
+                    // convention), and `highlighted` mirrors the On state so
+                    // the setting's state is carried by fill + border, not
+                    // just the label suffix.
+                    width: parent.width
                     text: settingsScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
+                    highlighted: settingsScreen.darkMode
                     onClicked: settingsScreen.toggleDarkMode()
                 }
 
@@ -94,7 +101,9 @@ Rectangle {
                 // just offers the tradeoff to whoever wants faster feedback
                 // over it.
                 Button {
+                    width: parent.width
                     text: "Minimal highlights: " + (settingsScreen.minimalHighlights ? "On" : "Off")
+                    highlighted: settingsScreen.minimalHighlights
                     onClicked: settingsScreen.setMinimalHighlights(!settingsScreen.minimalHighlights)
                 }
             }
@@ -110,7 +119,9 @@ Rectangle {
                 // has. Off by default -- BoardScreen's promotion popup is the only way to
                 // underpromote at all, so silently skipping it isn't the safer default.
                 Button {
+                    width: parent.width
                     text: "Auto-queen promotion: " + (settingsScreen.autoQueenPromotion ? "On" : "Off")
+                    highlighted: settingsScreen.autoQueenPromotion
                     onClicked: settingsScreen.setAutoQueenPromotion(!settingsScreen.autoQueenPromotion)
                 }
 
@@ -120,7 +131,9 @@ Rectangle {
                 // is already the fast path, so silently gating every move
                 // behind an extra tap isn't the safer default either.
                 Button {
+                    width: parent.width
                     text: "Confirm moves: " + (settingsScreen.moveConfirmation ? "On" : "Off")
+                    highlighted: settingsScreen.moveConfirmation
                     onClicked: settingsScreen.setMoveConfirmation(!settingsScreen.moveConfirmation)
                 }
             }
@@ -131,6 +144,7 @@ Rectangle {
                 width: parent.width
 
                 Button {
+                    width: parent.width
                     text: settingsScreen.logOutArmed ? "Tap again to log out" : "Log out"
                     onClicked: {
                         if (settingsScreen.logOutArmed) {
