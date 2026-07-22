@@ -28,12 +28,43 @@ cp manifest.json ../dist/remarkable-lichess/manifest.json
 # AppLoad loads QML from a compiled Qt resource bundle (resources.rcc), not
 # loose .qml files on disk -- confirmed on-device (Task 14): it requests
 # qrc:/<app-namespace>/ui/main.qml, which only resolves if a real .rcc exists.
-# No Qt toolchain on the macOS dev machine, so compile it in a throwaway
-# Ubuntu container via Rancher/Docker instead.
-docker run --rm -e DEBIAN_FRONTEND=noninteractive \
+# No Qt toolchain on the macOS dev machine, so compile it via containers
+# instead -- but NOT by apt-installing qt6-base-dev in an Ubuntu container
+# (the original approach here): some build environments can reach PyPI,
+# crates.io, and Docker Hub just fine but not Debian/Ubuntu's own package
+# mirrors at all (confirmed live in one such environment: every apt mirror,
+# http and https, timed out on every retry, while pip/cargo/docker pull all
+# worked immediately) -- and qt6-base-dev alone pulls in ~30 packages
+# (vulkan, wayland, gtk theme, translations, ...), multiplying the exposure
+# to that kind of flaky/blocked package-mirror access for zero benefit, since
+# only the `rcc` binary itself is ever used.
+#
+# Instead: PySide6's own PyPI wheel bundles the real Qt6 `rcc` binary (same
+# binary format Qt itself ships, since PySide6 is built from the same Qt6
+# source) plus almost all of its shared-library dependencies -- except
+# libglib-2.0.so.0, needed only by libQt6Core.so.6's optional GLib
+# event-loop integration, which a plain file-to-file `rcc` invocation never
+# actually drives. glib_stub.c supplies just the ~15 symbols that
+# integration needs to *load* (confirmed via `nm -D` against the real
+# libQt6Core.so.6), compiled fresh each run using the same aarch64 cross
+# toolchain the backend build above already pulled -- no extra image, no
+# extra network dependency, and no risk of a stale prebuilt binary drifting
+# from its own source.
+CROSS_IMAGE="ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+STUB_DIR="$(mktemp -d)"
+trap 'rm -rf "$STUB_DIR"' EXIT
+cp ../scripts/glib_stub.c "$STUB_DIR/"
+docker run --rm -v "$STUB_DIR:/stub" "$CROSS_IMAGE" \
+  aarch64-linux-gnu-gcc-13 -shared -fPIC -Wl,-soname,libglib-2.0.so.0 -o /stub/libglib-2.0.so.0 /stub/glib_stub.c
+
+docker run --rm \
   -v "$(pwd):/frontend" \
-  ubuntu:24.04 bash -c "
-    apt-get update -qq && apt-get install -y -qq qt6-base-dev >/dev/null 2>&1
-    cd /frontend && /usr/lib/qt6/libexec/rcc --binary -o resources.rcc application.qrc
-  "
+  -v "$STUB_DIR:/stublib" \
+  python:3-slim bash -c '
+    set -e
+    pip install --no-cache-dir --quiet pyside6-essentials
+    PYSIDE_DIR="$(python3 -c "import PySide6, os; print(os.path.dirname(PySide6.__file__))")"
+    cp /stublib/libglib-2.0.so.0 "$PYSIDE_DIR/Qt/lib/libglib-2.0.so.0"
+    cd /frontend && "$PYSIDE_DIR/Qt/libexec/rcc" --binary -o resources.rcc application.qrc
+  '
 cp resources.rcc ../dist/remarkable-lichess/resources.rcc
