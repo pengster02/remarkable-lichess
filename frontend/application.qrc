@@ -1,11 +1,16 @@
 <RCC>
     <qresource prefix="/">
         <file>ui/main.qml</file>
+        <file>ui/Theme.qml</file>
+        <file>ui/Button.qml</file>
+        <file>ui/TextField.qml</file>
+        <file>ui/SectionCard.qml</file>
         <file>ui/SetupScreen.qml</file>
         <file>ui/HomeScreen.qml</file>
         <file>ui/SeekScreen.qml</file>
         <file>ui/SettingsScreen.qml</file>
         <file>ui/GameHistoryScreen.qml</file>
+        <file>ui/GameReviewScreen.qml</file>
         <file>ui/BoardScreen.qml</file>
         <file>ui/BoardSquare.qml</file>
         <file>assets/ChessGlyphs.ttf</file>

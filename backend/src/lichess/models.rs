@@ -31,14 +31,18 @@ pub struct Account {
     pub perfs: Option<Perfs>,
 }
 
-// The exact NowPlayingGame schema file couldn't be located in lichess-org/api's
-// spec repo during this pass (only the `nowPlaying` wrapper's shape was
-// confirmed) -- `opponent` is added defensively as fully Option, same posture
-// as Player's fields above, rather than assumed to always be present.
+// Inline schema confirmed against lichess-org/api's api-account-playing.yaml
+// (no standalone NowPlayingGame schema file exists) -- `opponent` is still
+// added defensively as fully Option, same posture as Player's fields above,
+// rather than assumed to always be present despite that spec marking
+// id/username required. `ai` is the built-in AI's level (present instead of
+// username/rating for those games, same aiLevel-instead-of-user split as
+// GamePlayerUser).
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct PlayingOpponent {
     pub username: Option<String>,
     pub rating: Option<u32>,
+    pub ai: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -147,6 +151,33 @@ pub struct EventGame {
     pub id: String,
 }
 
+// The `game` payload of the account event stream's `gameFinish` event
+// (confirmed against lichess-org/api's GameEventInfo.yaml -- a much larger
+// schema shared with `gameStart`, only `id`/`ratingDiff` are modeled here
+// since that's all this needs). Deliberately a separate struct from
+// `EventGame` rather than adding `rating_diff` there: `gameStart`'s own real
+// payload (per that same schema's `stream-gameStart.json.yaml` example) never
+// carries a rating change at all (the game just began), so giving `EventGame`
+// an always-absent field would be misleading about what `gameStart` can
+// actually contain.
+//
+// IMPORTANT: this is NOT the same stream as the per-game
+// `/api/board/game/stream/{id}` this app already reads for live board state
+// (see GameState below) -- confirmed by reading GameStateEvent.yaml directly,
+// which has no ratingDiff field at all. `ratingDiff` only exists on this
+// account-wide event stream's gameFinish, a stream this app already holds
+// open (see backend_app.rs's spawn_streams) but previously ignored this
+// specific event type on.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GameFinishInfo {
+    pub id: String,
+    // Confirmed against GameEventInfo.yaml: absent on casual (unrated) games,
+    // not just omitted-defaults-to-zero -- #[serde(default)] so a missing key
+    // deserializes to None rather than failing the whole event to parse.
+    #[serde(default, rename = "ratingDiff")]
+    pub rating_diff: Option<i32>,
+}
+
 // Confirmed against lichess-org/api's ChallengeJson.yaml / ChallengeUser.yaml.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ChallengeUser {
@@ -186,7 +217,7 @@ pub enum EventStreamMessage {
     #[serde(rename = "gameStart")]
     GameStart { game: EventGame },
     #[serde(rename = "gameFinish")]
-    GameFinish { game: EventGame },
+    GameFinish { game: GameFinishInfo },
     #[serde(rename = "challenge")]
     Challenge,
     #[serde(rename = "challengeCanceled")]
@@ -207,15 +238,38 @@ pub struct LightUser {
     pub name: Option<String>,
 }
 
+// Confirmed against lichess-org/api's GamePlayerUser.yaml's own nested
+// `analysis` property -- a whole-game summary (not per-move; see
+// GameMoveAnalysis below for that), present whenever this specific game has
+// been through Lichess's computer analysis. `accuracy` is genuinely optional
+// per that schema (not in its own `required` list) even when the rest of this
+// object is present.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct PlayerAnalysisSummary {
+    pub inaccuracy: u32,
+    pub mistake: u32,
+    pub blunder: u32,
+    pub acpl: u32,
+    pub accuracy: Option<u32>,
+}
+
 // Confirmed against lichess-org/api's GamePlayerUser.yaml. `user` is absent for
 // an AI opponent (only `aiLevel` is present then), matching Player's AI-opponent
-// posture elsewhere in this file.
+// posture elsewhere in this file. `ratingDiff` is this side's own rating change
+// from this one game (rated games only) -- was already in the real payload but
+// unmodeled, so history_game_to_summary had no way to surface it. `analysis`
+// arrives on this same object in both GET /api/games/user (history list) and
+// GET /api/game/export/{id} (single-game export) responses, since both share
+// this schema -- no extra request needed to get it for the history list.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GamePlayerUser {
     pub user: Option<LightUser>,
     pub rating: Option<u32>,
     #[serde(rename = "aiLevel")]
     pub ai_level: Option<u8>,
+    #[serde(rename = "ratingDiff")]
+    pub rating_diff: Option<i32>,
+    pub analysis: Option<PlayerAnalysisSummary>,
 }
 
 // Confirmed against lichess-org/api's GamePlayers.yaml.
@@ -264,6 +318,50 @@ pub struct HistoryGame {
     pub opening: Option<GameOpening>,
 }
 
+// Confirmed against lichess-org/api's GameMoveAnalysis.yaml. `best`/`variation`
+// aren't modeled (only shown alongside `judgment` in Lichess's own analysis
+// board UI, which this app doesn't have) -- `eval`/`mate`/`judgment` are
+// enough to show an eval and an inaccuracy/mistake/blunder tag per move.
+// Exactly one of `eval`/`mate` is present per entry: `eval` (centipawns, from
+// White's perspective) for a normal position, `mate` (plies to forced mate,
+// same sign convention) once one side has a forced mate on the board.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct GameMoveAnalysis {
+    pub eval: Option<i32>,
+    pub mate: Option<i32>,
+    pub judgment: Option<MoveJudgment>,
+}
+
+// Confirmed against lichess-org/api's GameMoveAnalysis.yaml's own nested
+// `judgment` property. `name` is always one of Inaccuracy/Mistake/Blunder.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct MoveJudgment {
+    pub name: String,
+    pub comment: String,
+}
+
+// GET /api/game/export/{id} (Accept: application/json) response -- confirmed
+// against lichess-org/api's games-exportOneGame.json.yaml example and
+// game-export-gameId.yaml's own query params. That endpoint returns dozens of
+// fields (players, opening, clock, division, ...); only the ones game review
+// actually uses are modeled: `moves` to replay (see
+// game::replay::fens_for_moves, confirmed space-separated SAN e.g. "d4 d5 c4
+// c6 Nc3 ...", not UCI, unlike the live board stream's GameState.moves),
+// `clocks` (remaining time in centiseconds after each ply) and `analysis`
+// (per-ply eval/judgment) -- both included by default (`clocks`/`evals` query
+// params both default to `true` per that endpoint's own spec) whenever
+// Lichess actually has that data for this game, so no extra request-side
+// flags are needed to ask for them.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GameExport {
+    #[serde(default)]
+    pub moves: String,
+    #[serde(default)]
+    pub clocks: Vec<u32>,
+    #[serde(default)]
+    pub analysis: Vec<GameMoveAnalysis>,
+}
+
 // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- only the fields
 // needed to show/share the created link are modeled (variant/perf/timeControl
 // etc. aren't shown anywhere in this app).
@@ -309,6 +407,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_game_finish_event_with_rating_diff_ignoring_extra_fields() {
+        // Real payload has dozens more fields (fen/opponent/status/clock/...) --
+        // confirmed against lichess-org/api's stream-gameFinish.json.yaml example.
+        let json = r#"{"type":"gameFinish","game":{"fullId":"0FgNPGRzhDaW","gameId":"0FgNPGRz","id":"0FgNPGRz","rated":true,"winner":"black","rating":724,"ratingDiff":-9}}"#;
+        let msg: EventStreamMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            msg,
+            EventStreamMessage::GameFinish { game: GameFinishInfo { id: "0FgNPGRz".into(), rating_diff: Some(-9) } }
+        );
+    }
+
+    #[test]
+    fn game_finish_event_defaults_rating_diff_to_none_for_a_casual_game() {
+        let json = r#"{"type":"gameFinish","game":{"id":"abcd1234","rated":false}}"#;
+        let msg: EventStreamMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            msg,
+            EventStreamMessage::GameFinish { game: GameFinishInfo { id: "abcd1234".into(), rating_diff: None } }
+        );
+    }
+
+    #[test]
     fn parses_challenge_lifecycle_events_ignoring_extra_fields() {
         let json = r#"{"type":"challenge","challenge":{"id":"H9fIRZUk","challenger":{"id":"bot1","name":"Bot1"}}}"#;
         assert_eq!(serde_json::from_str::<EventStreamMessage>(json).unwrap(), EventStreamMessage::Challenge);
@@ -337,6 +457,17 @@ mod tests {
         let opponent = parsed.now_playing[0].opponent.as_ref().unwrap();
         assert_eq!(opponent.username.as_deref(), Some("Bob"));
         assert_eq!(opponent.rating, Some(1500));
+    }
+
+    #[test]
+    fn parses_playing_response_with_ai_opponent() {
+        // Confirmed against lichess-org/api's api-account-playing.yaml -- the
+        // built-in AI has no username, only `ai` (its level).
+        let json = r#"{"nowPlaying":[{"gameId":"abcd1234","isMyTurn":true,"opponent":{"ai":5,"rating":1500}}]}"#;
+        let parsed: PlayingResponse = serde_json::from_str(json).unwrap();
+        let opponent = parsed.now_playing[0].opponent.as_ref().unwrap();
+        assert_eq!(opponent.username, None);
+        assert_eq!(opponent.ai, Some(5));
     }
 
     #[test]
@@ -378,6 +509,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_history_game_with_player_analysis_summary() {
+        // Present once this specific game has gone through Lichess's computer
+        // analysis -- absent (None) otherwise, which must not fail to parse.
+        let json = r#"{"id":"abcd1234","rated":true,"variant":"standard","speed":"blitz","perf":"blitz","createdAt":1,"lastMoveAt":2,"status":"mate","players":{"white":{"user":{"id":"myuser","name":"MyUser"},"rating":1600,"analysis":{"inaccuracy":5,"mistake":2,"blunder":1,"acpl":26,"accuracy":90}},"black":{"user":{"id":"bob","name":"Bob"},"rating":1580}},"winner":"white"}"#;
+        let game: HistoryGame = serde_json::from_str(json).unwrap();
+        let summary = game.players.white.analysis.unwrap();
+        assert_eq!(summary.blunder, 1);
+        assert_eq!(summary.accuracy, Some(90));
+        assert_eq!(game.players.black.analysis, None);
+    }
+
+    #[test]
     fn parses_history_game_with_ai_opponent_and_no_winner() {
         // Draws (and AI opponents) omit `winner`/`user` -- must not fail to parse.
         let json = r#"{"id":"xyz","rated":false,"variant":"standard","speed":"blitz","perf":"blitz","createdAt":1,"lastMoveAt":2,"status":"draw","players":{"white":{"user":{"id":"myuser","name":"MyUser"},"rating":1600},"black":{"aiLevel":5}}}"#;
@@ -402,6 +545,36 @@ mod tests {
         assert!(state.bdraw);
         assert!(state.wtakeback);
         assert!(!state.btakeback);
+    }
+
+    #[test]
+    fn parses_game_export_moves_as_space_separated_san_ignoring_extra_fields() {
+        // Real shape has dozens more fields (players/opening/analysis/clock/...) --
+        // only `moves` is modeled, everything else must be ignored, not fail to parse.
+        let json = r#"{"id":"abcd1234","rated":true,"variant":"standard","speed":"blitz","perf":"blitz","createdAt":1,"lastMoveAt":2,"status":"mate","players":{"white":{"user":{"name":"A","id":"a"},"rating":1600},"black":{"user":{"name":"B","id":"b"},"rating":1580}},"winner":"white","moves":"e4 e5 Nf3 Nc6"}"#;
+        let export: GameExport = serde_json::from_str(json).unwrap();
+        assert_eq!(export.moves, "e4 e5 Nf3 Nc6");
+        // Neither field was in this payload -- must default to empty, not error,
+        // for the (common) case of an untimed or never-analyzed game.
+        assert_eq!(export.clocks, Vec::<u32>::new());
+        assert_eq!(export.analysis, Vec::new());
+    }
+
+    #[test]
+    fn parses_game_export_clocks_and_analysis_when_present() {
+        // Trimmed real shape (see games-exportOneGame.json.yaml's own example) --
+        // one inaccuracy-judged move, one plain eval, one forced-mate eval.
+        let json = r#"{"moves":"e4 e5 Qh5","clocks":[3000,2990,2980],"analysis":[
+            {"eval":25},
+            {"eval":85,"best":"d5e4","variation":"dxe4","judgment":{"name":"Inaccuracy","comment":"Inaccuracy. dxe4 was best."}},
+            {"mate":3}
+        ]}"#;
+        let export: GameExport = serde_json::from_str(json).unwrap();
+        assert_eq!(export.clocks, vec![3000, 2990, 2980]);
+        assert_eq!(export.analysis.len(), 3);
+        assert_eq!(export.analysis[0].eval, Some(25));
+        assert_eq!(export.analysis[1].judgment.as_ref().unwrap().name, "Inaccuracy");
+        assert_eq!(export.analysis[2].mate, Some(3));
     }
 
     #[test]

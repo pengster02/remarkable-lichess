@@ -1,14 +1,27 @@
 # Chess UX gaps vs. the best/most established chess apps
 
+**Update (2026-07-21, later session):** all 6 gaps below are now closed, not just
+1-4. Gap 5 (turn-gating) is in `BoardScreen.qml`'s `onSquareTapped` (`if
+(boardScreen.turn !== boardScreen.yourColor) return`, plus the "Your move" /
+"Waiting for opponent..." indicator). Gap 6 (piece art) shipped in commit
+8137a71 ("bundle cburnett pieces") -- `pieceCodeFor()` maps FEN piece chars to
+`frontend/assets/pieces/<code>.png` (real cburnett vector-derived art, per the
+original plan), replacing the old Unicode-glyph `glyphFor()` entirely; the
+comment trail documenting the old font-glyph gamble was left in place as
+history but no longer describes current behavior. This correction exists
+because the note below was left stale after later commits closed the
+remaining two gaps -- see `docs/ui-strategy-2026-07-21.md` for the current,
+whole-app gap audit and roadmap this doc's scope has been superseded by.
+
 **Update (same session):** gaps 1-4 below (orientation, last-move highlight, check
 indicator, coordinate labels) are now implemented -- backend changes verified with
 `cargo test` (27/27 passing, including new tests for `your_color` resolution and
 `in_check` detection via a real Fool's Mate sequence); QML changes are unverified
 beyond brace-balance/manual review, same limitation as everything else QML in this
-project. Gap 5 (turn-gating) and gap 6 (piece art) are still open. The clock was
-also changed as part of this pass: no more local 1Hz ticking Timer -- see the
-comment in `BoardScreen.qml` -- it now only shows time as of the last authoritative
-server update, a deliberate e-ink-redraw-count tradeoff, not an oversight.
+project. The clock was also changed as part of this pass: no more local 1Hz
+ticking Timer -- see the comment in `BoardScreen.qml` -- it now only shows time as
+of the last authoritative server update, a deliberate e-ink-redraw-count tradeoff,
+not an oversight.
 
 Researched by comparing this project's current QML against two directly relevant reference points:
 lichess.org's own official open-source clients (`lichess-org/lila` the web client, and
@@ -52,7 +65,7 @@ projects' actual source/docs, not guessing from general chess-app familiarity.
    Current `BoardScreen.qml` has no coordinate labels at all — purely a QML addition, no backend
    change needed (the file/rank strings are already computed locally in `filesRanks()`).
 
-5. **No turn-based input gating.** `onSquareTapped` in `BoardScreen.qml` allows tapping any piece and
+5. **RESOLVED.** ~~No turn-based input gating.~~ `onSquareTapped` in `BoardScreen.qml` allows tapping any piece and
    acting on whatever's in the cached `legalMoves` list, with no check for whether it's actually the
    local player's turn. Since `legalMoves` is always the *authoritative* legal-move list for whoever's
    turn it is per the current FEN (computed once per position update, not per-tap), a player could
@@ -61,7 +74,7 @@ projects' actual source/docs, not guessing from general chess-app familiarity.
    so this isn't a correctness bug, but every reference client disables input and clearly indicates
    whose turn it is rather than relying on the server to catch a confusing tap.
 
-6. **Piece rendering is a font-glyph gamble, not the standard approach — this gamble was lost on
+6. **RESOLVED.** ~~Piece rendering is a font-glyph gamble, not the standard approach~~ — this gamble was lost on
    real hardware.** The user ran the app on the actual reMarkable and reported seeing "squares" where
    pieces should be: the classic symptom of a font missing a Unicode code point (`.notdef`/tofu glyph,
    which renders as a small hollow box). Confirmed via `fonttools`: the 12 chess code points

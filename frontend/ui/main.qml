@@ -8,13 +8,43 @@ Rectangle {
     // win like on an OLED phone screen (see docs/remarkable-appload-platform-notes.md).
     // Deliberately using a dark warm gray rather than pure black/white for both ends
     // of the palette, everywhere in this app, to keep the pigment shift smaller.
-    color: root.darkMode ? "#2b2b28" : "white"
+    color: theme.background
+
+    Theme { id: theme; darkMode: root.darkMode }
 
     property bool hasToken: false
+    property string username: ""
     property bool darkMode: false
     // Persisted server-side (see backend/src/settings.rs) -- pushed into any
     // loaded screen that declares it, same pattern as darkMode below.
     property bool autoQueenPromotion: false
+    property bool moveConfirmation: false
+    property bool minimalHighlights: false
+    // Set from GameMoves right before navigating to GameReviewScreen -- same
+    // hand-off pattern as darkMode/autoQueenPromotion above, since a freshly
+    // Loader-created screen has no other way to receive this reply's payload.
+    property var reviewMoves: []
+    property var reviewFens: []
+    // Aligned with reviewMoves (not reviewFens), and each may be shorter than
+    // it or empty entirely -- Lichess only has clock data for timed games and
+    // only has analysis for a game that's actually been through its computer
+    // review (see protocol.rs's GameMoves comment).
+    property var reviewClockMs: []
+    property var reviewAnalysis: []
+    // The tapped HistoryGameSummary itself (opponent/result/rated/speed/
+    // opening/date) -- GameMoves only carries moves/fens, so this is the only
+    // way GameReviewScreen's header gets to show who was played and how it
+    // ended, not just a bare, contextless board.
+    property var reviewGame: null
+
+    // Bundles "remember which row was tapped" with "actually ask the backend
+    // for its moves" into one call, mirroring setAutoQueenPromotion's own
+    // local-state-plus-backend-send pattern -- GameHistoryScreen has no other
+    // way to reach root's reviewGame property directly.
+    function selectGameForReview(game) {
+        root.reviewGame = game
+        root.sendToBackend({type: "RequestGameMoves", game_id: game.game_id})
+    }
 
     function toggleDarkMode() {
         root.darkMode = !root.darkMode
@@ -23,9 +53,41 @@ Rectangle {
     // Optimistically updates root state immediately (so the toggle UI responds
     // without waiting on a round trip) -- SaveSettings's own SettingsState echo
     // (handled below) will correct this if the write actually failed.
+    //
+    // Every setter always sends *all three* fields together (not just the
+    // one being changed) -- SaveSettings has no partial-update semantics, so
+    // sending only one previously meant toggling auto-queen silently reset
+    // move_confirmation back to its serde default (false) on the backend,
+    // and the same would happen to minimal_highlights if it were left out
+    // here too.
     function setAutoQueenPromotion(value) {
         root.autoQueenPromotion = value
-        root.sendToBackend({type: "SaveSettings", auto_queen_promotion: value})
+        root.sendToBackend({
+            type: "SaveSettings",
+            auto_queen_promotion: value,
+            move_confirmation: root.moveConfirmation,
+            minimal_highlights: root.minimalHighlights
+        })
+    }
+
+    function setMoveConfirmation(value) {
+        root.moveConfirmation = value
+        root.sendToBackend({
+            type: "SaveSettings",
+            auto_queen_promotion: root.autoQueenPromotion,
+            move_confirmation: value,
+            minimal_highlights: root.minimalHighlights
+        })
+    }
+
+    function setMinimalHighlights(value) {
+        root.minimalHighlights = value
+        root.sendToBackend({
+            type: "SaveSettings",
+            auto_queen_promotion: root.autoQueenPromotion,
+            move_confirmation: root.moveConfirmation,
+            minimal_highlights: value
+        })
     }
 
     // Screens are re-created fresh by the Loader on every navigation (Task 10's
@@ -48,6 +110,18 @@ Rectangle {
         }
     }
 
+    onMoveConfirmationChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("moveConfirmation")) {
+            screenLoader.item.moveConfirmation = root.moveConfirmation
+        }
+    }
+
+    onMinimalHighlightsChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("minimalHighlights")) {
+            screenLoader.item.minimalHighlights = root.minimalHighlights
+        }
+    }
+
     // Required by the AppLoad host: it looks up `close`/`unloading` on the
     // root QML item (see rmpp-appload's window.qml Connections/onUnloading
     // wiring). `close` lets the app request that AppLoad tear down its
@@ -66,6 +140,7 @@ Rectangle {
             var msg = JSON.parse(contents)
             if (msg.type === "TokenVerified") {
                 root.hasToken = true
+                root.username = msg.username || ""
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestHome"}))
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestChallenges"}))
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestSettings"}))
@@ -75,6 +150,8 @@ Rectangle {
                 // since it needs to persist across navigation, same as darkMode --
                 // onAutoQueenPromotionChanged above re-syncs whatever's loaded.
                 root.autoQueenPromotion = msg.auto_queen_promotion || false
+                root.moveConfirmation = msg.move_confirmation || false
+                root.minimalHighlights = msg.minimal_highlights || false
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
                 screenLoader.source = "SetupScreen.qml"
@@ -85,6 +162,15 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
+            } else if (msg.type === "GameMoves") {
+                // Only reachable from GameHistoryScreen's RequestGameMoves -- an
+                // ErrorMsg reply instead (bad export/replay) leaves the source
+                // unchanged, so GameHistoryScreen stays up and shows it inline.
+                root.reviewMoves = msg.moves || []
+                root.reviewFens = msg.fens || []
+                root.reviewClockMs = msg.clock_ms || []
+                root.reviewAnalysis = msg.analysis || []
+                screenLoader.source = "GameReviewScreen.qml"
             } else if (msg.type === "BoardState" || msg.type === "GameOver" || msg.type === "MoveRejected") {
                 // Never force-navigate away from Home: a user who explicitly went
                 // back to Home (or never left it yet) should stay there even if a
@@ -102,7 +188,7 @@ Rectangle {
                         screenLoader.item.handleMessage(msg)
                     }
                 }
-            } else if (msg.type === "Reconnecting" || msg.type === "OpponentGone" || msg.type === "ChatMessage") {
+            } else if (msg.type === "Reconnecting" || msg.type === "OpponentGone" || msg.type === "ChatMessage" || msg.type === "RatingDiff") {
                 // Deliberately never navigates on its own (confirmed via the PC
                 // emulator: a bare Reconnecting with no real game yet threw the
                 // user onto a genuinely empty, un-escapable Board screen). Only
@@ -141,6 +227,9 @@ Rectangle {
             if (item.hasOwnProperty("darkMode")) {
                 item.darkMode = root.darkMode
             }
+            if (item.hasOwnProperty("username")) {
+                item.username = root.username
+            }
             if (item.hasOwnProperty("toggleDarkMode")) {
                 item.toggleDarkMode = root.toggleDarkMode
             }
@@ -150,32 +239,76 @@ Rectangle {
             if (item.hasOwnProperty("setAutoQueenPromotion")) {
                 item.setAutoQueenPromotion = root.setAutoQueenPromotion
             }
+            if (item.hasOwnProperty("moveConfirmation")) {
+                item.moveConfirmation = root.moveConfirmation
+            }
+            if (item.hasOwnProperty("setMoveConfirmation")) {
+                item.setMoveConfirmation = root.setMoveConfirmation
+            }
+            if (item.hasOwnProperty("minimalHighlights")) {
+                item.minimalHighlights = root.minimalHighlights
+            }
+            if (item.hasOwnProperty("setMinimalHighlights")) {
+                item.setMinimalHighlights = root.setMinimalHighlights
+            }
+            if (item.hasOwnProperty("moves")) {
+                item.moves = root.reviewMoves
+            }
+            if (item.hasOwnProperty("fens")) {
+                item.fens = root.reviewFens
+            }
+            if (item.hasOwnProperty("clockMs")) {
+                item.clockMs = root.reviewClockMs
+            }
+            if (item.hasOwnProperty("analysis")) {
+                item.analysis = root.reviewAnalysis
+            }
+            if (item.hasOwnProperty("game")) {
+                item.game = root.reviewGame
+            }
+            if (item.hasOwnProperty("selectGameForReview")) {
+                item.selectGameForReview = root.selectGameForReview
+            }
         }
     }
 
-    // Visible exit affordance on every screen, on top of the Loader. The host
-    // already provides a swipe-down-from-top-edge -> "X" close mechanism for
-    // any fullscreen AppLoad app (see docs/remarkable-appload-platform-notes.md),
-    // but it's easy to miss -- this just makes the same `close()` signal
-    // reachable with one direct tap instead.
+    // Visible exit affordance on every screen (one instance here in main.qml,
+    // above the Loader, rather than duplicated per-screen -- every screen gets
+    // it "for free" just by being loaded into this same root, which is also
+    // why it's the right place to enforce it being big/consistent instead of
+    // each screen reinventing its own). The host already provides a
+    // swipe-down-from-top-edge -> "X" close mechanism for any fullscreen
+    // AppLoad app (see docs/remarkable-appload-platform-notes.md), but it's
+    // easy to miss -- this just makes the same `close()` signal reachable
+    // with one direct, generously-sized tap instead.
+    //
+    // Right side (2026-07-21, reversed from an earlier left-side move in
+    // commit 9ce618d): that earlier move was specifically to dodge the host's
+    // own top-right swipe-hint affordance overlapping it. Moved back per
+    // direct request -- if that overlap turns out to still be a problem on
+    // real hardware, the fix belongs in *vertical* clearance (this button
+    // already has plenty via theme.pageTopMargin, which every screen's
+    // content also respects) or nudging this specific corner, not reverting
+    // the side outright.
     Rectangle {
         id: exitButton
-        width: 48
-        height: 48
+        width: theme.exitButtonSize
+        height: theme.exitButtonSize
         anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.margins: 12
+        anchors.right: parent.right
+        anchors.margins: theme.exitButtonMargin
         z: 1000
-        radius: 4
-        color: root.darkMode ? "#3a3a36" : "#e8e0d0"
+        radius: theme.cardRadius
+        color: theme.cardBackground
         border.width: 1
-        border.color: root.darkMode ? "#5a5a55" : "#8a7f6a"
+        border.color: theme.cardBorder
 
         Text {
             anchors.centerIn: parent
             text: "X"
-            font.pixelSize: 22
-            color: root.darkMode ? "white" : "black"
+            font.pixelSize: theme.fontHeading
+            font.bold: true
+            color: theme.text
         }
 
         MouseArea {

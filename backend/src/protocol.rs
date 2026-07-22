@@ -44,7 +44,13 @@ pub enum FrontendMessage {
     DeclineChallenge { id: String },
     SendChat { text: String },
     RequestSettings,
-    SaveSettings { auto_queen_promotion: bool },
+    SaveSettings {
+        auto_queen_promotion: bool,
+        #[serde(default)]
+        move_confirmation: bool,
+        #[serde(default)]
+        minimal_highlights: bool,
+    },
     // Clears the saved token (see backend/src/settings.rs's sibling token file)
     // and resets to the logged-out state -- there was previously no in-app way
     // to do this at all short of editing files on the device directly.
@@ -72,6 +78,11 @@ pub enum FrontendMessage {
     // `color` field since the *joiner* picks color by which of urlWhite/urlBlack
     // they open, not the creator (see BackendMessage::OpenChallengeCreated).
     CreateOpenChallenge { minutes: u32, increment: u32, rated: bool },
+    // Sent when GameHistoryScreen's user taps a finished game's row -- backend
+    // fetches its full move list and replays it once (see game::replay), so
+    // GameReviewScreen can navigate purely by array indexing, no chess logic
+    // or network round-trip per step (see the game-review design spec).
+    RequestGameMoves { game_id: String },
 }
 
 // Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
@@ -108,6 +119,19 @@ pub struct OngoingGameSummary {
     pub is_my_turn: bool,
 }
 
+// This account's own whole-game accuracy stats from Lichess's computer
+// analysis (see lichess::models::PlayerAnalysisSummary) -- present only once
+// this specific game has actually been analyzed there, which most games
+// never are unless the player opened them for review.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GameAnalysisSummary {
+    pub inaccuracies: u32,
+    pub mistakes: u32,
+    pub blunders: u32,
+    pub acpl: u32,
+    pub accuracy: Option<u32>,
+}
+
 // One past game from GET /api/games/user/{username} (confirmed against
 // lichess-org/api's GameJson.yaml/GamePlayers.yaml/GamePlayerUser.yaml schemas),
 // already reduced to this account's point of view server-side (your_color/result)
@@ -121,10 +145,42 @@ pub struct HistoryGameSummary {
     // "win"/"loss"/"draw", or the raw Lichess game status (e.g. "aborted",
     // "noStart") for the rare case where there's no winner and it wasn't a draw.
     pub result: String,
+    // How the game actually ended -- "Checkmate"/"Resignation"/"Time forfeit"/
+    // etc. (see backend_app.rs's termination_label), distinct from `result`
+    // above: two "win"s can still differ in how they happened, which
+    // win/loss/draw alone can't convey.
+    pub termination: String,
+    // This account's own rating change from this one game (None for a casual
+    // game, which Lichess never rates at all) -- was already present in the
+    // GET /api/games/user payload (GamePlayerUser.ratingDiff) but previously
+    // unmodeled/unused.
+    pub rating_diff: Option<i32>,
+    pub your_analysis: Option<GameAnalysisSummary>,
     pub rated: bool,
     pub speed: Option<String>,
     pub opening_name: Option<String>,
     pub created_at_ms: Option<i64>,
+}
+
+// This game's own per-move computer analysis (see
+// lichess::models::GameMoveAnalysis) -- one entry per ply, aligned with
+// GameMoves' own `moves` array. `eval_cp`/`mate_in` are mutually exclusive
+// (Lichess sends exactly one of the two per analyzed ply, see
+// GameMoveAnalysis's own comment); both None means this ply just wasn't
+// flagged as notable (no `judgment` either) even though the game overall was
+// analyzed.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct MoveAnalysis {
+    // Centipawns, from White's perspective (positive favors White).
+    pub eval_cp: Option<i32>,
+    // Plies to forced mate, same White-perspective sign as eval_cp.
+    pub mate_in: Option<i32>,
+    // "Inaccuracy"/"Mistake"/"Blunder", or None for an unremarkable move.
+    pub judgment: Option<String>,
+    // e.g. "Blunder. Nxg6 was best." -- Lichess's own ready-made caption,
+    // shown as-is rather than reconstructed from separate best-move/variation
+    // fields this app doesn't otherwise model.
+    pub judgment_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -165,6 +221,13 @@ pub enum BackendMessage {
         // above -- an AI opponent has no rating, only a name/level, hence Option.
         opponent_name: Option<String>,
         opponent_rating: Option<u32>,
+        // Each side's starting clock allotment in ms (see
+        // game::session::GameSession's own field for why the frontend needs
+        // this alongside the live white_time_ms/black_time_ms -- a low-time
+        // warning threshold is a fraction of the *original* time, not just a
+        // fixed number of seconds remaining). None for an untimed/correspondence
+        // game.
+        initial_clock_ms: Option<u64>,
     },
     GameOver { result: String, reason: String },
     MoveRejected { reason: String },
@@ -179,13 +242,34 @@ pub enum BackendMessage {
     OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
     ChatMessage { username: String, text: String },
-    SettingsState { auto_queen_promotion: bool },
+    SettingsState { auto_queen_promotion: bool, move_confirmation: bool, minimal_highlights: bool },
     GameHistory { games: Vec<HistoryGameSummary> },
     // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- `url` opens
     // to a color-choice/random assignment, `url_white`/`url_black` claim that
     // color outright. Shown as plain text on SeekScreen for the user to read/
     // share manually (this app has no clipboard/share-sheet integration).
     OpenChallengeCreated { url: String, url_white: String, url_black: String },
+    // `fens[0]` is the starting position, `fens[i]` is the position after SAN
+    // move `moves[i-1]` -- always `fens.len() == moves.len() + 1` (see
+    // game::replay::fens_for_moves). Sent once per RequestGameMoves, not
+    // streamed -- a finished game's move list never changes. `clock_ms`/
+    // `analysis` are each aligned with `moves` (not `fens` -- no entry for the
+    // starting position) and may be shorter than `moves` or empty entirely:
+    // Lichess only has clock data for timed games and only has analysis for a
+    // game that's actually been through its computer review, so the frontend
+    // must index defensively rather than assume equal length.
+    GameMoves { moves: Vec<String>, fens: Vec<String>, clock_ms: Vec<u32>, analysis: Vec<MoveAnalysis> },
+    // Sent when the account event stream's `gameFinish` (see
+    // lichess::models::GameFinishInfo) arrives for the currently-tracked
+    // game and carries a rating change (rated games only -- casual games
+    // never send this at all, see backend_app.rs's GameFinish handling).
+    // Arrives independently of (and in no guaranteed order relative to)
+    // `GameOver`, which comes from a different stream (the per-game board
+    // stream's terminal GameState update) that has no rating info at all --
+    // deliberately two separate messages rather than trying to force them
+    // into one, since one can arrive without the other (e.g. a casual game
+    // never gets this one) or in either order.
+    RatingDiff { rating_diff: i32 },
 }
 
 #[cfg(test)]
@@ -222,14 +306,32 @@ mod tests {
     #[test]
     fn settings_messages_round_trip() {
         assert_eq!(
+            // move_confirmation/minimal_highlights deliberately omitted here
+            // -- #[serde(default)] means an older/simpler payload without
+            // them still parses, same forward-compat posture as
+            // RequestGameHistory's optional filters.
             serde_json::from_str::<FrontendMessage>(r#"{"type":"SaveSettings","auto_queen_promotion":true}"#)
                 .unwrap(),
-            FrontendMessage::SaveSettings { auto_queen_promotion: true }
+            FrontendMessage::SaveSettings { auto_queen_promotion: true, move_confirmation: false, minimal_highlights: false }
+        );
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(
+                r#"{"type":"SaveSettings","auto_queen_promotion":false,"move_confirmation":true,"minimal_highlights":true}"#
+            )
+            .unwrap(),
+            FrontendMessage::SaveSettings { auto_queen_promotion: false, move_confirmation: true, minimal_highlights: true }
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"LogOut"}"#).unwrap(), FrontendMessage::LogOut);
-        let json = serde_json::to_string(&BackendMessage::SettingsState { auto_queen_promotion: true }).unwrap();
+        let json = serde_json::to_string(&BackendMessage::SettingsState {
+            auto_queen_promotion: true,
+            move_confirmation: true,
+            minimal_highlights: true,
+        })
+        .unwrap();
         assert!(json.contains(r#""type":"SettingsState""#));
         assert!(json.contains(r#""auto_queen_promotion":true"#));
+        assert!(json.contains(r#""move_confirmation":true"#));
+        assert!(json.contains(r#""minimal_highlights":true"#));
     }
 
     #[test]
@@ -271,6 +373,49 @@ mod tests {
     }
 
     #[test]
+    fn request_game_moves_parses_and_game_moves_serializes_with_type_tag() {
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(r#"{"type":"RequestGameMoves","game_id":"abcd1234"}"#).unwrap(),
+            FrontendMessage::RequestGameMoves { game_id: "abcd1234".into() }
+        );
+        let json = serde_json::to_string(&BackendMessage::GameMoves {
+            moves: vec!["e4".into(), "e5".into()],
+            fens: vec!["startpos".into(), "after-e4".into(), "after-e5".into()],
+            clock_ms: vec![],
+            analysis: vec![],
+        })
+        .unwrap();
+        assert!(json.contains(r#""type":"GameMoves""#));
+        assert!(json.contains(r#""moves":["e4","e5"]"#));
+    }
+
+    #[test]
+    fn game_moves_serializes_clock_and_analysis_when_present() {
+        let json = serde_json::to_string(&BackendMessage::GameMoves {
+            moves: vec!["e4".into()],
+            fens: vec!["startpos".into(), "after-e4".into()],
+            clock_ms: vec![29900],
+            analysis: vec![MoveAnalysis {
+                eval_cp: None,
+                mate_in: Some(3),
+                judgment: Some("Blunder".into()),
+                judgment_comment: Some("Blunder. Nxg6 was best.".into()),
+            }],
+        })
+        .unwrap();
+        assert!(json.contains(r#""clock_ms":[29900]"#));
+        assert!(json.contains(r#""mate_in":3"#));
+        assert!(json.contains(r#""judgment":"Blunder""#));
+    }
+
+    #[test]
+    fn rating_diff_serializes_with_type_tag_including_negative_values() {
+        let json = serde_json::to_string(&BackendMessage::RatingDiff { rating_diff: -9 }).unwrap();
+        assert!(json.contains(r#""type":"RatingDiff""#));
+        assert!(json.contains(r#""rating_diff":-9"#));
+    }
+
+    #[test]
     fn opponent_gone_serializes_with_type_tag() {
         let msg = BackendMessage::OpponentGone { gone: true, claim_win_in_seconds: Some(8) };
         let json = serde_json::to_string(&msg).unwrap();
@@ -294,6 +439,7 @@ mod tests {
             move_history: vec![],
             opponent_name: None,
             opponent_rating: None,
+            initial_clock_ms: Some(600_000),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));

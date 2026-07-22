@@ -4,7 +4,8 @@ import QtQuick.Controls 2.5
 Rectangle {
     id: seekScreen
     anchors.fill: parent
-    color: seekScreen.darkMode ? "#2b2b28" : "white"
+    color: theme.background
+    Theme { id: theme; darkMode: seekScreen.darkMode }
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -24,20 +25,58 @@ Rectangle {
     // there's deliberately no "Cancel" for it, just Back to Home.
     property var openChallengeUrls: null
 
-    Column {
-        anchors.centerIn: parent
-        spacing: 24
-        width: parent.width * 0.8
+    Button {
+        id: backButton
+        // Same fixed, full-width bottom "nav bar" treatment as every other
+        // screen's back action (see GameHistoryScreen/SettingsScreen) --
+        // previously just the last item in this screen's own centered Column.
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: theme.pageSideMargin
+        text: "Back to Home"
+        onClicked: {
+            if (seekScreen.waiting) seekScreen.backendSender({type: "CancelSeek"})
+            seekScreen.navigateTo("HomeScreen.qml")
+        }
+    }
 
-        Text { text: "New rapid game"; font.pixelSize: 40; color: seekScreen.darkMode ? "#e6e2d8" : "black" }
+    Flickable {
+        // Top-anchored (was `anchors.centerIn: parent`) for the same
+        // cross-page-alignment reason as SettingsScreen, and for a more
+        // concrete reason specific to this screen: centered content this
+        // tall (title + time/increment row + rated checkbox + color row +
+        // three action rows + AI row, each using this session's bumped-up
+        // fontLarge/spacingLarge) very plausibly doesn't fit centered within
+        // this device's actual screen height without a scroll -- a plain
+        // centered Column has no scrolling at all, so anything that didn't
+        // fit was simply unreachable off both the top and bottom edges.
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: backButton.top
+        anchors.margins: theme.pageSideMargin
+        anchors.topMargin: theme.pageTopMargin
+        anchors.bottomMargin: theme.spacingSmall
+        contentWidth: width
+        contentHeight: seekColumn.height
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
+
+    Column {
+        id: seekColumn
+        width: parent.width
+        spacing: theme.spacingLarge
+
+        Text { text: "New rapid game"; font.pixelSize: theme.fontHeading; color: theme.text }
 
         Row {
-            spacing: 16
+            spacing: theme.spacingMedium
             visible: !seekScreen.waiting
-            Text { text: "Minutes:"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter; color: seekScreen.darkMode ? "#e6e2d8" : "black" }
-            TextField { id: minutesField; text: "10"; font.pixelSize: 24; width: 80 }
-            Text { text: "Increment:"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter; color: seekScreen.darkMode ? "#e6e2d8" : "black" }
-            TextField { id: incrementField; text: "0"; font.pixelSize: 24; width: 80 }
+            Text { text: "Minutes:"; font.pixelSize: theme.fontLarge; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+            TextField { id: minutesField; text: "10"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+            Text { text: "Increment:"; font.pixelSize: theme.fontLarge; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+            TextField { id: incrementField; text: "0"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
         }
 
         CheckBox {
@@ -49,9 +88,9 @@ Rectangle {
 
         Flow {
             width: parent.width
-            spacing: 8
+            spacing: theme.spacingSmall
             visible: !seekScreen.waiting
-            Text { text: "Color:"; font.pixelSize: 24; color: seekScreen.darkMode ? "#e6e2d8" : "black" }
+            Text { text: "Color:"; font.pixelSize: theme.fontLarge; color: theme.text }
             Button { text: "White"; highlighted: seekScreen.selectedColor === "white"; onClicked: seekScreen.selectedColor = "white" }
             Button { text: "Black"; highlighted: seekScreen.selectedColor === "black"; onClicked: seekScreen.selectedColor = "black" }
             Button { text: "Random"; highlighted: seekScreen.selectedColor === "random"; onClicked: seekScreen.selectedColor = "random" }
@@ -70,9 +109,9 @@ Rectangle {
         }
 
         Row {
-            spacing: 16
+            spacing: theme.spacingMedium
             visible: !seekScreen.waiting
-            TextField { id: usernameField; font.pixelSize: 24; placeholderText: "opponent username"; width: 240 }
+            TextField { id: usernameField; font.pixelSize: theme.fontLarge; placeholderText: "opponent username"; width: theme.textFieldWidthWide }
             Button {
                 text: "Challenge"
                 onClicked: seekScreen.backendSender({
@@ -100,22 +139,22 @@ Rectangle {
         Column {
             visible: seekScreen.openChallengeUrls !== null
             width: parent.width
-            spacing: 8
+            spacing: theme.spacingSmall
 
             Text {
                 text: "Share one of these links -- whoever opens it starts the game:"
-                font.pixelSize: 18
+                font.pixelSize: theme.fontLabel
                 wrapMode: Text.WordWrap
                 width: parent.width
-                color: seekScreen.darkMode ? "#e6e2d8" : "black"
+                color: theme.text
             }
             TextEdit {
                 readOnly: true
                 selectByMouse: true
                 width: parent.width
                 wrapMode: Text.WrapAnywhere
-                font.pixelSize: 16
-                color: seekScreen.darkMode ? "#e6e2d8" : "black"
+                font.pixelSize: theme.fontSmall
+                color: theme.text
                 text: "White: " + (seekScreen.openChallengeUrls ? seekScreen.openChallengeUrls.url_white : "")
             }
             TextEdit {
@@ -123,17 +162,17 @@ Rectangle {
                 selectByMouse: true
                 width: parent.width
                 wrapMode: Text.WrapAnywhere
-                font.pixelSize: 16
-                color: seekScreen.darkMode ? "#e6e2d8" : "black"
+                font.pixelSize: theme.fontSmall
+                color: theme.text
                 text: "Black: " + (seekScreen.openChallengeUrls ? seekScreen.openChallengeUrls.url_black : "")
             }
         }
 
         Row {
-            spacing: 16
+            spacing: theme.spacingMedium
             visible: !seekScreen.waiting
-            Text { text: "Level (1-8):"; font.pixelSize: 24; anchors.verticalCenter: parent.verticalCenter; color: seekScreen.darkMode ? "#e6e2d8" : "black" }
-            TextField { id: aiLevelField; text: "3"; font.pixelSize: 24; width: 60 }
+            Text { text: "Level (1-8):"; font.pixelSize: theme.fontLarge; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+            TextField { id: aiLevelField; text: "3"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
             Button {
                 text: "Play vs Computer"
                 // Starts immediately -- no accept/decline step, so unlike the
@@ -153,8 +192,8 @@ Rectangle {
         Text {
             text: seekScreen.waitingLabel
             visible: seekScreen.waiting
-            font.pixelSize: 24
-            color: seekScreen.darkMode ? "#e6e2d8" : "black"
+            font.pixelSize: theme.fontLarge
+            color: theme.text
         }
 
         Button {
@@ -165,13 +204,6 @@ Rectangle {
                 seekScreen.waiting = false
             }
         }
-
-        Button {
-            text: "Back to Home"
-            onClicked: {
-                if (seekScreen.waiting) seekScreen.backendSender({type: "CancelSeek"})
-                seekScreen.navigateTo("HomeScreen.qml")
-            }
         }
     }
 
