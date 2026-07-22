@@ -19,6 +19,15 @@ pub struct GameSession {
     // from gameFull, not re-derived on every gameState update.
     pub opponent_name: Option<String>,
     pub opponent_rating: Option<u32>,
+    // Each side's starting allotment in ms, from GameFull.clock.initial -- fixed
+    // for the game's lifetime like opponent_name/opponent_rating above, unlike
+    // the live wtime/btime GameState carries every update. Needed (not just the
+    // live remaining time) to compute a "low time" fraction of the *original*
+    // allotment (e.g. lichess-org/mobile's own ~1/8-of-total clock warning) --
+    // remaining time alone can't tell a 10s-left-out-of-600s game apart from a
+    // 10s-left-out-of-30s one. None for the rare case a game has no clock at
+    // all (correspondence/untimed) rather than assumed.
+    pub initial_clock_ms: Option<u64>,
 }
 
 fn turn_name(pos: &Chess) -> String {
@@ -76,6 +85,7 @@ fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
         move_history: session.move_history.clone(),
         opponent_name: session.opponent_name.clone(),
         opponent_rating: session.opponent_rating,
+        initial_clock_ms: session.initial_clock_ms,
     }
 }
 
@@ -104,6 +114,7 @@ impl GameSession {
             move_history,
             opponent_name: opp.name.clone(),
             opponent_rating: opp.rating,
+            initial_clock_ms: full.clock.as_ref().map(|c| c.initial),
         };
         let msg = to_board_state(&session, &full.state);
         Ok((session, msg))
@@ -125,7 +136,7 @@ impl GameSession {
         from: &str,
         to: &str,
         promotion: Option<&str>,
-    ) -> Result<String, BackendMessage> {
+    ) -> Result<String, Box<BackendMessage>> {
         let found = self
             .legal
             .iter()
@@ -140,14 +151,14 @@ impl GameSession {
                 // before trusting it, in case of a stale-cache race with an opponent move.
                 match apply_uci_move(&self.position, &uci) {
                     Ok(_) => Ok(uci),
-                    Err(_) => Err(BackendMessage::MoveRejected {
+                    Err(_) => Err(Box::new(BackendMessage::MoveRejected {
                         reason: "stale board state, please retry".into(),
-                    }),
+                    })),
                 }
             }
-            None => Err(BackendMessage::MoveRejected {
+            None => Err(Box::new(BackendMessage::MoveRejected {
                 reason: "not a legal move".into(),
-            }),
+            })),
         }
     }
 }
@@ -228,7 +239,7 @@ mod tests {
         let full = sample_full("");
         let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         let result = session.try_move("e2", "e5", None);
-        assert!(matches!(result, Err(BackendMessage::MoveRejected { .. })));
+        assert!(matches!(result.as_ref().map_err(|b| b.as_ref()), Err(BackendMessage::MoveRejected { .. })));
     }
 
     #[test]
@@ -343,6 +354,28 @@ mod tests {
                 assert_eq!(opponent_name, Some("OpponentName".to_string()));
                 assert_eq!(opponent_rating, Some(1600));
             }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn initial_clock_ms_is_read_from_game_full_and_stays_fixed_across_updates() {
+        let full = sample_full("");
+        let (mut session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { initial_clock_ms, .. } => assert_eq!(initial_clock_ms, Some(600_000)),
+            _ => panic!("expected BoardState"),
+        }
+        let state: GameState = serde_json::from_value(serde_json::json!({
+            "moves": "e2e4", "wtime": 598000, "btime": 600000, "winc": 0, "binc": 0,
+            "status": "started", "winner": null
+        }))
+        .unwrap();
+        let msg = session.apply_state_update(&state).unwrap();
+        match msg {
+            // Doesn't drift down with the live clock -- it's the fixed starting
+            // allotment, not a re-read of the current remaining time.
+            BackendMessage::BoardState { initial_clock_ms, .. } => assert_eq!(initial_clock_ms, Some(600_000)),
             _ => panic!("expected BoardState"),
         }
     }

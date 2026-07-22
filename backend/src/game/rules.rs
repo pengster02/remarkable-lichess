@@ -52,7 +52,7 @@ pub fn replay_uci_moves_with_history(initial_fen: &str, moves: &str) -> Result<(
     for uci_str in moves.split_whitespace() {
         let uci: UciMove = uci_str.parse().context("parsing UCI move")?;
         let m = uci.to_move(&pos).context("resolving UCI move against position")?;
-        history.push(SanPlus::from_move(pos.clone(), m.clone()).to_string());
+        history.push(SanPlus::from_move(pos.clone(), m).to_string());
         pos.play_unchecked(m);
     }
     Ok((pos, history))

@@ -4,42 +4,76 @@ import QtQuick.Controls 2.5
 Rectangle {
     id: setupScreen
     anchors.fill: parent
-    color: setupScreen.darkMode ? "#2b2b28" : "white"
+    color: theme.background
+    Theme { id: theme; darkMode: setupScreen.darkMode }
     property var backendSender
     property bool darkMode: false
 
     Column {
-        anchors.centerIn: parent
-        spacing: 24
-        width: parent.width * 0.8
+        // Top-anchored (was `anchors.centerIn: parent`) for the same
+        // cross-page alignment reason as every other screen in this pass --
+        // this is most people's very first screen, so it's the single most
+        // important one to already look consistent with the rest of the app.
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: theme.pageTopMargin
+        spacing: theme.spacingMedium
+        width: parent.width * 0.85
 
-        Text {
-            text: "Enter your Lichess personal API token"
-            font.pixelSize: 32
-            wrapMode: Text.WordWrap
+        Column {
+            spacing: theme.spacingSmall
+            anchors.horizontalCenter: parent.horizontalCenter
+            Image {
+                anchors.horizontalCenter: parent.horizontalCenter
+                source: "../assets/pieces/wK.png"
+                width: 150
+                height: 150
+                fillMode: Image.PreserveAspectFit
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "Lichess"
+                font.pixelSize: theme.fontDisplay
+                font.bold: true
+                color: theme.text
+            }
+        }
+
+        SectionCard {
+            darkMode: setupScreen.darkMode
+            title: "Sign in with a personal access token"
             width: parent.width
-            color: setupScreen.darkMode ? "#e6e2d8" : "black"
-        }
 
-        TextField {
-            id: tokenField
-            width: parent.width
-            font.pixelSize: 28
-            placeholderText: "lip_..."
-        }
+            Text {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: "Generate one at lichess.org/account/oauth/token with the board:play, challenge:read, challenge:write, and preference:read scopes, then paste it below."
+                font.pixelSize: theme.fontSmall
+                color: theme.textMuted
+            }
 
-        Text {
-            id: errorText
-            color: setupScreen.darkMode ? "#e6a0a0" : "black"
-            font.pixelSize: 24
-            visible: text.length > 0
-        }
+            TextField {
+                id: tokenField
+                width: parent.width
+                font.pixelSize: theme.fontLarge
+                placeholderText: "lip_..."
+            }
 
-        Button {
-            text: "Save"
-            onClicked: {
-                errorText.text = ""
-                setupScreen.backendSender({type: "SaveToken", token: tokenField.text})
+            Text {
+                id: errorText
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: theme.errorText
+                font.pixelSize: theme.fontLabel
+                visible: text.length > 0
+            }
+
+            Button {
+                text: "Save"
+                onClicked: {
+                    errorText.text = ""
+                    setupScreen.backendSender({type: "SaveToken", token: tokenField.text})
+                }
             }
         }
     }

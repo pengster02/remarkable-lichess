@@ -1,10 +1,12 @@
 import QtQuick 2.5
 import QtQuick.Controls 2.5
+import net.asivery.ApploadUtils
 
 Rectangle {
     id: boardScreen
     anchors.fill: parent
-    color: boardScreen.darkMode ? "#2b2b28" : "white"
+    color: theme.background
+    Theme { id: theme; darkMode: boardScreen.darkMode }
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -13,6 +15,12 @@ Rectangle {
     property string turn: "white"
     property int whiteTimeMs: 0
     property int blackTimeMs: 0
+    // Fixed for the game's lifetime (see game::session::GameSession) -- null
+    // for an untimed/correspondence game, same Option-to-null convention as
+    // opponentRating. Needed alongside the live whiteTimeMs/blackTimeMs
+    // above to compute isLowTime()'s 1/8-of-total threshold correctly, since
+    // the live values alone don't say what the total ever was.
+    property var initialClockMs: null
     property var legalMoves: []
     property string selectedSquare: ""
     property string statusText: ""
@@ -43,6 +51,13 @@ Rectangle {
     property var pendingPromotion: null
     // Two-tap confirm so a single mistaken tap can't resign the game outright.
     property bool resignArmed: false
+    // Set when RatingDiff arrives before GameOver does -- the per-game
+    // stream's terminal GameState (driving GameOver) and the account
+    // stream's gameFinish (driving RatingDiff) are two independent signals
+    // that arrive close together but in no guaranteed order. Appended by the
+    // GameOver handler once it runs; cleared immediately after so a second,
+    // later game's own GameOver doesn't accidentally re-append a stale value.
+    property string pendingRatingDiffText: ""
     // "username: text" lines, player-room only (see backend_app.rs's chat.room
     // == "player" filter) -- oldest first, matching Lichess's own chat panel.
     property var chatMessages: []
@@ -61,6 +76,60 @@ Rectangle {
     // legal options; an underpromotion-only edge case (extremely rare, but real)
     // still gets the picker regardless of this setting.
     property bool autoQueenPromotion: false
+    // Pushed from main.qml's root state, same pattern as autoQueenPromotion
+    // above -- when on, gates every legal move behind an explicit Confirm/
+    // Cancel step (see requestMove/pendingMoveConfirmation) instead of
+    // sending MakeMove the instant a legal destination is tapped. Confirmed
+    // against the official lichess-org/mobile app's own moveToConfirm
+    // setting (see docs/superpowers/plans/2026-07-21-ui-strategy-phases-plan.md's
+    // Phase 3) -- same off-by-default posture as auto-queen above.
+    property bool moveConfirmation: false
+    // {from, to, promotion} while a move is pending the user's explicit
+    // Confirm/Cancel (only when moveConfirmation is on), else null. Applied
+    // as the *last* gate before any network call -- the promotion picker
+    // above still resolves first if a promotion is involved, matching the
+    // official app's own ordering.
+    property var pendingMoveConfirmation: null
+    // Pushed from main.qml's root state, same pattern as autoQueenPromotion/
+    // moveConfirmation above -- when on, tap-to-select highlights only the
+    // selected square itself, skipping the legal-destination fill (up to
+    // ~28 squares otherwise) to halve the damaged redraw area per selection.
+    // Off by default: full highlighting is the more helpful default, this
+    // just trades some of that away for speed once someone wants it.
+    property bool minimalHighlights: false
+
+    // Single choke point for "a move is fully resolved (including any
+    // promotion piece) and ready to send" -- either sends it immediately, or
+    // (when moveConfirmation is on) parks it in pendingMoveConfirmation for
+    // confirmPendingMove/cancelPendingMove to resolve. Every MakeMove send
+    // in this file goes through here rather than calling backendSender
+    // directly, so the confirmation gate can't accidentally be bypassed by
+    // one call site while another respects it.
+    function requestMove(from, to, promotion) {
+        if (boardScreen.moveConfirmation) {
+            boardScreen.pendingMoveConfirmation = {from: from, to: to, promotion: promotion}
+        } else {
+            boardScreen.backendSender({type: "MakeMove", from: from, to: to, promotion: promotion})
+            boardScreen.selectedSquare = ""
+        }
+    }
+
+    function confirmPendingMove() {
+        if (boardScreen.pendingMoveConfirmation === null) return
+        boardScreen.backendSender({
+            type: "MakeMove",
+            from: boardScreen.pendingMoveConfirmation.from,
+            to: boardScreen.pendingMoveConfirmation.to,
+            promotion: boardScreen.pendingMoveConfirmation.promotion
+        })
+        boardScreen.pendingMoveConfirmation = null
+        boardScreen.selectedSquare = ""
+    }
+
+    function cancelPendingMove() {
+        boardScreen.pendingMoveConfirmation = null
+        boardScreen.selectedSquare = ""
+    }
 
     // "1. e4 e5  2. Nf3 Nc6  ..." -- pairs white/black plies under one move
     // number, standard chess notation, matching what cli-chess's MoveListModel
@@ -82,6 +151,26 @@ Rectangle {
     // Written as two plain literals rather than slice().reverse() -- qmllint
     // infers a QVariantList type for these array literals under Qt6's stricter
     // QML type system, which doesn't reliably expose Array.prototype methods.
+    function formatClock(ms) {
+        var totalSeconds = Math.floor(ms / 1000)
+        var minutes = Math.floor(totalSeconds / 60)
+        var seconds = totalSeconds % 60
+        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
+    }
+
+    // Threshold matches the official lichess-org/mobile app's own low-time
+    // warning (confirmed via that project's issue #785, not invented): 1/8
+    // of the side's total time control, clamped to [10s, 60s] -- a 3-minute
+    // blitz game's "low time" kicks in a lot sooner than a 2-hour classical
+    // game's does. Visual only, no sound and no local ticking Timer (see the
+    // no-Timer comment below) -- this just runs inside a redraw a real
+    // BoardState update was already causing, zero extra cost. Returns false
+    // (not low) for an untimed/correspondence game, where totalMs is null.
+    function isLowTime(ms, totalMs) {
+        if (totalMs === null || totalMs === undefined) return false
+        return ms < Math.min(60000, Math.max(10000, totalMs / 8))
+    }
+
     function filesRanks() {
         var showBlackAtBottom = (boardScreen.yourColor === "black") !== boardScreen.manualFlip
         if (showBlackAtBottom) {
@@ -90,8 +179,10 @@ Rectangle {
         return {files: ["a","b","c","d","e","f","g","h"], ranks: ["8","7","6","5","4","3","2","1"]}
     }
 
+    // Destination square only -- highlighting the origin square too read as an
+    // unwanted "afterglow" trailing every piece that moved, not a useful cue.
     function isLastMoveSquare(sq) {
-        return boardScreen.lastMove !== null && (sq === boardScreen.lastMove[0] || sq === boardScreen.lastMove[1])
+        return boardScreen.lastMove !== null && sq === boardScreen.lastMove[1]
     }
 
     // Finds the square of whichever king is currently in check (always the side
@@ -124,40 +215,48 @@ Rectangle {
     // which matters for how quickly a frame is ready to hand to the display.
     property var selectedDestinations: boardScreen.destinationsFrom(boardScreen.selectedSquare)
     property string checkedSquare: boardScreen.checkedKingSquare()
+    // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
+    // rank/file labels every redraw, each call allocating two fresh arrays --
+    // same "compute once, index many" reasoning as selectedDestinations above.
+    property var fr: boardScreen.filesRanks()
+    // Full FEN decode, done once per redraw here rather than once per square
+    // (64 full string walks otherwise, since pieceAt() used to re-parse the
+    // whole placement field on every single call -- checkedKingSquare() alone
+    // was already calling it 64 times by itself).
+    property var pieceMap: boardScreen.buildPieceMap(boardScreen.fen)
 
-    function pieceAt(squareName) {
-        // Minimal FEN board decode: walk the piece-placement field only.
-        // Deliberately computed from the square name's own characters, not from
-        // filesRanks()'s display-order arrays: FEN rows/columns are always absolute
-        // (row0 = rank8, col0 = a-file) regardless of board orientation. Indexing
-        // into filesRanks() instead only happened to work for the unflipped (white)
-        // case, where display order and FEN order coincide -- confirmed live via a
-        // real flipped (black) game: it showed the wrong rank's/file's pieces
-        // entirely (e.g. Queen and King visibly swapped on the back rank).
-        var placement = boardScreen.fen.split(" ")[0]
+    function buildPieceMap(fen) {
+        var map = {}
+        var placement = fen.split(" ")[0]
         var rows = placement.split("/")
-        var rankIndex = 8 - parseInt(squareName[1])
-        var fileIndex = squareName.charCodeAt(0) - "a".charCodeAt(0)
-        if (rankIndex < 0 || rankIndex > 7 || fileIndex < 0 || fileIndex > 7) return ""
-        var row = rows[rankIndex]
-        // Guards an empty/not-yet-loaded fen (default ""): "".split("/") is a
-        // single-element [""], so any rank past the first indexes out of bounds
-        // here. Confirmed live via the PC emulator -- reproducibly threw
-        // "Cannot read property 'length' of undefined" on every square whose
-        // rank wasn't the first, every single frame, before a real BoardState
-        // ever arrives.
-        if (row === undefined) return ""
-        var col = 0
-        for (var i = 0; i < row.length; i++) {
-            var c = row[i]
-            if (c >= '1' && c <= '8') {
-                col += parseInt(c)
-            } else {
-                if (col === fileIndex) return c
-                col += 1
+        for (var rankIndex = 0; rankIndex < rows.length; rankIndex++) {
+            var row = rows[rankIndex]
+            if (row === undefined) continue
+            var col = 0
+            for (var i = 0; i < row.length; i++) {
+                var c = row[i]
+                if (c >= '1' && c <= '8') {
+                    col += parseInt(c)
+                } else {
+                    map[String.fromCharCode(97 + col) + (8 - rankIndex)] = c
+                    col += 1
+                }
             }
         }
-        return ""
+        return map
+    }
+
+    // Deliberately keyed by the square name's own characters against
+    // pieceMap (itself keyed the same way in buildPieceMap), not by indexing
+    // into filesRanks()'s display-order arrays: FEN rows/columns are always
+    // absolute (row0 = rank8, col0 = a-file) regardless of board
+    // orientation. Indexing into filesRanks() instead only happened to work
+    // for the unflipped (white) case, where display order and FEN order
+    // coincide -- confirmed live via a real flipped (black) game: it showed
+    // the wrong rank's/file's pieces entirely (e.g. Queen and King visibly
+    // swapped on the back rank).
+    function pieceAt(squareName) {
+        return boardScreen.pieceMap[squareName] || ""
     }
 
     // FEN piece char -> cburnett filename code (e.g. "K" -> "wK", "q" -> "bQ"),
@@ -205,6 +304,10 @@ Rectangle {
         // disables input and shows whose turn it is rather than letting a player
         // tap around pointlessly waiting for a reply that never comes.
         if (boardScreen.turn !== boardScreen.yourColor) return
+        // A tap on the board can't do anything useful while a move is
+        // already awaiting explicit Confirm/Cancel -- those buttons (or the
+        // popup below) are the only way forward from here.
+        if (boardScreen.pendingMoveConfirmation !== null) return
         if (boardScreen.selectedSquare === "") {
             if (boardScreen.pieceAt(squareName) !== "") boardScreen.selectedSquare = squareName
             return
@@ -217,15 +320,15 @@ Rectangle {
         if (dests.indexOf(squareName) !== -1) {
             var promoOptions = boardScreen.promotionOptionsFor(boardScreen.selectedSquare, squareName)
             if (promoOptions.length > 0 && boardScreen.autoQueenPromotion && promoOptions.indexOf("q") !== -1) {
-                boardScreen.backendSender({type: "MakeMove", from: boardScreen.selectedSquare, to: squareName, promotion: "q"})
-                boardScreen.selectedSquare = ""
+                boardScreen.requestMove(boardScreen.selectedSquare, squareName, "q")
             } else if (promoOptions.length > 0) {
                 // Don't clear selectedSquare yet -- the promotion popup needs
-                // from/to; MakeMove is sent once the user picks a piece below.
+                // from/to; requestMove (which itself may just park this in
+                // pendingMoveConfirmation rather than send it) runs once the
+                // user picks a piece below.
                 boardScreen.pendingPromotion = {from: boardScreen.selectedSquare, to: squareName, options: promoOptions}
             } else {
-                boardScreen.backendSender({type: "MakeMove", from: boardScreen.selectedSquare, to: squareName, promotion: null})
-                boardScreen.selectedSquare = ""
+                boardScreen.requestMove(boardScreen.selectedSquare, squareName, null)
             }
         } else {
             boardScreen.selectedSquare = boardScreen.pieceAt(squareName) !== "" ? squareName : ""
@@ -233,28 +336,52 @@ Rectangle {
     }
 
     Column {
-        anchors.fill: parent
-        anchors.topMargin: 72
-        spacing: 8
+        // Bottom edge now stops above the fixed backButton below (was
+        // `anchors.fill: parent`, which let "Back to Home" just be whatever
+        // the last item in this same Column happened to be) -- same shared
+        // top/side margins as every other screen in this pass. Deliberately
+        // *not* wrapped in a Flickable here unlike the other screens this
+        // pass touched: the board Grid's own width formula
+        // (`boardScreen.height - 320`) already assumes a specific relationship
+        // to this Column's available height, and this is the one screen
+        // where a sizing mistake I can't visually verify would land mid-game,
+        // not just on a settings/setup screen -- lower risk to leave this
+        // screen's own internal overflow behavior as whatever it already was
+        // and only fix the two things actually asked for (margin consistency,
+        // Back to Home's position) than to restructure scrolling behavior
+        // here blind.
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: backButton.top
+        anchors.margins: theme.pageSideMargin
+        anchors.topMargin: theme.pageTopMargin
+        anchors.bottomMargin: theme.spacingSmall
+        spacing: theme.spacingXs
 
         Text {
             visible: boardScreen.opponentName.length > 0
             text: "vs " + boardScreen.opponentName + (boardScreen.opponentRating !== null ? " (" + boardScreen.opponentRating + ")" : "")
-            font.pixelSize: 20
-            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+            font.pixelSize: theme.fontBody
+            color: theme.text
         }
 
         Text {
             // No local ticking (see the removed Timer's comment below): this shows
             // the clock exactly as of the last authoritative BoardState from the
             // server -- i.e. it updates on moves/reconnects, not every second.
-            text: "Black: " + Math.floor(boardScreen.blackTimeMs / 1000) + "s"
-            font.pixelSize: 28
-            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+            text: "Black: " + boardScreen.formatClock(boardScreen.blackTimeMs)
+            font.pixelSize: theme.fontLarge
+            color: boardScreen.isLowTime(boardScreen.blackTimeMs, boardScreen.initialClockMs) ? theme.errorText : theme.text
+
+            DisplayMethodArea {
+                anchors.fill: parent
+                displayMethod: DisplayMethodArea.Fast
+            }
         }
 
         Row {
-            spacing: 4
+            spacing: theme.spacingXs
 
             Column {
                 id: rankLabels
@@ -262,13 +389,13 @@ Rectangle {
                     model: 8
                     Text {
                         required property int index
-                        width: 24
+                        width: 64
                         height: grid.height / 8
                         verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
-                        text: boardScreen.filesRanks().ranks[index]
-                        font.pixelSize: 16
-                        color: boardScreen.darkMode ? "#e6e2d8" : "black"
+                        text: boardScreen.fr.ranks[index]
+                        font.pixelSize: theme.fontSmall
+                        color: theme.text
                     }
                 }
             }
@@ -277,7 +404,7 @@ Rectangle {
                 id: grid
                 columns: 8
                 rows: 8
-                width: Math.min(boardScreen.width - rankLabels.width - 4, boardScreen.height - 200)
+                width: Math.min(boardScreen.width - rankLabels.width - theme.spacingXs, boardScreen.height - 320)
                 height: width
 
                 Repeater {
@@ -288,11 +415,12 @@ Rectangle {
                         height: grid.height / 8
                         property int fileIdx: index % 8
                         property int rankIdx: Math.floor(index / 8)
-                        squareName: boardScreen.filesRanks().files[fileIdx] + boardScreen.filesRanks().ranks[rankIdx]
+                        squareName: boardScreen.fr.files[fileIdx] + boardScreen.fr.ranks[rankIdx]
                         isLight: (fileIdx + rankIdx) % 2 === 0
                         darkMode: boardScreen.darkMode
                         pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
-                        isHighlighted: boardScreen.selectedSquare === squareName || boardScreen.selectedDestinations.indexOf(squareName) !== -1
+                        isHighlighted: boardScreen.selectedSquare === squareName ||
+                            (!boardScreen.minimalHighlights && boardScreen.selectedDestinations.indexOf(squareName) !== -1)
                         isLastMove: boardScreen.isLastMoveSquare(squareName)
                         isCheckSquare: squareName === boardScreen.checkedSquare
                         onTapped: boardScreen.onSquareTapped(squareName)
@@ -302,8 +430,8 @@ Rectangle {
         }
 
         Row {
-            spacing: 4
-            Item { width: 24; height: 1 }
+            spacing: theme.spacingXs
+            Item { width: 64; height: 1 }
             Row {
                 width: grid.width
                 Repeater {
@@ -312,24 +440,34 @@ Rectangle {
                         required property int index
                         width: grid.width / 8
                         horizontalAlignment: Text.AlignHCenter
-                        text: boardScreen.filesRanks().files[index]
-                        font.pixelSize: 16
-                        color: boardScreen.darkMode ? "#e6e2d8" : "black"
+                        text: boardScreen.fr.files[index]
+                        font.pixelSize: theme.fontSmall
+                        color: theme.text
                     }
                 }
             }
         }
 
         Text {
-            text: "White: " + Math.floor(boardScreen.whiteTimeMs / 1000) + "s"
-            font.pixelSize: 28
-            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+            text: "White: " + boardScreen.formatClock(boardScreen.whiteTimeMs)
+            font.pixelSize: theme.fontLarge
+            color: boardScreen.isLowTime(boardScreen.whiteTimeMs, boardScreen.initialClockMs) ? theme.errorText : theme.text
+
+            DisplayMethodArea {
+                anchors.fill: parent
+                displayMethod: DisplayMethodArea.Fast
+            }
         }
 
         Text {
             text: boardScreen.statusText
-            font.pixelSize: 24
-            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+            font.pixelSize: theme.fontLarge
+            color: theme.text
+
+            DisplayMethodArea {
+                anchors.fill: parent
+                displayMethod: DisplayMethodArea.Fast
+            }
         }
 
         Text {
@@ -338,21 +476,26 @@ Rectangle {
             // (game-over/reject/reconnect messages) takes visual precedence
             // above, this is just a steady turn indicator underneath it.
             text: boardScreen.turn === boardScreen.yourColor ? "Your move" : "Waiting for opponent..."
-            font.pixelSize: 20
-            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+            font.pixelSize: theme.fontBody
+            color: theme.text
+
+            DisplayMethodArea {
+                anchors.fill: parent
+                displayMethod: DisplayMethodArea.Fast
+            }
         }
 
         Text {
             text: boardScreen.formattedMoveHistory()
-            font.pixelSize: 18
+            font.pixelSize: theme.fontSmall
             wrapMode: Text.WordWrap
             width: parent.width
-            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+            color: theme.text
         }
 
         Flow {
             width: parent.width
-            spacing: 8
+            spacing: theme.spacingSmall
 
             Button {
                 text: boardScreen.drawOfferedByOpponent ? "Accept draw" : "Offer draw"
@@ -367,7 +510,7 @@ Rectangle {
 
         Flow {
             width: parent.width
-            spacing: 8
+            spacing: theme.spacingSmall
 
             Button {
                 text: boardScreen.takebackOfferedByOpponent ? "Accept takeback" : "Offer takeback"
@@ -382,7 +525,7 @@ Rectangle {
 
         Flow {
             width: parent.width
-            spacing: 8
+            spacing: theme.spacingSmall
 
             // Lichess itself is the authority on whether an abort is still legal
             // (before either side's first move) -- lastMove is just a cheap,
@@ -425,17 +568,17 @@ Rectangle {
 
         Text {
             text: boardScreen.chatMessages.join("\n")
-            font.pixelSize: 16
+            font.pixelSize: theme.fontSmall
             wrapMode: Text.WordWrap
             width: parent.width
-            color: boardScreen.darkMode ? "#e6e2d8" : "black"
+            color: theme.text
         }
 
         Row {
-            spacing: 8
+            spacing: theme.spacingSmall
             TextField {
                 id: chatInputField
-                width: 240
+                width: theme.textFieldWidthMedium
                 placeholderText: "Message opponent"
             }
             Button {
@@ -449,11 +592,42 @@ Rectangle {
             }
         }
 
-        Button {
-            text: "Back to Home"
-            visible: boardScreen.statusText.indexOf("Game over") === 0
-            onClicked: boardScreen.navigateTo("HomeScreen.qml")
-        }
+    }
+
+    // A root-level sibling anchored to `grid`'s own bounds, matching how
+    // backButton/promotionPopup below are also declared outside the main
+    // Column -- placing this *inside* Grid/Row (both positioners) would have
+    // it auto-positioned as an extra layout cell/row item instead of treated
+    // as a plain overlay, since positioners lay out every visible child of
+    // their own regardless of whether that child paints anything itself.
+    // Selection/legal-destination/last-move/check highlighting is all
+    // transient state where speed beats fidelity -- the pieces themselves
+    // are flat black/white line art that survives a fast waveform fine. See
+    // docs/remarkable-appload-platform-notes.md §2.
+    DisplayMethodArea {
+        anchors.fill: grid
+        displayMethod: DisplayMethodArea.Fast
+    }
+
+    Button {
+        id: backButton
+        // Fixed, full-width bottom "nav bar" treatment, same as every other
+        // screen in this pass -- was just the last item inside the Column
+        // above, i.e. wherever the rest of that Column's content happened to
+        // end (variable, since most of what's above it is itself
+        // conditionally visible -- draw/takeback offers, chat history length,
+        // etc.).
+        //
+        // Always available, not just after Game Over -- an in-progress game
+        // keeps running/resumable server-side (see HomeScreen's "Resume"
+        // button, backed by handle_resume_game), so there's no reason
+        // leaving mid-game should require ending or waiting out the game.
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: theme.pageSideMargin
+        text: "Back to Home"
+        onClicked: boardScreen.navigateTo("HomeScreen.qml")
     }
 
     // Modal piece picker for promotion -- see promotionOptionsFor()/onSquareTapped.
@@ -463,20 +637,32 @@ Rectangle {
         id: promotionPopup
         visible: boardScreen.pendingPromotion !== null
         modal: true
+        // `modal: true` alone draws a translucent full-screen dim overlay
+        // (Overlay.modal) on open *and* close, and the Basic style's default
+        // enter/exit transitions fade that dim's opacity across several
+        // frames -- each is real full-screen e-ink damage for what should
+        // just be a small centered popup. `dim: false` drops the overlay
+        // (modal input-blocking itself is unaffected -- that's a separate
+        // mechanism from the dim visual); `enter: null`/`exit: null` drop the
+        // fade so the popup itself appears/disappears in one step instead of
+        // animating across frames.
+        dim: false
+        enter: null
+        exit: null
         closePolicy: Popup.NoAutoClose
         anchors.centerIn: parent
 
         Row {
-            spacing: 8
+            spacing: theme.spacingSmall
             Repeater {
                 model: boardScreen.pendingPromotion ? boardScreen.pendingPromotion.options : []
                 Rectangle {
                     required property string modelData
-                    width: 64
-                    height: 64
-                    color: boardScreen.darkMode ? "#3a382e" : "#e8e0d0"
+                    width: 128
+                    height: 128
+                    color: theme.cardBackground
                     border.width: 1
-                    border.color: boardScreen.darkMode ? "#e6e2d8" : "black"
+                    border.color: theme.text
 
                     Image {
                         anchors.centerIn: parent
@@ -485,20 +671,70 @@ Rectangle {
                         fillMode: Image.PreserveAspectFit
                         smooth: true
                         source: "../assets/pieces/" + boardScreen.promotionPieceCode(modelData) + ".png"
+                        sourceSize.width: width
+                        sourceSize.height: height
                     }
 
                     MouseArea {
                         anchors.fill: parent
                         onClicked: {
-                            boardScreen.backendSender({
-                                type: "MakeMove",
-                                from: boardScreen.pendingPromotion.from,
-                                to: boardScreen.pendingPromotion.to,
-                                promotion: modelData
-                            })
+                            var from = boardScreen.pendingPromotion.from
+                            var to = boardScreen.pendingPromotion.to
                             boardScreen.pendingPromotion = null
-                            boardScreen.selectedSquare = ""
+                            boardScreen.requestMove(from, to, modelData)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Confirm/Cancel gate for moveConfirmation (see requestMove) -- same
+    // modal styling/blocking posture as the promotion popup above, shown
+    // *instead* of sending MakeMove once a legal destination (and promotion
+    // piece, if any) has already been resolved.
+    Popup {
+        id: moveConfirmPopup
+        visible: boardScreen.pendingMoveConfirmation !== null
+        modal: true
+        // Same dim-overlay/fade-transition e-ink cost as the promotion popup
+        // above, same fix.
+        dim: false
+        enter: null
+        exit: null
+        closePolicy: Popup.NoAutoClose
+        anchors.centerIn: parent
+
+        Rectangle {
+            width: confirmColumn.width + theme.spacingLarge
+            height: confirmColumn.height + theme.spacingLarge
+            color: theme.cardBackground
+            border.width: 1
+            border.color: theme.text
+
+            Column {
+                id: confirmColumn
+                anchors.centerIn: parent
+                spacing: theme.spacingMedium
+
+                Text {
+                    text: boardScreen.pendingMoveConfirmation
+                        ? "Confirm move " + boardScreen.pendingMoveConfirmation.from + " " + boardScreen.pendingMoveConfirmation.to +
+                          (boardScreen.pendingMoveConfirmation.promotion ? "=" + boardScreen.pendingMoveConfirmation.promotion.toUpperCase() : "") + "?"
+                        : ""
+                    font.pixelSize: theme.fontBody
+                    color: theme.text
+                }
+
+                Row {
+                    spacing: theme.spacingSmall
+                    Button {
+                        text: "Confirm"
+                        onClicked: boardScreen.confirmPendingMove()
+                    }
+                    Button {
+                        text: "Cancel"
+                        onClicked: boardScreen.cancelPendingMove()
                     }
                 }
             }
@@ -522,6 +758,7 @@ Rectangle {
             boardScreen.turn = msg.turn
             boardScreen.whiteTimeMs = msg.white_time_ms
             boardScreen.blackTimeMs = msg.black_time_ms
+            boardScreen.initialClockMs = msg.initial_clock_ms !== undefined ? msg.initial_clock_ms : null
             boardScreen.legalMoves = msg.legal_moves
             boardScreen.lastMove = msg.last_move || null
             boardScreen.inCheck = msg.in_check || false
@@ -532,9 +769,41 @@ Rectangle {
             boardScreen.opponentName = msg.opponent_name || ""
             boardScreen.opponentRating = msg.opponent_rating !== undefined ? msg.opponent_rating : null
             boardScreen.resignArmed = false
+            // A RatingDiff for a previous game that never got consumed (its
+            // own GameOver never arrived on this screen, e.g. after a
+            // Back-to-Home-and-Resume round trip) must not bleed into this
+            // new game's eventual GameOver text.
+            boardScreen.pendingRatingDiffText = ""
             boardScreen.statusText = ""
         } else if (msg.type === "GameOver") {
-            boardScreen.statusText = "Game over: " + msg.result + " (" + msg.reason + ")"
+            // msg.result is "draw", the winning color, or -- for a no-winner
+            // ending that wasn't actually a draw either (aborted, noStart,
+            // cheat, ...) -- the raw status itself (see backend_app.rs's
+            // game_over_result). Shown from the local player's own
+            // perspective (yourColor) rather than raw white/black for an
+            // actual win/loss, so "you resigned" reads as "You lost", not
+            // just an opaque color name; the raw-status case is titlecased
+            // as-is since there's no "you" to attribute it to.
+            var outcome
+            if (msg.result === "draw") {
+                outcome = "Draw"
+            } else if (msg.result === "white" || msg.result === "black") {
+                outcome = msg.result === boardScreen.yourColor ? "You won" : "You lost"
+            } else {
+                outcome = msg.result.charAt(0).toUpperCase() + msg.result.slice(1)
+            }
+            boardScreen.statusText = "Game over: " + outcome + " (" + msg.reason + ")"
+            if (boardScreen.pendingRatingDiffText.length > 0) {
+                boardScreen.statusText += boardScreen.pendingRatingDiffText
+                boardScreen.pendingRatingDiffText = ""
+            }
+        } else if (msg.type === "RatingDiff") {
+            var diffText = "  (" + (msg.rating_diff > 0 ? "+" : "") + msg.rating_diff + ")"
+            if (boardScreen.statusText.indexOf("Game over") === 0) {
+                boardScreen.statusText += diffText
+            } else {
+                boardScreen.pendingRatingDiffText = diffText
+            }
         } else if (msg.type === "MoveRejected") {
             boardScreen.statusText = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""
@@ -544,7 +813,10 @@ Rectangle {
             boardScreen.opponentGone = msg.gone
             boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
         } else if (msg.type === "ChatMessage") {
-            boardScreen.chatMessages = boardScreen.chatMessages.concat([msg.username + ": " + msg.text])
+            // Capped rather than left to grow for a whole (possibly
+            // correspondence-length) game's entire chat history -- unbounded
+            // otherwise, and nothing here ever needs more than recent context.
+            boardScreen.chatMessages = boardScreen.chatMessages.concat([msg.username + ": " + msg.text]).slice(-50)
         } else if (msg.type === "ErrorMsg") {
             // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
             // possible") only ever reached main.qml's console.warn -- invisible

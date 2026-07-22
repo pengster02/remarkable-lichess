@@ -4,3 +4,5 @@ rm-appload/
 dist/
 *.core
 frontend/resources.rcc
+/remarkable
+/remarkable.pub

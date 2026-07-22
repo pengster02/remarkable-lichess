@@ -4,7 +4,8 @@ import QtQuick.Controls 2.5
 Rectangle {
     id: homeScreen
     anchors.fill: parent
-    color: homeScreen.darkMode ? "#2b2b28" : "white"
+    color: theme.background
+    Theme { id: theme; darkMode: homeScreen.darkMode }
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -20,122 +21,198 @@ Rectangle {
     // games, matching every reference client's own home/profile screen.
     property var ratings: []
     property var pendingChallenges: []
+    // Pushed down from main.qml's root state, same pattern as darkMode --
+    // set once from TokenVerified's own username field, which used to be
+    // parsed there and then never stored or shown anywhere in the UI at all.
+    property string username: ""
+    // First HomeState hasn't arrived yet -- without this, a fresh login shows a
+    // fully empty Home (no ratings/games/challenges rendered, nothing telling
+    // the user anything is even happening) indistinguishable from "you have
+    // nothing going on", which isn't true, it just hasn't loaded yet.
+    property bool loadedOnce: false
 
-    Column {
-        anchors.centerIn: parent
-        spacing: 24
+    Flickable {
+        anchors.fill: parent
+        anchors.margins: theme.pageSideMargin
+        anchors.topMargin: theme.pageTopMargin
+        contentWidth: width
+        contentHeight: contentColumn.height
+        // No rubber-band overshoot at the ends -- same reasoning as every
+        // other Flickable/ListView in this app (see GameHistoryScreen's own
+        // comment on this): that bounce is itself a multi-frame animation,
+        // a real e-ink refresh cost for a purely cosmetic effect. This one
+        // was missing it before this pass -- the one Flickable in the app
+        // that had drifted from that rule.
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
 
-        Text {
-            text: "Lichess"
-            font.pixelSize: 48
-            color: homeScreen.darkMode ? "#e6e2d8" : "black"
-        }
-
-        Flow {
+        Column {
+            id: contentColumn
             width: parent.width
-            spacing: 12
-            visible: homeScreen.ratings.length > 0
-            Repeater {
-                model: homeScreen.ratings
+            spacing: theme.spacingMedium
+
+            Column {
+                width: parent.width
+                spacing: theme.spacingSmall
+                Image {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    source: "../assets/pieces/wN.png"
+                    width: 150
+                    height: 150
+                    fillMode: Image.PreserveAspectFit
+                }
                 Text {
-                    required property var modelData
-                    text: modelData.speed + ": " + modelData.rating
-                    font.pixelSize: 18
-                    color: homeScreen.darkMode ? "#e6e2d8" : "black"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Lichess"
+                    font.pixelSize: theme.fontDisplay
+                    font.bold: true
+                    color: theme.text
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    visible: homeScreen.username.length > 0
+                    text: homeScreen.username
+                    font.pixelSize: theme.fontBody
+                    color: theme.textMuted
                 }
             }
-        }
 
-        Repeater {
-            model: homeScreen.ongoingGames
-            // Same stacked-not-Row reasoning as pendingChallenges below -- a long
-            // opponent name plus a Resume button doesn't reliably fit the device's
-            // ~400px content width.
-            Column {
-                required property var modelData
-                spacing: 4
+            Text {
+                visible: !homeScreen.loadedOnce
+                text: "Loading your games..."
+                font.pixelSize: theme.fontLabel
+                font.italic: true
+                color: theme.textMuted
+            }
 
-                Text {
-                    text: (modelData.opponent_name || "Opponent") +
-                          (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
-                          (modelData.is_my_turn ? " -- your move" : " -- waiting")
-                    font.pixelSize: 20
-                    wrapMode: Text.WordWrap
-                    width: homeScreen.width * 0.9
-                    color: homeScreen.darkMode ? "#e6e2d8" : "black"
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Your ratings"
+                visible: homeScreen.ratings.length > 0
+                Flow {
+                    width: parent.width
+                    spacing: theme.spacingSmall
+                    Repeater {
+                        model: homeScreen.ratings
+                        Text {
+                            required property var modelData
+                            text: modelData.speed.charAt(0).toUpperCase() + modelData.speed.slice(1) + ": " + modelData.rating
+                            font.pixelSize: theme.fontLabel
+                            color: theme.text
+                        }
+                    }
                 }
+            }
+
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Your games"
+                visible: homeScreen.ongoingGames.length > 0
+                Repeater {
+                    model: homeScreen.ongoingGames
+                    // Same stacked-not-Row reasoning as pendingChallenges below --
+                    // a long opponent name plus a Resume button doesn't reliably
+                    // fit the device's ~400px content width.
+                    Column {
+                        required property var modelData
+                        width: parent.width
+                        spacing: theme.spacingXs
+
+                        Text {
+                            text: (modelData.opponent_name || "Opponent") +
+                                  (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
+                                  (modelData.is_my_turn ? " -- your move" : " -- waiting")
+                            font.pixelSize: theme.fontLabel
+                            font.bold: modelData.is_my_turn
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            color: theme.text
+                        }
+                        Button {
+                            text: "Resume"
+                            onClicked: {
+                                // No BoardState flows for an already-in-progress game
+                                // until its stream is (re)attached server-side -- see
+                                // ResumeGame's own comment in protocol.rs. We still
+                                // navigate immediately after for a responsive UI
+                                // instead of waiting on the first BoardState.
+                                homeScreen.backendSender({type: "ResumeGame", game_id: modelData.game_id})
+                                homeScreen.navigateTo("BoardScreen.qml")
+                            }
+                        }
+                    }
+                }
+            }
+
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Challenges"
+                visible: homeScreen.pendingChallenges.length > 0
+                Repeater {
+                    model: homeScreen.pendingChallenges
+                    // Stacked (text above buttons) rather than one Row -- a long
+                    // challenger name plus two buttons doesn't reliably fit the
+                    // device's ~400px content width, and a fixed-width Column
+                    // won't wrap an overflowing Row, it'll just clip.
+                    Column {
+                        required property var modelData
+                        width: parent.width
+                        spacing: theme.spacingXs
+
+                        Text {
+                            text: modelData.challenger + " challenges you (" + Math.floor((modelData.limit_seconds || 0) / 60) + "+" + (modelData.increment_seconds || 0) + ")"
+                            font.pixelSize: theme.fontLabel
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            color: theme.text
+                        }
+                        Row {
+                            spacing: theme.spacingSmall
+                            Button {
+                                text: "Accept"
+                                onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
+                            }
+                            Button {
+                                text: "Decline"
+                                onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
+                            }
+                        }
+                    }
+                }
+            }
+
+            Flow {
+                width: parent.width
+                spacing: theme.spacingSmall
+
                 Button {
-                    text: "Resume"
+                    text: "New game"
+                    onClicked: homeScreen.navigateTo("SeekScreen.qml")
+                }
+
+                Button {
+                    text: "Game history"
                     onClicked: {
-                        // No BoardState flows for an already-in-progress game until its
-                        // stream is (re)attached server-side -- see ResumeGame's own
-                        // comment in protocol.rs. We still navigate immediately after
-                        // for a responsive UI instead of waiting on the first BoardState.
-                        homeScreen.backendSender({type: "ResumeGame", game_id: modelData.game_id})
-                        homeScreen.navigateTo("BoardScreen.qml")
+                        homeScreen.backendSender({type: "RequestGameHistory"})
+                        homeScreen.navigateTo("GameHistoryScreen.qml")
                     }
                 }
-            }
-        }
 
-        Button {
-            text: "New game"
-            onClicked: {
-                homeScreen.navigateTo("SeekScreen.qml")
-            }
-        }
-
-        Button {
-            text: "Game history"
-            onClicked: {
-                homeScreen.backendSender({type: "RequestGameHistory"})
-                homeScreen.navigateTo("GameHistoryScreen.qml")
-            }
-        }
-
-        Button {
-            // Not a hardware light/warmth control -- reMarkable's frontlight is
-            // brightness-only, no adjustable color temperature (see
-            // docs/remarkable-appload-platform-notes.md). This just swaps this
-            // app's own palette to a darker, e-ink-friendly (not pure black)
-            // scheme. Unverified on real e-ink until an on-device pass; dark
-            // fills are a plausible ghosting risk worth watching for.
-            text: homeScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
-            onClicked: homeScreen.toggleDarkMode()
-        }
-
-        Button {
-            text: "Settings"
-            onClicked: homeScreen.navigateTo("SettingsScreen.qml")
-        }
-
-        Repeater {
-            model: homeScreen.pendingChallenges
-            // Stacked (text above buttons) rather than one Row -- a long
-            // challenger name plus two buttons doesn't reliably fit the
-            // device's ~400px content width, and a centered Column with no
-            // fixed width won't wrap an overflowing Row, it'll just clip.
-            Column {
-                required property var modelData
-                spacing: 4
-
-                Text {
-                    text: modelData.challenger + " challenges you (" + Math.floor((modelData.limit_seconds || 0) / 60) + "+" + (modelData.increment_seconds || 0) + ")"
-                    font.pixelSize: 20
-                    wrapMode: Text.WordWrap
-                    width: homeScreen.width * 0.9
-                    color: homeScreen.darkMode ? "#e6e2d8" : "black"
+                Button {
+                    // Not a hardware light/warmth control -- reMarkable's frontlight
+                    // is brightness-only, no adjustable color temperature (see
+                    // docs/remarkable-appload-platform-notes.md). This just swaps
+                    // this app's own palette to a darker, e-ink-friendly (not pure
+                    // black) scheme. Unverified on real e-ink until an on-device
+                    // pass; dark fills are a plausible ghosting risk worth watching
+                    // for.
+                    text: homeScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
+                    onClicked: homeScreen.toggleDarkMode()
                 }
-                Row {
-                    spacing: 8
-                    Button {
-                        text: "Accept"
-                        onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
-                    }
-                    Button {
-                        text: "Decline"
-                        onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
-                    }
+
+                Button {
+                    text: "Settings"
+                    onClicked: homeScreen.navigateTo("SettingsScreen.qml")
                 }
             }
         }
@@ -143,6 +220,7 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
+            homeScreen.loadedOnce = true
             homeScreen.ongoingGames = msg.ongoing_games || []
             homeScreen.ratings = msg.ratings || []
         } else if (msg.type === "PendingChallenges") {

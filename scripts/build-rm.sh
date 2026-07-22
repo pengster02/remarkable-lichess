@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cross-compile the Rust backend for the Paper Pro Move's aarch64 target,
-# following the same Cross.toml-based approach chessmarkable uses for this
-# device family. Adjust the target triple if `cross` reports a mismatch for
-# your specific rm-appload toolchain image.
+# Cross-compile the Rust backend for the Paper Pro Move's aarch64 target via
+# `cross`'s own default Docker image for this triple -- no Cross.toml exists
+# in backend/ (there's nothing to customize about the image yet). Adjust the
+# target triple if `cross` reports a mismatch for your specific rm-appload
+# toolchain image.
 cd "$(dirname "$0")/../backend"
+# The plan's own dev docs tell developers to export CARGO_TARGET_DIR for local
+# `cargo test` runs (see docs/superpowers/plans/2026-07-21-ui-strategy-phases-plan.md) --
+# unset it here so the `cp` below (which assumes the default ./target layout)
+# doesn't silently pick up a stale/empty binary if that's still set in the
+# calling shell.
+unset CARGO_TARGET_DIR
 # --features transport is required here: the bin target (and backend_app.rs)
 # are gated behind it since they depend on appload-client (see Global Constraints
 # and Task 1) — this is the first point in the whole plan where that feature is
