@@ -59,4 +59,11 @@ QQC2.Button {
         verticalAlignment: Text.AlignVCenter
         opacity: control.enabled ? 1.0 : 0.45
     }
+
+    EinkRefreshArea {
+        anchors.fill: parent
+        displayMethod: control.pressed
+            ? EinkRefreshArea.Fast
+            : EinkRefreshArea.UI
+    }
 }

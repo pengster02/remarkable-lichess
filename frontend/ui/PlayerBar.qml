@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import "qrc:/qt/qml/net/asivery/ApploadUtils"
 
 // One side's identity + clock, shown as a full-width bar directly above or
 // below the board -- the standard chess-client arrangement (lichess mobile,
@@ -99,11 +98,11 @@ Rectangle {
             color: playerBar.active
                 ? theme.background
                 : (playerBar.lowTime ? theme.errorText : theme.text)
+        }
 
-            DisplayMethodArea {
-                anchors.fill: parent
-                displayMethod: DisplayMethodArea.Fast
-            }
+        EinkRefreshArea {
+            anchors.fill: parent
+            displayMethod: EinkRefreshArea.Fast
         }
     }
 

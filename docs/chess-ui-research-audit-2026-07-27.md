@@ -24,6 +24,10 @@ expensive analysis or data panels explicitly user-triggered.
   Board options instead of crowding the board edge.
 - Marked the changing clock text as an AppLoad `Fast` display region. AppLoad's
   own example uses that method for frequently changing text.
+- Expanded the clock region to include the fixed-width chip and introduced one
+  AppLoad adapter for refresh policy. Press feedback, legal targets, premoves,
+  and the localized clearing pulse use `Fast`; settled board pieces use
+  `Content`, and resting controls use `UI`.
 - Verified that all actions use shared controls. Page actions have a 144 px
   minimum height, while the compact board strip and move tokens use 96 px touch
   targets. Dialogs, promotion choices, and live/review move tokens now share
