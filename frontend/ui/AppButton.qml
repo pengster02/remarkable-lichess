@@ -1,17 +1,21 @@
 import QtQuick 2.5
 import QtQuick.Controls 2.5 as QQC2
-import net.asivery.ApploadUtils
 
-// Overrides every unqualified `Button { ... }` in this directory (QML
-// resolves same-directory files before an imported module's type of the
-// same name) -- gives every button consistent Theme-driven sizing/styling
-// instead of QtQuick Controls' unscaled desktop-DPI "Basic" style defaults.
-//
-// Known limitation: uses Theme's default (light) instance, not each
-// screen's own darkMode -- not yet dark-mode-reactive.
+// Uses an explicit app-specific type name so Qt cannot resolve call sites to
+// QtQuick Controls' desktop-sized Button instead.
 QQC2.Button {
     id: control
-    Theme { id: theme }
+    property bool darkMode: nearestDarkMode(parent)
+
+    function nearestDarkMode(item) {
+        while (item) {
+            if (item.hasOwnProperty("darkMode")) return item.darkMode
+            item = item.parent
+        }
+        return false
+    }
+
+    Theme { id: theme; darkMode: control.darkMode }
     font.pixelSize: theme.fontButton
     topPadding: theme.buttonPaddingV
     bottomPadding: theme.buttonPaddingV
@@ -36,12 +40,6 @@ QQC2.Button {
         // a dead tap with no feedback read as "the app froze."
         opacity: control.enabled ? 1.0 : 0.45
 
-        // Content, not Fast: Fast left visible ghosting (previous
-        // pressed-state color lingering) after taps.
-        DisplayMethodArea {
-            anchors.fill: parent
-            displayMethod: DisplayMethodArea.Content
-        }
     }
 
     contentItem: Text {

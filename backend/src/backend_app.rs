@@ -1,4 +1,5 @@
 use crate::game::session::GameSession;
+use crate::game::rules::{analysis_position, apply_analysis_move};
 use crate::lichess::client::LichessClient;
 use crate::lichess::models::{EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
@@ -295,8 +296,56 @@ impl LichessBackend {
                 auto_queen_promotion: settings.auto_queen_promotion,
                 move_confirmation: settings.move_confirmation,
                 minimal_highlights: settings.minimal_highlights,
+                premoves_enabled: settings.premoves_enabled,
+                live_clock_enabled: settings.live_clock_enabled,
             },
         );
+    }
+
+    fn handle_request_analysis_position(&self, replier: &BackendReplier<Self>, fen: String) {
+        match analysis_position(&fen) {
+            Ok((normalized_fen, legal_moves, in_check, status)) => self.send(
+                replier,
+                &BackendMessage::AnalysisPosition {
+                    requested_fen: fen,
+                    fen: normalized_fen,
+                    legal_moves: legal_moves.into_boxed_slice(),
+                    in_check,
+                    status,
+                },
+            ),
+            Err(error) => self.send(
+                replier,
+                &BackendMessage::ErrorMsg { message: format!("invalid analysis position: {error}") },
+            ),
+        }
+    }
+
+    fn handle_make_analysis_move(
+        &self,
+        replier: &BackendReplier<Self>,
+        fen: String,
+        from: String,
+        to: String,
+        promotion: Option<String>,
+    ) {
+        match apply_analysis_move(&fen, &from, &to, promotion.as_deref()) {
+            Ok((next_fen, san, legal_moves, in_check, status)) => self.send(
+                replier,
+                &BackendMessage::AnalysisMove {
+                    from_fen: fen,
+                    fen: next_fen,
+                    san,
+                    legal_moves: legal_moves.into_boxed_slice(),
+                    in_check,
+                    status,
+                },
+            ),
+            Err(error) => self.send(
+                replier,
+                &BackendMessage::ErrorMsg { message: format!("analysis move rejected: {error}") },
+            ),
+        }
     }
 
     fn handle_save_settings(
@@ -305,8 +354,16 @@ impl LichessBackend {
         auto_queen_promotion: bool,
         move_confirmation: bool,
         minimal_highlights: bool,
+        premoves_enabled: bool,
+        live_clock_enabled: bool,
     ) {
-        let settings = crate::settings::AppSettings { auto_queen_promotion, move_confirmation, minimal_highlights };
+        let settings = crate::settings::AppSettings {
+            auto_queen_promotion,
+            move_confirmation,
+            minimal_highlights,
+            premoves_enabled,
+            live_clock_enabled,
+        };
         if let Err(e) = crate::settings::save(&self.settings_path, &settings) {
             self.send(replier, &BackendMessage::ErrorMsg { message: format!("failed to save settings: {e}") });
             return;
@@ -316,7 +373,13 @@ impl LichessBackend {
         // succeeded instead of silently drifting from what's on disk.
         self.send(
             replier,
-            &BackendMessage::SettingsState { auto_queen_promotion, move_confirmation, minimal_highlights },
+            &BackendMessage::SettingsState {
+                auto_queen_promotion,
+                move_confirmation,
+                minimal_highlights,
+                premoves_enabled,
+                live_clock_enabled,
+            },
         );
     }
 
@@ -797,8 +860,21 @@ impl AppLoadBackend for LichessBackend {
                 }
             }
             FrontendMessage::RequestSettings => self.handle_request_settings(replier),
-            FrontendMessage::SaveSettings { auto_queen_promotion, move_confirmation, minimal_highlights } => {
-                self.handle_save_settings(replier, auto_queen_promotion, move_confirmation, minimal_highlights)
+            FrontendMessage::SaveSettings {
+                auto_queen_promotion,
+                move_confirmation,
+                minimal_highlights,
+                premoves_enabled,
+                live_clock_enabled,
+            } => {
+                self.handle_save_settings(
+                    replier,
+                    auto_queen_promotion,
+                    move_confirmation,
+                    minimal_highlights,
+                    premoves_enabled,
+                    live_clock_enabled,
+                )
             }
             FrontendMessage::LogOut => self.handle_log_out(replier),
             FrontendMessage::RequestGameHistory { rated, speed, color } => {
@@ -809,6 +885,12 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::RequestGameMoves { game_id } => {
                 self.handle_request_game_moves(replier, game_id).await
+            }
+            FrontendMessage::RequestAnalysisPosition { fen } => {
+                self.handle_request_analysis_position(replier, fen)
+            }
+            FrontendMessage::MakeAnalysisMove { fen, from, to, promotion } => {
+                self.handle_make_analysis_move(replier, fen, from, to, promotion)
             }
         }
     }

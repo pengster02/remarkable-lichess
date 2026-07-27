@@ -19,12 +19,16 @@ Rectangle {
     property var setMoveConfirmation: function() {}
     property bool minimalHighlights: false
     property var setMinimalHighlights: function() {}
+    property bool premovesEnabled: false
+    property var setPremovesEnabled: function() {}
+    property bool liveClockEnabled: true
+    property var setLiveClockEnabled: function() {}
     // Two-tap confirm, same pattern as BoardScreen's Resign button -- logging out
     // clears the saved token entirely (see backend_app.rs's handle_log_out), not
     // something a single mistaken tap should be able to do.
     property bool logOutArmed: false
 
-    Button {
+    AppButton {
         id: backButton
         // Same fixed, full-width bottom "nav bar" treatment as every other
         // screen's back action -- previously just the last item in this
@@ -77,7 +81,7 @@ Rectangle {
                 title: "Appearance"
                 width: parent.width
 
-                Button {
+                AppButton {
                     // Not a hardware light/warmth control -- reMarkable's frontlight is
                     // brightness-only, no adjustable color temperature (see
                     // docs/remarkable-appload-platform-notes.md). This just swaps this
@@ -100,7 +104,7 @@ Rectangle {
                 // default: full highlighting is more helpful day-to-day, this
                 // just offers the tradeoff to whoever wants faster feedback
                 // over it.
-                Button {
+                AppButton {
                     width: parent.width
                     text: "Minimal highlights: " + (settingsScreen.minimalHighlights ? "On" : "Off")
                     highlighted: settingsScreen.minimalHighlights
@@ -118,7 +122,7 @@ Rectangle {
                 // auto-queen" as one of the standard settings every mainstream chess app
                 // has. Off by default -- BoardScreen's promotion popup is the only way to
                 // underpromote at all, so silently skipping it isn't the safer default.
-                Button {
+                AppButton {
                     width: parent.width
                     text: "Auto-queen promotion: " + (settingsScreen.autoQueenPromotion ? "On" : "Off")
                     highlighted: settingsScreen.autoQueenPromotion
@@ -130,11 +134,25 @@ Rectangle {
                 // too, same as auto-queen above: BoardScreen's own tap-to-move
                 // is already the fast path, so silently gating every move
                 // behind an extra tap isn't the safer default either.
-                Button {
+                AppButton {
                     width: parent.width
                     text: "Confirm moves: " + (settingsScreen.moveConfirmation ? "On" : "Off")
                     highlighted: settingsScreen.moveConfirmation
                     onClicked: settingsScreen.setMoveConfirmation(!settingsScreen.moveConfirmation)
+                }
+
+                AppButton {
+                    width: parent.width
+                    text: "Premoves: " + (settingsScreen.premovesEnabled ? "On" : "Off")
+                    highlighted: settingsScreen.premovesEnabled
+                    onClicked: settingsScreen.setPremovesEnabled(!settingsScreen.premovesEnabled)
+                }
+
+                AppButton {
+                    width: parent.width
+                    text: "Live clock: " + (settingsScreen.liveClockEnabled ? "On" : "Off")
+                    highlighted: settingsScreen.liveClockEnabled
+                    onClicked: settingsScreen.setLiveClockEnabled(!settingsScreen.liveClockEnabled)
                 }
             }
 
@@ -143,7 +161,7 @@ Rectangle {
                 title: "Account"
                 width: parent.width
 
-                Button {
+                AppButton {
                     width: parent.width
                     text: settingsScreen.logOutArmed ? "Tap again to log out" : "Log out"
                     onClicked: {

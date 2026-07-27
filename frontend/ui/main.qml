@@ -20,6 +20,8 @@ Rectangle {
     property bool autoQueenPromotion: false
     property bool moveConfirmation: false
     property bool minimalHighlights: false
+    property bool premovesEnabled: false
+    property bool liveClockEnabled: true
     // Set from GameMoves right before navigating to GameReviewScreen -- same
     // hand-off pattern as darkMode/autoQueenPromotion above, since a freshly
     // Loader-created screen has no other way to receive this reply's payload.
@@ -42,8 +44,12 @@ Rectangle {
     // local-state-plus-backend-send pattern -- GameHistoryScreen has no other
     // way to reach root's reviewGame property directly.
     function selectGameForReview(game) {
-        root.reviewGame = game
-        root.sendToBackend({type: "RequestGameMoves", game_id: game.game_id})
+        root.openGameReview(game.game_id, game)
+    }
+
+    function openGameReview(gameId, game) {
+        root.reviewGame = game || null
+        root.sendToBackend({type: "RequestGameMoves", game_id: gameId})
     }
 
     function toggleDarkMode() {
@@ -54,7 +60,7 @@ Rectangle {
     // without waiting on a round trip) -- SaveSettings's own SettingsState echo
     // (handled below) will correct this if the write actually failed.
     //
-    // Every setter always sends *all three* fields together (not just the
+    // Every setter always sends all fields together (not just the
     // one being changed) -- SaveSettings has no partial-update semantics, so
     // sending only one previously meant toggling auto-queen silently reset
     // move_confirmation back to its serde default (false) on the backend,
@@ -66,7 +72,9 @@ Rectangle {
             type: "SaveSettings",
             auto_queen_promotion: value,
             move_confirmation: root.moveConfirmation,
-            minimal_highlights: root.minimalHighlights
+            minimal_highlights: root.minimalHighlights,
+            premoves_enabled: root.premovesEnabled,
+            live_clock_enabled: root.liveClockEnabled
         })
     }
 
@@ -76,7 +84,9 @@ Rectangle {
             type: "SaveSettings",
             auto_queen_promotion: root.autoQueenPromotion,
             move_confirmation: value,
-            minimal_highlights: root.minimalHighlights
+            minimal_highlights: root.minimalHighlights,
+            premoves_enabled: root.premovesEnabled,
+            live_clock_enabled: root.liveClockEnabled
         })
     }
 
@@ -86,7 +96,33 @@ Rectangle {
             type: "SaveSettings",
             auto_queen_promotion: root.autoQueenPromotion,
             move_confirmation: root.moveConfirmation,
-            minimal_highlights: value
+            minimal_highlights: value,
+            premoves_enabled: root.premovesEnabled,
+            live_clock_enabled: root.liveClockEnabled
+        })
+    }
+
+    function setPremovesEnabled(value) {
+        root.premovesEnabled = value
+        root.sendToBackend({
+            type: "SaveSettings",
+            auto_queen_promotion: root.autoQueenPromotion,
+            move_confirmation: root.moveConfirmation,
+            minimal_highlights: root.minimalHighlights,
+            premoves_enabled: value,
+            live_clock_enabled: root.liveClockEnabled
+        })
+    }
+
+    function setLiveClockEnabled(value) {
+        root.liveClockEnabled = value
+        root.sendToBackend({
+            type: "SaveSettings",
+            auto_queen_promotion: root.autoQueenPromotion,
+            move_confirmation: root.moveConfirmation,
+            minimal_highlights: root.minimalHighlights,
+            premoves_enabled: root.premovesEnabled,
+            live_clock_enabled: value
         })
     }
 
@@ -122,6 +158,18 @@ Rectangle {
         }
     }
 
+    onPremovesEnabledChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("premovesEnabled")) {
+            screenLoader.item.premovesEnabled = root.premovesEnabled
+        }
+    }
+
+    onLiveClockEnabledChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("liveClockEnabled")) {
+            screenLoader.item.liveClockEnabled = root.liveClockEnabled
+        }
+    }
+
     // Required by the AppLoad host: it looks up `close`/`unloading` on the
     // root QML item (see rmpp-appload's window.qml Connections/onUnloading
     // wiring). `close` lets the app request that AppLoad tear down its
@@ -141,8 +189,6 @@ Rectangle {
             if (msg.type === "TokenVerified") {
                 root.hasToken = true
                 root.username = msg.username || ""
-                endpoint.sendMessage(1, JSON.stringify({type: "RequestHome"}))
-                endpoint.sendMessage(1, JSON.stringify({type: "RequestChallenges"}))
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestSettings"}))
                 screenLoader.source = "HomeScreen.qml"
             } else if (msg.type === "SettingsState") {
@@ -152,6 +198,8 @@ Rectangle {
                 root.autoQueenPromotion = msg.auto_queen_promotion || false
                 root.moveConfirmation = msg.move_confirmation || false
                 root.minimalHighlights = msg.minimal_highlights || false
+                root.premovesEnabled = msg.premoves_enabled || false
+                root.liveClockEnabled = msg.live_clock_enabled !== undefined ? msg.live_clock_enabled : true
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
                 screenLoader.source = "SetupScreen.qml"
@@ -171,6 +219,10 @@ Rectangle {
                 root.reviewClockMs = msg.clock_ms || []
                 root.reviewAnalysis = msg.analysis || []
                 screenLoader.source = "GameReviewScreen.qml"
+            } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove") {
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
+                }
             } else if (msg.type === "BoardState" || msg.type === "GameOver" || msg.type === "MoveRejected") {
                 // Never force-navigate away from Home: a user who explicitly went
                 // back to Home (or never left it yet) should stay there even if a
@@ -251,6 +303,18 @@ Rectangle {
             if (item.hasOwnProperty("setMinimalHighlights")) {
                 item.setMinimalHighlights = root.setMinimalHighlights
             }
+            if (item.hasOwnProperty("premovesEnabled")) {
+                item.premovesEnabled = root.premovesEnabled
+            }
+            if (item.hasOwnProperty("setPremovesEnabled")) {
+                item.setPremovesEnabled = root.setPremovesEnabled
+            }
+            if (item.hasOwnProperty("liveClockEnabled")) {
+                item.liveClockEnabled = root.liveClockEnabled
+            }
+            if (item.hasOwnProperty("setLiveClockEnabled")) {
+                item.setLiveClockEnabled = root.setLiveClockEnabled
+            }
             if (item.hasOwnProperty("moves")) {
                 item.moves = root.reviewMoves
             }
@@ -268,6 +332,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("selectGameForReview")) {
                 item.selectGameForReview = root.selectGameForReview
+            }
+            if (item.hasOwnProperty("openGameReview")) {
+                item.openGameReview = root.openGameReview
             }
         }
     }

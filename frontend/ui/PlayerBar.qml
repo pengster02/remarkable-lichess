@@ -7,8 +7,7 @@ import net.asivery.ApploadUtils
 // board is flipped, active side's clock emphasized. Emphasis is a full
 // invert (dark chip, light digits) plus a bold name -- a redundant,
 // hue-independent cue, since color alone can't be trusted to survive this
-// panel's desaturation. All of it is a static state change per move, no
-// ticking (see BoardScreen's no-Timer comment).
+// panel's desaturation.
 Rectangle {
     id: playerBar
     property bool darkMode: false
@@ -21,6 +20,8 @@ Rectangle {
     // This side is to move -- inverts the clock chip and bolds the name.
     property bool active: false
     property bool lowTime: false
+    property int materialAdvantage: 0
+    property var capturedPieces: []
 
     Theme { id: theme; darkMode: playerBar.darkMode }
     height: theme.playerBarHeight
@@ -36,17 +37,44 @@ Rectangle {
         return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
     }
 
-    Text {
+    Column {
         anchors.left: parent.left
         anchors.leftMargin: theme.spacingSmall
-        anchors.right: clockChip.left
+        anchors.right: clockChip.visible ? clockChip.left : parent.right
         anchors.rightMargin: theme.spacingSmall
         anchors.verticalCenter: parent.verticalCenter
-        text: playerBar.playerName + (playerBar.rating !== null ? " (" + playerBar.rating + ")" : "")
-        font.pixelSize: theme.fontBody
-        font.bold: playerBar.active
-        elide: Text.ElideRight
-        color: theme.text
+        spacing: theme.spacingXs / 2
+
+        Text {
+            width: parent.width
+            text: playerBar.playerName +
+                  (playerBar.rating !== null ? " (" + playerBar.rating + ")" : "") +
+                  (playerBar.materialAdvantage > 0 ? "  |  +" + playerBar.materialAdvantage : "")
+            font.pixelSize: theme.fontBody
+            font.bold: playerBar.active
+            elide: Text.ElideRight
+            color: theme.text
+        }
+
+        Row {
+            height: theme.fontLarge
+            spacing: 2
+            visible: playerBar.capturedPieces.length > 0
+
+            Repeater {
+                model: playerBar.capturedPieces
+                Image {
+                    required property string modelData
+                    width: theme.fontLarge
+                    height: width
+                    source: "../assets/pieces/" + modelData + ".png"
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    sourceSize.width: width
+                    sourceSize.height: height
+                }
+            }
+        }
     }
 
     Rectangle {
@@ -71,14 +99,12 @@ Rectangle {
             color: playerBar.active
                 ? theme.background
                 : (playerBar.lowTime ? theme.errorText : theme.text)
+
+            DisplayMethodArea {
+                anchors.fill: parent
+                displayMethod: DisplayMethodArea.Fast
+            }
         }
     }
 
-    // Content, not Fast -- same ghosting fix as the board grid: changing
-    // clock digits are exactly the kind of content a partial waveform can
-    // leave a faint trace of.
-    DisplayMethodArea {
-        anchors.fill: parent
-        displayMethod: DisplayMethodArea.Content
-    }
 }

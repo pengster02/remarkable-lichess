@@ -17,20 +17,32 @@ pub struct LichessClient {
 /// against the real API: a scope-missing 403 came back as `{"error":"Missing scope:
 /// board:play"}`) that every method here used to throw away, surfacing only the bare
 /// HTTP status code to whoever called it. Reads the body and prefers its `error` field;
-/// falls back to the raw body text if it isn't JSON shaped that way, rather than
-/// silently swallowing whatever Lichess actually said.
+/// falls back to a bounded plain-text reason and ignores HTML error pages.
 async fn error_from_response(context: &str, resp: reqwest::Response) -> anyhow::Error {
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    let reason = serde_json::from_str::<serde_json::Value>(&body)
+    let json_reason = serde_json::from_str::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
-        .filter(|s| !s.is_empty())
-        .unwrap_or(body);
-    let err = if reason.is_empty() {
-        anyhow!("{context} failed with status {status}")
-    } else {
-        anyhow!("{context} failed with status {status}: {reason}")
+        .filter(|s| !s.is_empty());
+    let reason = json_reason.or_else(|| {
+        let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.starts_with("<!DOCTYPE") || compact.starts_with("<html") {
+            return None;
+        }
+        let mut chars = compact.chars();
+        let shortened: String = chars.by_ref().take(240).collect();
+        if chars.next().is_some() {
+            Some(format!("{shortened}..."))
+        } else if shortened.is_empty() {
+            None
+        } else {
+            Some(shortened)
+        }
+    });
+    let err = match reason {
+        Some(reason) => anyhow!("{context} failed with status {status}: {reason}"),
+        None => anyhow!("{context} failed with status {status}"),
     };
     log::warn!("{err}");
     err
@@ -158,7 +170,7 @@ impl LichessClient {
         Ok(games)
     }
 
-    /// GET /api/game/export/{id} defaults to PGN text -- same footgun
+    /// GET /game/export/{id} defaults to PGN text -- same footgun
     /// `get_game_history` already works around for a different endpoint
     /// (confirmed against lichess-org/api's game-export-gameId.yaml
     /// `AcceptPgnOrJson` header parameter), so this sets an explicit
@@ -172,7 +184,7 @@ impl LichessClient {
                 "export_game",
                 self.bearer(
                     self.http
-                        .get(format!("{}/api/game/export/{}", self.base_url, game_id))
+                        .get(format!("{}/game/export/{}", self.base_url, game_id))
                         .header("Accept", "application/json"),
                 ),
             )
@@ -716,7 +728,7 @@ mod tests {
     async fn export_game_sends_accept_json_header_and_parses_moves() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/game/export/abcd1234"))
+            .and(path("/game/export/abcd1234"))
             .and(header("Accept", "application/json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "abcd1234",
@@ -736,7 +748,7 @@ mod tests {
     async fn export_game_surfaces_lichess_error_body() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/game/export/missing"))
+            .and(path("/game/export/missing"))
             .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
                 "error": "No such game"
             })))
@@ -746,6 +758,22 @@ mod tests {
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let err = client.export_game("missing").await.unwrap_err();
         assert!(err.to_string().contains("No such game"));
+    }
+
+    #[tokio::test]
+    async fn export_game_does_not_surface_html_error_pages() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/game/export/missing"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(
+                "<!DOCTYPE html><html><body>A very large error page</body></html>",
+            ))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let err = client.export_game("missing").await.unwrap_err().to_string();
+        assert_eq!(err, "export_game failed with status 404 Not Found");
     }
 
     #[tokio::test]
