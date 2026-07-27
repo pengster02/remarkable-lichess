@@ -16,8 +16,8 @@ The current UI supports:
 - token setup, home ratings, ongoing games, seeks, direct/open/AI challenges;
 - live games with tap or drag input, legal targets, premoves, promotion,
   move confirmation, clocks, player bars, chat, contract-gated draw/takeback,
-  abort/resign, opponent-left claims, time gifts, reconnect and game-over
-  states;
+  abort/resign, opponent-left claims, time gifts, typed action-completion
+  feedback, reconnect and game-over states;
 - game-history filters and finished-game review;
 - clickable move notation, first/previous/next/last, board flip, annotations,
   a linear candidate-line Explore mode with Undo/Reset, and on-demand cached
@@ -147,7 +147,9 @@ Minimum emulator smoke test:
    verify each shared in-canvas dialog fits and scrolls.
 10. In an eligible arena game, verify Berserk requires confirmation and
     disappears after success or the local player's first move.
-11. Check both light and dark modes.
+11. Confirm a server-backed action; verify Actions briefly reads `Working...`,
+    cannot be tapped twice, and returns to its authoritative state.
+12. Check both light and dark modes.
 
 ## UI rules that matter
 
@@ -164,6 +166,12 @@ Minimum emulator smoke test:
 - Abort, draw offer, resignation, and Berserk use `ConfirmAction`; keep their
   confirmation and cancel behavior shared instead of duplicating armed-state
   button pairs.
+- Accepting or claiming a draw and gifting clock time also use
+  `ConfirmAction`. Critical confirmations use the shared dark full-fill state;
+  do not add screen-local warning colors.
+- Every server-backed live action returns the typed `GameActionCompleted`
+  message. `BoardScreen.requestGameAction` owns pending state and duplicate-tap
+  prevention; new action endpoints should use the same path.
 - Move notation is directly tappable and automatically reveals the current move.
 - Clock chips use a fixed shared width so both player bars remain aligned when
   a clock changes from two-digit to one-digit minutes.

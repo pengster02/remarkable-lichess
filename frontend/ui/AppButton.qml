@@ -6,6 +6,7 @@ import QtQuick.Controls 2.5 as QQC2
 QQC2.Button {
     id: control
     property bool darkMode: nearestDarkMode(parent)
+    property bool critical: false
 
     function nearestDarkMode(item) {
         while (item) {
@@ -29,13 +30,17 @@ QQC2.Button {
 
     background: Rectangle {
         radius: theme.cardRadius
-        border.width: control.highlighted ? 3 : 1
-        border.color: control.highlighted ? theme.accentBackground : theme.buttonBorder
+        border.width: control.highlighted || control.critical ? 3 : 1
+        border.color: control.critical
+            ? theme.criticalBackground
+            : (control.highlighted ? theme.accentBackground : theme.buttonBorder)
         // Pressed = full color inversion, not a tint -- more visible at
         // e-ink refresh latency than a subtle mid-tone shift.
         color: control.pressed
             ? theme.text
-            : (control.highlighted ? theme.accentBackground : theme.buttonBackground)
+            : (control.critical
+                ? theme.criticalBackground
+                : (control.highlighted ? theme.accentBackground : theme.buttonBackground))
         // Disabled buttons previously looked identical to enabled ones --
         // a dead tap with no feedback read as "the app froze."
         opacity: control.enabled ? 1.0 : 0.45
@@ -47,7 +52,9 @@ QQC2.Button {
         font: control.font
         color: control.pressed
             ? theme.background
-            : (control.highlighted ? theme.accentText : theme.text)
+            : (control.critical
+                ? theme.criticalText
+                : (control.highlighted ? theme.accentText : theme.text))
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         opacity: control.enabled ? 1.0 : 0.45

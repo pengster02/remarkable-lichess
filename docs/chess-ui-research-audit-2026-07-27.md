@@ -70,17 +70,25 @@ expensive analysis or data panels explicitly user-triggered.
 - Consolidated abort, draw-offer, resignation, and Berserk confirmation into
   `ConfirmAction`, with an offscreen QML interaction test for confirm, cancel,
   and pending states.
+- Consolidated every server-backed live action behind a typed completion event
+  and one frontend request gate. The compact Actions control reads `Working...`
+  and rejects duplicate taps until the endpoint returns.
+- Extended confirmation to accepting or claiming a draw and gifting clock
+  time. Armed critical actions use one dark full-fill treatment instead of
+  relying on a small icon or color alone.
+- Darkened the light-theme accent. Its foreground contrast is now 4.87:1; the
+  critical confirmation treatment is 8.96:1 in both themes.
 
 ## Live action contract
 
 | Action | UI rule | API behavior |
 | --- | --- | --- |
 | Abort | Before both players have moved; hidden in tournaments | Board abort endpoint remains authoritative |
-| Resign | Replaces Abort after the opening full move | Two-tap confirmation |
-| Offer draw | After one full move, against a human, with no active offer | `draw/true`; incoming offers expose Accept/Decline |
+| Resign | Replaces Abort after the opening full move | Critical two-tap confirmation |
+| Offer draw | After one full move, against a human, with no active offer | `draw/true`; accepting an incoming offer requires confirmation |
 | Takeback | Casual non-tournament human games after one full move | `takeback/true`; outgoing offers can be cancelled |
-| Give time | Casual non-tournament human clock games | Round add-time endpoint, fixed at 15 seconds in the UI |
-| Claim victory/draw | Only while the opponent is reported gone | Server validates whether the claim is mature/legal |
+| Give time | Casual non-tournament human clock games | Confirmed 15-second gift through the Round endpoint |
+| Claim victory/draw | Only while the opponent is reported gone | Server validates maturity; a draw claim requires confirmation |
 | Berserk | Arena game, before the local player's first move | Two-step confirmation; server validates whether the arena allows it |
 | Rematch | Not exposed | No public rematch path exists in the OpenAPI contract |
 
@@ -141,6 +149,9 @@ can change between the latest stream event and the tap.
 - [Lichess cloud-eval API](https://github.com/lichess-org/api/blob/master/doc/specs/tags/analysis/api-cloud-eval.yaml)
 - [Lichess Board API paths](https://github.com/lichess-org/api/blob/master/doc/specs/lichess-api.yaml)
 - [Lichess add-time endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/challenges/api-round-gameId-add-time-seconds.yaml)
+- [Lichess Board draw endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-draw-accept.yaml)
+- [Lichess Board takeback endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-takeback-accept.yaml)
+- [Lichess Board opponent-left draw claim](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-claim-draw.yaml)
 - [Lichess Board chat endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-chat.yaml)
 - [Lichess game-state event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameStateEvent.yaml)
 - [Lichess game-full event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameFullEvent.yaml)
