@@ -40,6 +40,7 @@ Rectangle {
     // way GameReviewScreen's header gets to show who was played and how it
     // ended, not just a bare, contextless board.
     property var reviewGame: null
+    property bool showExitConfirmation: false
 
     // Bundles "remember which row was tapped" with "actually ask the backend
     // for its moves" into one call, mirroring setAutoQueenPromotion's own
@@ -393,7 +394,49 @@ Rectangle {
 
         MouseArea {
             anchors.fill: parent
-            onClicked: root.close()
+            onClicked: root.showExitConfirmation = true
+        }
+    }
+
+    Loader {
+        objectName: "exitConfirmationLoader"
+        anchors.fill: parent
+        active: root.showExitConfirmation
+        z: 2000
+        sourceComponent: Component {
+            AppDialog {
+                anchors.fill: parent
+                darkMode: root.darkMode
+                dismissOnBackground: false
+                title: "Exit Lichess?"
+
+                Text {
+                    width: parent.width
+                    text: "Your active game will stay on Lichess, but this app will close."
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    font.pixelSize: theme.fontBody
+                    color: theme.text
+                }
+
+                Row {
+                    width: parent.width
+                    spacing: theme.spacingXs
+
+                    AppButton {
+                        width: (parent.width - parent.spacing) / 2
+                        text: "Keep playing"
+                        highlighted: true
+                        onClicked: root.showExitConfirmation = false
+                    }
+                    AppButton {
+                        width: (parent.width - parent.spacing) / 2
+                        text: "Exit"
+                        critical: true
+                        onClicked: root.close()
+                    }
+                }
+            }
         }
     }
 }
