@@ -20,7 +20,9 @@ export CROSS_CONTAINER_OPTS="${CROSS_CONTAINER_OPTS:---platform linux/amd64}"
 # are gated behind it since they depend on appload-client (see Global Constraints
 # and Task 1) — this is the first point in the whole plan where that feature is
 # actually compiled, since the dev machine used for Tasks 1-9 had no Linux target.
-cross build --release --target aarch64-unknown-linux-gnu --features transport --bin backend
+# `production` turns logging on for the shipped build only (see backend/Cargo.toml);
+# without it a release build compiles every log call out.
+cross build --release --target aarch64-unknown-linux-gnu --features transport,production --bin backend
 
 mkdir -p ../dist/remarkable-lichess/backend
 cp target/aarch64-unknown-linux-gnu/release/backend ../dist/remarkable-lichess/backend/entry

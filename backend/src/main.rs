@@ -2,10 +2,18 @@ use appload_client::AppLoad;
 use backend::backend_app::LichessBackend;
 use std::path::PathBuf;
 
+// Only the `production` build installs a logger (see Cargo.toml). Quiet by
+// default -- warnings and errors -- but RUST_LOG can raise it to debug on-device
+// without a rebuild. A no-op in every other build, where log calls are already
+// compiled out.
+fn init_logging() {
+    #[cfg(feature = "production")]
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("warn"));
+}
+
 #[tokio::main]
 async fn main() {
-    // No RUST_LOG set on-device, so default to "info" rather than off.
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+    init_logging();
     let token_path = PathBuf::from("/home/root/.config/remarkable-lichess/token");
     if let Some(parent) = token_path.parent() {
         let _ = std::fs::create_dir_all(parent);
