@@ -8,6 +8,8 @@ Column {
     property string busyText: ""
     property bool busy: false
     property bool armed: false
+    property bool prominent: false
+    property bool critical: false
     signal confirmed()
 
     Theme { id: theme }
@@ -30,7 +32,8 @@ Column {
             : (confirmControl.armed
                 ? confirmControl.confirmText
                 : confirmControl.actionText)
-        highlighted: confirmControl.armed
+        highlighted: confirmControl.armed ? !confirmControl.critical : confirmControl.prominent
+        critical: confirmControl.armed && confirmControl.critical
         enabled: !confirmControl.busy
         onClicked: {
             if (confirmControl.armed) {

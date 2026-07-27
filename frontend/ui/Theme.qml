@@ -19,8 +19,10 @@ QtObject {
 
     readonly property color buttonBackground: darkMode ? "#3a3a30" : "#dcd6c4"
     readonly property color buttonBorder: darkMode ? "#7a705a" : "#8a7f6a"
-    readonly property color accentBackground: darkMode ? "#3a6485" : "#4f86ad"
+    readonly property color accentBackground: darkMode ? "#3a6485" : "#396b92"
     readonly property color accentText: "#f2ede0"
+    readonly property color criticalBackground: "#74312d"
+    readonly property color criticalText: "#fff8ec"
 
     readonly property color errorText: darkMode ? "#e2645f" : "#a03030"
     readonly property color winText: darkMode ? "#5fb865" : "#2e7d32"

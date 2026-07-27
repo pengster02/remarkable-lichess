@@ -67,7 +67,7 @@ Rectangle {
     // pending, else null. Set instead of immediately sending MakeMove whenever a
     // pawn move has more than one legal promotion option.
     property var pendingPromotion: null
-    property bool berserkPending: false
+    property string pendingGameAction: ""
     property bool showGameActions: false
     property bool showMoves: false
     property bool showChat: false
@@ -375,6 +375,7 @@ Rectangle {
     }
 
     function gameActionsLabel() {
+        if (boardScreen.pendingGameAction.length > 0) return "Working..."
         if (boardScreen.gameOver) return "Game over"
         if (boardScreen.drawOfferedByOpponent) return "Draw offer"
         if (boardScreen.takebackOfferedByOpponent) return "Takeback offer"
@@ -382,6 +383,13 @@ Rectangle {
         if (boardScreen.drawOfferedByYou) return "Draw pending"
         if (boardScreen.takebackOfferedByYou) return "Takeback pending"
         return "Actions"
+    }
+
+    function requestGameAction(message, action) {
+        if (boardScreen.pendingGameAction.length > 0) return
+        boardScreen.pendingGameAction = action
+        boardScreen.backendSender(message)
+        boardScreen.showGameActions = false
     }
     // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
     // rank/file labels every redraw, each call allocating two fresh arrays --
@@ -948,11 +956,16 @@ Rectangle {
         BoardToolButton {
             width: (parent.width - parent.spacing * 2) / 3
             text: boardScreen.gameActionsLabel()
-            highlighted: boardScreen.gameOver ||
+            highlighted: boardScreen.pendingGameAction.length > 0 ||
+                boardScreen.gameOver ||
                 boardScreen.drawOfferedByOpponent ||
                 boardScreen.takebackOfferedByOpponent ||
                 boardScreen.opponentGone
-            onClicked: boardScreen.showGameActions = true
+            onClicked: {
+                if (boardScreen.pendingGameAction.length === 0) {
+                    boardScreen.showGameActions = true
+                }
+            }
         }
         BoardToolButton {
             width: (parent.width - parent.spacing * 2) / 3
@@ -1056,24 +1069,26 @@ Rectangle {
             onClicked: boardScreen.navigateTo("SeekScreen.qml")
         }
 
-        AppButton {
+        ConfirmAction {
+            id: acceptDrawAction
             width: parent.width
-            text: "Accept draw"
-            highlighted: true
+            actionText: "Accept draw"
+            confirmText: "Confirm draw"
+            cancelText: "Keep playing"
+            busyText: "Accepting draw"
+            busy: boardScreen.pendingGameAction === "Draw"
+            prominent: true
+            critical: true
             visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
-            onClicked: {
-                boardScreen.backendSender({type: "DrawAction", accept: true})
-                boardScreen.showGameActions = false
-            }
+            onConfirmed: boardScreen.requestGameAction(
+                {type: "DrawAction", accept: true}, "Draw")
         }
         AppButton {
             width: parent.width
             text: "Decline draw"
             visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
-            onClicked: {
-                boardScreen.backendSender({type: "DrawAction", accept: false})
-                boardScreen.showGameActions = false
-            }
+            onClicked: boardScreen.requestGameAction(
+                {type: "DrawAction", accept: false}, "Draw")
         }
         ConfirmAction {
             id: drawOfferAction
@@ -1081,12 +1096,12 @@ Rectangle {
             actionText: "Offer draw"
             confirmText: "Confirm draw offer"
             cancelText: "Cancel draw confirmation"
+            busyText: "Sending draw offer"
+            busy: boardScreen.pendingGameAction === "Draw"
             visible: !boardScreen.gameOver && boardScreen.canOfferDraw &&
                 !boardScreen.drawOfferedByOpponent
-            onConfirmed: {
-                boardScreen.backendSender({type: "DrawAction", accept: true})
-                boardScreen.showGameActions = false
-            }
+            onConfirmed: boardScreen.requestGameAction(
+                {type: "DrawAction", accept: true}, "Draw")
         }
         Text {
             width: parent.width
@@ -1102,38 +1117,30 @@ Rectangle {
             text: "Accept takeback"
             highlighted: true
             visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
-            onClicked: {
-                boardScreen.backendSender({type: "TakebackAction", accept: true})
-                boardScreen.showGameActions = false
-            }
+            onClicked: boardScreen.requestGameAction(
+                {type: "TakebackAction", accept: true}, "Takeback")
         }
         AppButton {
             width: parent.width
             text: "Decline takeback"
             visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
-            onClicked: {
-                boardScreen.backendSender({type: "TakebackAction", accept: false})
-                boardScreen.showGameActions = false
-            }
+            onClicked: boardScreen.requestGameAction(
+                {type: "TakebackAction", accept: false}, "Takeback")
         }
         AppButton {
             width: parent.width
             text: "Offer takeback"
             visible: !boardScreen.gameOver && boardScreen.canOfferTakeback &&
                 !boardScreen.takebackOfferedByOpponent
-            onClicked: {
-                boardScreen.backendSender({type: "TakebackAction", accept: true})
-                boardScreen.showGameActions = false
-            }
+            onClicked: boardScreen.requestGameAction(
+                {type: "TakebackAction", accept: true}, "Takeback")
         }
         AppButton {
             width: parent.width
             text: "Cancel takeback offer"
             visible: !boardScreen.gameOver && boardScreen.takebackOfferedByYou
-            onClicked: {
-                boardScreen.backendSender({type: "TakebackAction", accept: false})
-                boardScreen.showGameActions = false
-            }
+            onClicked: boardScreen.requestGameAction(
+                {type: "TakebackAction", accept: false}, "Takeback")
         }
 
         ConfirmAction {
@@ -1142,11 +1149,11 @@ Rectangle {
             actionText: "Abort"
             confirmText: "Confirm abort"
             cancelText: "Cancel abort"
+            busyText: "Aborting game"
+            busy: boardScreen.pendingGameAction === "Abort"
+            critical: true
             visible: !boardScreen.gameOver && boardScreen.canAbort
-            onConfirmed: {
-                boardScreen.backendSender({type: "Abort"})
-                boardScreen.showGameActions = false
-            }
+            onConfirmed: boardScreen.requestGameAction({type: "Abort"}, "Abort")
         }
         ConfirmAction {
             id: berserkAction
@@ -1155,22 +1162,21 @@ Rectangle {
             confirmText: "Confirm Berserk"
             cancelText: "Cancel Berserk"
             busyText: "Berserk requested"
-            busy: boardScreen.berserkPending
+            busy: boardScreen.pendingGameAction === "Berserk"
             visible: !boardScreen.gameOver && boardScreen.canBerserk
-            onConfirmed: {
-                boardScreen.backendSender({type: "Berserk"})
-                boardScreen.berserkPending = true
-                boardScreen.showGameActions = false
-            }
+            onConfirmed: boardScreen.requestGameAction({type: "Berserk"}, "Berserk")
         }
-        AppButton {
+        ConfirmAction {
+            id: giveTimeAction
             width: parent.width
-            text: "Give opponent 15s"
+            actionText: "Give opponent 15s"
+            confirmText: "Confirm 15s gift"
+            cancelText: "Cancel time gift"
+            busyText: "Adding 15 seconds"
+            busy: boardScreen.pendingGameAction === "AddTime"
             visible: !boardScreen.gameOver && boardScreen.canGiveTime
-            onClicked: {
-                boardScreen.backendSender({type: "AddTime", seconds: 15})
-                boardScreen.showGameActions = false
-            }
+            onConfirmed: boardScreen.requestGameAction(
+                {type: "AddTime", seconds: 15}, "AddTime")
         }
         AppButton {
             width: parent.width
@@ -1180,19 +1186,21 @@ Rectangle {
                     : "")
             highlighted: true
             visible: !boardScreen.gameOver && boardScreen.opponentGone
-            onClicked: {
-                boardScreen.backendSender({type: "ClaimVictory"})
-                boardScreen.showGameActions = false
-            }
+            onClicked: boardScreen.requestGameAction(
+                {type: "ClaimVictory"}, "ClaimVictory")
         }
-        AppButton {
+        ConfirmAction {
+            id: claimDrawAction
             width: parent.width
-            text: "Claim draw"
+            actionText: "Claim draw"
+            confirmText: "Confirm draw claim"
+            cancelText: "Keep playing"
+            busyText: "Claiming draw"
+            busy: boardScreen.pendingGameAction === "ClaimDraw"
+            critical: true
             visible: !boardScreen.gameOver && boardScreen.opponentGone
-            onClicked: {
-                boardScreen.backendSender({type: "ClaimDraw"})
-                boardScreen.showGameActions = false
-            }
+            onConfirmed: boardScreen.requestGameAction(
+                {type: "ClaimDraw"}, "ClaimDraw")
         }
         AppButton {
             width: parent.width
@@ -1237,11 +1245,11 @@ Rectangle {
             actionText: "Resign"
             confirmText: "Confirm resignation"
             cancelText: "Cancel resignation"
+            busyText: "Resigning game"
+            busy: boardScreen.pendingGameAction === "Resign"
+            critical: true
             visible: !boardScreen.gameOver && !boardScreen.canAbort
-            onConfirmed: {
-                boardScreen.backendSender({type: "Resign"})
-                boardScreen.showGameActions = false
-            }
+            onConfirmed: boardScreen.requestGameAction({type: "Resign"}, "Resign")
         }
         AppButton {
             width: parent.width
@@ -1478,6 +1486,9 @@ Rectangle {
             resignAction.reset()
             abortAction.reset()
             berserkAction.reset()
+            acceptDrawAction.reset()
+            claimDrawAction.reset()
+            giveTimeAction.reset()
             // A RatingDiff for a previous game that never got consumed (its
             // own GameOver never arrived on this screen, e.g. after a
             // Back-to-Home-and-Resume round trip) must not bleed into this
@@ -1526,7 +1537,10 @@ Rectangle {
             resignAction.reset()
             abortAction.reset()
             berserkAction.reset()
-            boardScreen.berserkPending = false
+            acceptDrawAction.reset()
+            claimDrawAction.reset()
+            giveTimeAction.reset()
+            boardScreen.pendingGameAction = ""
             boardScreen.statusText = "Game over: " + outcome +
                 (msg.reason && msg.reason.length > 0 ? " (" + msg.reason + ")" : "")
             if (boardScreen.pendingRatingDiffText.length > 0) {
@@ -1540,11 +1554,17 @@ Rectangle {
             } else {
                 boardScreen.pendingRatingDiffText = diffText
             }
-        } else if (msg.type === "Berserked") {
-            boardScreen.canBerserk = false
-            berserkAction.reset()
-            boardScreen.berserkPending = false
-            boardScreen.statusText = "Berserk activated"
+        } else if (msg.type === "GameActionCompleted") {
+            if (boardScreen.pendingGameAction === msg.action) {
+                boardScreen.pendingGameAction = ""
+            }
+            if (msg.action === "Berserk") {
+                boardScreen.canBerserk = false
+                berserkAction.reset()
+                boardScreen.statusText = "Berserk activated"
+            } else if (msg.action === "AddTime") {
+                boardScreen.statusText = "15 seconds added to opponent"
+            }
         } else if (msg.type === "MoveRejected") {
             boardScreen.statusText = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""
@@ -1565,7 +1585,7 @@ Rectangle {
             // possible") only ever reached main.qml's console.warn -- invisible
             // to an actual player on-device.
             boardScreen.statusText = msg.message
-            boardScreen.berserkPending = false
+            boardScreen.pendingGameAction = ""
         }
     }
 }

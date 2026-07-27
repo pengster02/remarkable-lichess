@@ -324,8 +324,7 @@ impl LichessClient {
         Ok(())
     }
 
-    /// Only legal while the game is drawable by the 50-move rule or repetition --
-    /// same "let the server be the authority" approach as `abort`/`claim_victory`.
+    /// Only legal after Lichess reports that the opponent has left.
     pub async fn claim_draw(&self, game_id: &str) -> Result<()> {
         let resp = self
             .send_logged("claim_draw", self.bearer(self.http.post(format!(

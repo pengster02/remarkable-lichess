@@ -103,6 +103,18 @@ pub enum FrontendMessage {
     },
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub enum GameAction {
+    Resign,
+    Draw,
+    Takeback,
+    Abort,
+    Berserk,
+    AddTime,
+    ClaimVictory,
+    ClaimDraw,
+}
+
 // Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
 // (protocol.rs stays independent of the Lichess API's own shapes, same as everywhere else
 // in this file). limit/increment stay in raw seconds -- same units Lichess's own API uses --
@@ -277,7 +289,7 @@ pub enum BackendMessage {
         initial_clock_ms: Option<Box<u64>>,
     },
     GameOver { result: String, reason: String },
-    Berserked,
+    GameActionCompleted { action: GameAction },
     MoveRejected { reason: String },
     Reconnecting,
     ErrorMsg { message: String },
@@ -454,6 +466,11 @@ mod tests {
             serde_json::from_str::<FrontendMessage>(r#"{"type":"ClaimVictory"}"#).unwrap(),
             FrontendMessage::ClaimVictory
         );
+        let json = serde_json::to_string(&BackendMessage::GameActionCompleted {
+            action: GameAction::AddTime,
+        })
+        .unwrap();
+        assert_eq!(json, r#"{"type":"GameActionCompleted","action":"AddTime"}"#);
     }
 
     #[test]

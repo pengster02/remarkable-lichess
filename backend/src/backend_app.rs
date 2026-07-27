@@ -6,11 +6,12 @@ use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, ChatMessageInfo, CloudEvaluationLine, FrontendMessage, GameAnalysisSummary,
-    HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
+    GameAction, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
     MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -495,6 +496,36 @@ impl LichessBackend {
         guard.as_ref().map(|s| s.game_id.clone())
     }
 
+    async fn execute_game_action<F, Fut>(
+        &self,
+        replier: &BackendReplier<Self>,
+        action: GameAction,
+        request: F,
+    ) -> Option<String>
+    where
+        F: FnOnce(LichessClient, String) -> Fut,
+        Fut: Future<Output = anyhow::Result<()>>,
+    {
+        let Some(client) = self.client.clone() else {
+            self.send(replier, &BackendMessage::ErrorMsg { message: "Not connected to Lichess".into() });
+            return None;
+        };
+        let Some(game_id) = self.current_game_id().await else {
+            self.send(replier, &BackendMessage::ErrorMsg { message: "No active game".into() });
+            return None;
+        };
+        match request(client, game_id.clone()).await {
+            Ok(()) => {
+                self.send(replier, &BackendMessage::GameActionCompleted { action });
+                Some(game_id)
+            }
+            Err(error) => {
+                self.send(replier, &BackendMessage::ErrorMsg { message: error.to_string() });
+                None
+            }
+        }
+    }
+
     async fn handle_make_move(&mut self, replier: &BackendReplier<Self>, from: String, to: String, promotion: Option<String>) {
         let Some(client) = self.client.clone() else { return };
         let result = {
@@ -872,64 +903,40 @@ impl AppLoadBackend for LichessBackend {
                 self.handle_make_move(replier, from, to, promotion).await
             }
             FrontendMessage::Resign => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        // Previously discarded the result entirely (`let _ = ...`) --
-                        // a failed resign (e.g. game already over) silently told the
-                        // player nothing, unlike every other action here.
-                        if let Err(e) = client.resign(&game_id).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
-                    }
-                }
+                self.execute_game_action(replier, GameAction::Resign, |client, game_id| async move {
+                    client.resign(&game_id).await
+                })
+                .await;
             }
             FrontendMessage::DrawAction { accept } => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        if let Err(e) = client.draw(&game_id, accept).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
-                    }
-                }
+                self.execute_game_action(replier, GameAction::Draw, |client, game_id| async move {
+                    client.draw(&game_id, accept).await
+                })
+                .await;
             }
             FrontendMessage::TakebackAction { accept } => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        if let Err(e) = client.takeback(&game_id, accept).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
-                    }
-                }
+                self.execute_game_action(replier, GameAction::Takeback, |client, game_id| async move {
+                    client.takeback(&game_id, accept).await
+                })
+                .await;
             }
             FrontendMessage::Abort => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        if let Err(e) = client.abort(&game_id).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
-                    }
-                }
+                self.execute_game_action(replier, GameAction::Abort, |client, game_id| async move {
+                    client.abort(&game_id).await
+                })
+                .await;
             }
             FrontendMessage::Berserk => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        match client.berserk(&game_id).await {
-                            Ok(()) => {
-                                let mut guard = self.session.lock().await;
-                                if let Some(session) = guard.as_mut() {
-                                    if session.game_id == game_id {
-                                        session.mark_berserked();
-                                    }
-                                }
-                                drop(guard);
-                                self.send(replier, &BackendMessage::Berserked);
-                            }
-                            Err(e) => self.send(
-                                replier,
-                                &BackendMessage::ErrorMsg {
-                                    message: e.to_string(),
-                                },
-                            ),
+                if let Some(game_id) = self
+                    .execute_game_action(replier, GameAction::Berserk, |client, game_id| async move {
+                        client.berserk(&game_id).await
+                    })
+                    .await
+                {
+                    let mut guard = self.session.lock().await;
+                    if let Some(session) = guard.as_mut() {
+                        if session.game_id == game_id {
+                            session.mark_berserked();
                         }
                     }
                 }
@@ -937,31 +944,24 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::AddTime { seconds } => {
                 if !(5..=60).contains(&seconds) {
                     self.send(replier, &BackendMessage::ErrorMsg { message: "Time gift must be between 5 and 60 seconds".into() });
-                } else if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        if let Err(e) = client.add_time(&game_id, seconds).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
-                    }
+                } else {
+                    self.execute_game_action(replier, GameAction::AddTime, |client, game_id| async move {
+                        client.add_time(&game_id, seconds).await
+                    })
+                    .await;
                 }
             }
             FrontendMessage::ClaimVictory => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        if let Err(e) = client.claim_victory(&game_id).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
-                    }
-                }
+                self.execute_game_action(replier, GameAction::ClaimVictory, |client, game_id| async move {
+                    client.claim_victory(&game_id).await
+                })
+                .await;
             }
             FrontendMessage::ClaimDraw => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        if let Err(e) = client.claim_draw(&game_id).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
-                    }
-                }
+                self.execute_game_action(replier, GameAction::ClaimDraw, |client, game_id| async move {
+                    client.claim_draw(&game_id).await
+                })
+                .await;
             }
             FrontendMessage::RequestChallenges => {
                 let Some(client) = self.client.clone() else { return };

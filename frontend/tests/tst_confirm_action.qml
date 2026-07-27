@@ -17,6 +17,7 @@ TestCase {
         confirmText: "Confirm Berserk"
         cancelText: "Cancel Berserk"
         busyText: "Berserk requested"
+        critical: true
         onConfirmed: testCase.confirmationCount += 1
     }
 
@@ -36,6 +37,7 @@ TestCase {
         wait(0)
         verify(action.armed)
         compare(primary.text, "Confirm Berserk")
+        compare(primary.critical, true)
 
         primary.clicked()
         wait(0)
