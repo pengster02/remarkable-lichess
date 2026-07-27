@@ -40,6 +40,7 @@ Rectangle {
 
     AppButton {
         id: backButton
+        objectName: "settingsBackButton"
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottomMargin: theme.pageSideMargin
@@ -50,6 +51,7 @@ Rectangle {
     }
 
     EinkPagedFlickable {
+        objectName: "settingsFlickable"
         // Top-anchored like every other screen now (was `anchors.centerIn:
         // parent`) -- centering made this screen's title/cards start at a
         // different y-offset than every top-anchored screen's own header,
@@ -69,35 +71,30 @@ Rectangle {
 
         Column {
             id: settingsColumn
+            objectName: "settingsColumn"
             width: parent.width
-            spacing: theme.spacingMedium
+            spacing: theme.spacingSmall
 
             Text {
                 text: "Settings"
-                font.pixelSize: theme.fontHeading
+                font.pixelSize: theme.fontTitle
                 font.bold: true
                 color: theme.text
             }
 
             SectionCard {
                 darkMode: settingsScreen.darkMode
+                compact: true
                 title: "Appearance"
                 width: parent.width
 
-                AppButton {
-                    // Not a hardware light/warmth control -- reMarkable's frontlight is
-                    // brightness-only, no adjustable color temperature (see
-                    // docs/remarkable-appload-platform-notes.md). This just swaps this
-                    // app's own palette to a darker, e-ink-friendly (not pure black) scheme.
-                    //
-                    // All four toggles here: full-width rows (e-ink list
-                    // convention), and `highlighted` mirrors the On state so
-                    // the setting's state is carried by fill + border, not
-                    // just the label suffix.
+                SettingsToggle {
+                    objectName: "darkModeSetting"
                     width: parent.width
-                    text: settingsScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
-                    highlighted: settingsScreen.darkMode
-                    onClicked: settingsScreen.toggleDarkMode()
+                    darkMode: settingsScreen.darkMode
+                    label: "Dark mode"
+                    value: settingsScreen.darkMode
+                    onToggled: settingsScreen.toggleDarkMode()
                 }
 
                 Text {
@@ -113,7 +110,7 @@ Rectangle {
                 BoardPreview {
                     objectName: "appearanceBoardPreview"
                     anchors.horizontalCenter: parent.horizontalCenter
-                    width: Math.min(parent.width, 560)
+                    width: Math.min(parent.width, 400)
                     height: width
                     darkMode: settingsScreen.darkMode
                     boardTheme: settingsScreen.boardTheme
@@ -143,6 +140,7 @@ Rectangle {
                             width: (boardThemeFlow.width -
                                 boardThemeFlow.spacing * (boardThemeRepeater.count - 1)) /
                                 boardThemeRepeater.count
+                            compact: true
                             text: modelData.label
                             highlighted: settingsScreen.boardTheme === modelData.id
                             onClicked: settingsScreen.setBoardTheme(modelData.id)
@@ -173,6 +171,7 @@ Rectangle {
                             width: (pieceSetFlow.width -
                                 pieceSetFlow.spacing * (pieceSetRepeater.count - 1)) /
                                 pieceSetRepeater.count
+                            compact: true
                             text: modelData.label
                             highlighted: settingsScreen.pieceSet === modelData.id
                             onClicked: settingsScreen.setPieceSet(modelData.id)
@@ -180,72 +179,68 @@ Rectangle {
                     }
                 }
 
-                // Tap-to-select highlights every legal destination square (up
-                // to ~28 of them scattered across the board) in addition to
-                // the selected square itself -- real, visible redraw damage
-                // on e-ink for state that's purely a convenience cue. Off by
-                // default: full highlighting is more helpful day-to-day, this
-                // just offers the tradeoff to whoever wants faster feedback
-                // over it.
-                AppButton {
+                SettingsToggle {
+                    objectName: "minimalHighlightsSetting"
                     width: parent.width
-                    text: "Minimal highlights: " + (settingsScreen.minimalHighlights ? "On" : "Off")
-                    highlighted: settingsScreen.minimalHighlights
-                    onClicked: settingsScreen.setMinimalHighlights(!settingsScreen.minimalHighlights)
+                    darkMode: settingsScreen.darkMode
+                    label: "Minimal highlights"
+                    value: settingsScreen.minimalHighlights
+                    onToggled: settingsScreen.setMinimalHighlights(!settingsScreen.minimalHighlights)
                 }
             }
 
             SectionCard {
                 darkMode: settingsScreen.darkMode
+                compact: true
                 title: "Gameplay"
                 width: parent.width
 
-                // Confirmed against a real reference client, not invented for this app:
-                // chess.com/World Chess's own help docs cover "premove, sounds, or the
-                // auto-queen" as one of the standard settings every mainstream chess app
-                // has. Off by default -- BoardScreen's promotion popup is the only way to
-                // underpromote at all, so silently skipping it isn't the safer default.
-                AppButton {
+                SettingsToggle {
+                    objectName: "autoQueenSetting"
                     width: parent.width
-                    text: "Auto-queen promotion: " + (settingsScreen.autoQueenPromotion ? "On" : "Off")
-                    highlighted: settingsScreen.autoQueenPromotion
-                    onClicked: settingsScreen.setAutoQueenPromotion(!settingsScreen.autoQueenPromotion)
+                    darkMode: settingsScreen.darkMode
+                    label: "Auto-queen promotion"
+                    value: settingsScreen.autoQueenPromotion
+                    onToggled: settingsScreen.setAutoQueenPromotion(!settingsScreen.autoQueenPromotion)
                 }
 
-                // Confirmed against the official lichess-org/mobile app's own
-                // moveToConfirm/confirmMove/cancelMove -- default off there
-                // too, same as auto-queen above: BoardScreen's own tap-to-move
-                // is already the fast path, so silently gating every move
-                // behind an extra tap isn't the safer default either.
-                AppButton {
+                SettingsToggle {
+                    objectName: "confirmMovesSetting"
                     width: parent.width
-                    text: "Confirm moves: " + (settingsScreen.moveConfirmation ? "On" : "Off")
-                    highlighted: settingsScreen.moveConfirmation
-                    onClicked: settingsScreen.setMoveConfirmation(!settingsScreen.moveConfirmation)
+                    darkMode: settingsScreen.darkMode
+                    label: "Confirm moves"
+                    value: settingsScreen.moveConfirmation
+                    onToggled: settingsScreen.setMoveConfirmation(!settingsScreen.moveConfirmation)
                 }
 
-                AppButton {
+                SettingsToggle {
+                    objectName: "premovesSetting"
                     width: parent.width
-                    text: "Premoves: " + (settingsScreen.premovesEnabled ? "On" : "Off")
-                    highlighted: settingsScreen.premovesEnabled
-                    onClicked: settingsScreen.setPremovesEnabled(!settingsScreen.premovesEnabled)
+                    darkMode: settingsScreen.darkMode
+                    label: "Premoves"
+                    value: settingsScreen.premovesEnabled
+                    onToggled: settingsScreen.setPremovesEnabled(!settingsScreen.premovesEnabled)
                 }
 
-                AppButton {
+                SettingsToggle {
+                    objectName: "liveClockSetting"
                     width: parent.width
-                    text: "Live clock: " + (settingsScreen.liveClockEnabled ? "On" : "Off")
-                    highlighted: settingsScreen.liveClockEnabled
-                    onClicked: settingsScreen.setLiveClockEnabled(!settingsScreen.liveClockEnabled)
+                    darkMode: settingsScreen.darkMode
+                    label: "Live clock"
+                    value: settingsScreen.liveClockEnabled
+                    onToggled: settingsScreen.setLiveClockEnabled(!settingsScreen.liveClockEnabled)
                 }
             }
 
             SectionCard {
                 darkMode: settingsScreen.darkMode
+                compact: true
                 title: "Account"
                 width: parent.width
 
                 AppButton {
                     width: parent.width
+                    compact: true
                     text: settingsScreen.logOutArmed ? "Tap again to log out" : "Log out"
                     onClicked: {
                         if (settingsScreen.logOutArmed) {
