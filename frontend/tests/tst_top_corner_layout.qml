@@ -22,6 +22,7 @@ TestCase {
     function init() {
         board.statusText = ""
         board.gameOver = false
+        board.showGameOverDialog = false
         board.firstMoveTimeMs = null
         board.initialClockMs = null
         board.lastClockSyncMs = 0
@@ -60,14 +61,17 @@ TestCase {
         var historyLoader = findChild(board, "moveHistoryLoader")
         var promotionLoader = findChild(board, "promotionLoader")
         var confirmationLoader = findChild(board, "moveConfirmationLoader")
+        var gameOverLoader = findChild(board, "gameOverLoader")
         verify(actionsLoader !== null)
         verify(historyLoader !== null)
         verify(promotionLoader !== null)
         verify(confirmationLoader !== null)
+        verify(gameOverLoader !== null)
         compare(actionsLoader.item, null)
         compare(historyLoader.item, null)
         compare(promotionLoader.item, null)
         compare(confirmationLoader.item, null)
+        compare(gameOverLoader.item, null)
         board.showMoves = true
         verify(historyLoader.item !== null)
         board.showMoves = false
@@ -274,5 +278,7 @@ TestCase {
         })
         compare(board.statusText, "Game over: You lost (Time forfeit)")
         compare(board.gameReason, "Time forfeit")
+        compare(board.showGameOverDialog, true)
+        verify(findChild(board, "gameOverLoader").item !== null)
     }
 }

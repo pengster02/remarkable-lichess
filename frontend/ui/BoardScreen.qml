@@ -150,6 +150,7 @@ Rectangle {
         if (!boardScreen.premovesEnabled) boardScreen.cancelPremove()
     }
     property bool gameOver: false
+    property bool showGameOverDialog: false
     readonly property bool canNavigateHome: boardScreen.gameOver
     property string gameResult: ""
     property string gameReason: ""
@@ -1426,6 +1427,61 @@ Rectangle {
         }
     }
 
+    Loader {
+        objectName: "gameOverLoader"
+        anchors.fill: parent
+        active: boardScreen.gameOver && boardScreen.showGameOverDialog
+        z: 300
+        sourceComponent: Component {
+            AppDialog {
+                anchors.fill: parent
+                darkMode: boardScreen.darkMode
+                dismissOnBackground: false
+                title: "Game over"
+
+                Text {
+                    width: parent.width
+                    text: boardScreen.statusText
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    font.pixelSize: theme.fontLarge
+                    font.bold: true
+                    color: theme.text
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Back to Home"
+                    highlighted: true
+                    onClicked: {
+                        boardScreen.showGameOverDialog = false
+                        boardScreen.navigateTo("HomeScreen.qml")
+                    }
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Review game"
+                    visible: boardScreen.gameId.length > 0
+                    onClicked: {
+                        boardScreen.showGameOverDialog = false
+                        boardScreen.openGameReview(boardScreen.gameId, {
+                            game_id: boardScreen.gameId,
+                            opponent_name: boardScreen.opponentName,
+                            opponent_rating: boardScreen.opponentRating,
+                            result: boardScreen.gameResult,
+                            termination: boardScreen.gameReason,
+                            your_color: boardScreen.yourColor
+                        })
+                    }
+                }
+                AppButton {
+                    width: parent.width
+                    text: "View final board"
+                    onClicked: boardScreen.showGameOverDialog = false
+                }
+            }
+        }
+    }
+
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
             var nextLastMove = msg.last_move || null
@@ -1508,6 +1564,7 @@ Rectangle {
             boardScreen.pendingRatingDiffText = ""
             boardScreen.statusText = ""
             boardScreen.gameOver = false
+            boardScreen.showGameOverDialog = false
             boardScreen.gameResult = ""
             boardScreen.gameReason = ""
             moveRequestGate.resolve(boardScreen.gameId, nextLastMove)
@@ -1560,6 +1617,7 @@ Rectangle {
                 boardScreen.statusText += boardScreen.pendingRatingDiffText
                 boardScreen.pendingRatingDiffText = ""
             }
+            boardScreen.showGameOverDialog = true
         } else if (msg.type === "RatingDiff") {
             var diffText = "  (" + (msg.rating_diff > 0 ? "+" : "") + msg.rating_diff + ")"
             if (boardScreen.statusText.indexOf("Game over") === 0) {
