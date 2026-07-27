@@ -78,4 +78,5 @@ QtObject {
 
     readonly property int playerBarHeight: 140
     readonly property int fontClock: 64
+    readonly property int clockChipWidth: 240
 }

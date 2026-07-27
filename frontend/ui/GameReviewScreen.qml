@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5
 
 // Read-only replay of a finished game's move list, opened from
 // GameHistoryScreen (see docs/superpowers/specs/2026-07-21-game-review-move-navigation-design.md).
@@ -599,7 +598,9 @@ Rectangle {
         // (most never are), same your_analysis field GameHistoryScreen's row
         // now also reads.
         Text {
-            visible: gameReviewScreen.game !== null && gameReviewScreen.game.your_analysis
+            visible: gameReviewScreen.game !== null &&
+                gameReviewScreen.game.your_analysis !== null &&
+                gameReviewScreen.game.your_analysis !== undefined
             text: gameReviewScreen.game && gameReviewScreen.game.your_analysis
                 ? "Your accuracy: " +
                   (gameReviewScreen.game.your_analysis.accuracy !== null && gameReviewScreen.game.your_analysis.accuracy !== undefined
@@ -646,8 +647,10 @@ Rectangle {
         // move was actually flagged -- e.g. "Blunder. Nxg6 was best.", the
         // exact caption Lichess's own analysis board shows.
         Text {
-            visible: gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1) &&
-                     gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1).judgment_comment
+            visible: gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1) !== null &&
+                !!gameReviewScreen.analysisAt(
+                    gameReviewScreen.currentIndex - 1
+                ).judgment_comment
             text: gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1)
                 ? (gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1).judgment_comment || "")
                 : ""
@@ -847,45 +850,12 @@ Rectangle {
 
     }
 
-    Item {
+    AppDialog {
         anchors.fill: parent
         visible: gameReviewScreen.showReviewOptions
-        z: 100
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: gameReviewScreen.showReviewOptions = false
-        }
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: Math.min(parent.width - theme.pageSideMargin * 2, 840)
-            height: reviewOptionsColumn.height + theme.spacingSmall * 2
-            color: theme.background
-            border.width: 3
-            border.color: theme.text
-            radius: theme.cardRadius
-
-            MouseArea {
-                anchors.fill: parent
-            }
-
-            Column {
-                id: reviewOptionsColumn
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: theme.spacingSmall
-                spacing: theme.spacingXs
-
-                Text {
-                    width: parent.width
-                    text: "Board options"
-                    font.pixelSize: theme.fontLarge
-                    font.bold: true
-                    horizontalAlignment: Text.AlignHCenter
-                    color: theme.text
-                }
+        darkMode: gameReviewScreen.darkMode
+        title: "Board options"
+        onDismissed: gameReviewScreen.showReviewOptions = false
 
                 AppButton {
                     width: parent.width
@@ -938,8 +908,6 @@ Rectangle {
                     text: "Close"
                     onClicked: gameReviewScreen.showReviewOptions = false
                 }
-            }
-        }
     }
 
     AppButton {
@@ -996,90 +964,39 @@ Rectangle {
             Repeater {
                 id: moveRepeater
                 model: gameReviewScreen.moveTokens()
-                Rectangle {
+                MoveTokenButton {
                     required property var modelData
-                    width: moveText.implicitWidth + theme.spacingSmall * 2
-                    height: theme.touchTarget
-                    radius: theme.cardRadius
-                    color: modelData.fenIndex === gameReviewScreen.currentIndex
-                        ? theme.accentBackground
-                        : theme.cardBackground
-                    border.width: modelData.fenIndex === gameReviewScreen.currentIndex ? 3 : 1
-                    border.color: modelData.fenIndex === gameReviewScreen.currentIndex
-                        ? theme.accentBackground
-                        : theme.cardBorder
-
-                    Text {
-                        id: moveText
-                        anchors.centerIn: parent
-                        text: modelData.label
-                        font.pixelSize: theme.fontSmall
-                        font.bold: modelData.fenIndex === gameReviewScreen.currentIndex
-                        color: modelData.fenIndex === gameReviewScreen.currentIndex
-                            ? theme.accentText
-                            : gameReviewScreen.judgmentColor(modelData.judgment)
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: gameReviewScreen.currentIndex = modelData.fenIndex
-                    }
+                    darkMode: gameReviewScreen.darkMode
+                    text: modelData.label
+                    selected: modelData.fenIndex === gameReviewScreen.currentIndex
+                    textColor: gameReviewScreen.judgmentColor(modelData.judgment)
+                    onClicked: gameReviewScreen.currentIndex = modelData.fenIndex
                 }
             }
         }
     }
 
-    Popup {
+    PromotionDialog {
+        anchors.fill: parent
         visible: gameReviewScreen.pendingPromotion !== null
-        modal: true
-        dim: false
-        enter: null
-        exit: null
-        closePolicy: Popup.NoAutoClose
-        anchors.centerIn: parent
-
-        Row {
-            spacing: theme.spacingSmall
-            Repeater {
-                model: gameReviewScreen.pendingPromotion
-                    ? gameReviewScreen.pendingPromotion.options
-                    : []
-                Rectangle {
-                    required property string modelData
-                    width: 128
-                    height: 128
-                    color: theme.cardBackground
-                    border.width: 1
-                    border.color: theme.text
-
-                    Image {
-                        anchors.centerIn: parent
-                        width: parent.width * 0.82
-                        height: parent.height * 0.82
-                        fillMode: Image.PreserveAspectFit
-                        source: "../assets/pieces/" +
-                            gameReviewScreen.promotionPieceCode(modelData) + ".png"
-                        sourceSize.width: width
-                        sourceSize.height: height
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: {
-                            var from = gameReviewScreen.pendingPromotion.from
-                            var to = gameReviewScreen.pendingPromotion.to
-                            gameReviewScreen.pendingPromotion = null
-                            gameReviewScreen.backendSender({
-                                type: "MakeAnalysisMove",
-                                fen: gameReviewScreen.exploreFen,
-                                from: from,
-                                to: to,
-                                promotion: modelData
-                            })
-                        }
-                    }
-                }
-            }
+        darkMode: gameReviewScreen.darkMode
+        options: gameReviewScreen.pendingPromotion
+            ? gameReviewScreen.pendingPromotion.options
+            : []
+        pieceCodeFor: function(piece) {
+            return gameReviewScreen.promotionPieceCode(piece)
+        }
+        onChosen: (piece) => {
+            var from = gameReviewScreen.pendingPromotion.from
+            var to = gameReviewScreen.pendingPromotion.to
+            gameReviewScreen.pendingPromotion = null
+            gameReviewScreen.backendSender({
+                type: "MakeAnalysisMove",
+                fen: gameReviewScreen.exploreFen,
+                from: from,
+                to: to,
+                promotion: piece
+            })
         }
     }
 

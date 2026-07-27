@@ -230,7 +230,7 @@ pub enum BackendMessage {
         white_time_ms: u64,
         black_time_ms: u64,
         legal_moves: Box<[LegalMove]>,
-        last_move: Option<(String, String)>,
+        last_move: Option<Box<(String, String)>>,
         // Which color the local account is playing in this game -- needed so the
         // frontend can flip board orientation (every reference client does this;
         // ours didn't parse enough of the Lichess payload to know until now).
@@ -250,6 +250,7 @@ pub enum BackendMessage {
         can_offer_draw: bool,
         can_offer_takeback: bool,
         can_give_time: bool,
+        can_chat: bool,
         // SAN per move so far (e.g. "e4", "Nf3", "O-O", "Qxh4#"). Sent in full each
         // time (matching every other field here, all recomputed from Lichess's own
         // always-whole-game `moves` string) -- the frontend just re-renders the same
@@ -263,13 +264,15 @@ pub enum BackendMessage {
         // above -- an AI opponent has no rating, only a name/level, hence Option.
         opponent_name: Option<String>,
         opponent_rating: Option<u32>,
+        game_description: Box<str>,
+        first_move_time_ms: Option<Box<u64>>,
         // Each side's starting clock allotment in ms (see
         // game::session::GameSession's own field for why the frontend needs
         // this alongside the live white_time_ms/black_time_ms -- a low-time
         // warning threshold is a fraction of the *original* time, not just a
         // fixed number of seconds remaining). None for an untimed/correspondence
         // game.
-        initial_clock_ms: Option<u64>,
+        initial_clock_ms: Option<Box<u64>>,
     },
     GameOver { result: String, reason: String },
     MoveRejected { reason: String },
@@ -612,13 +615,16 @@ mod tests {
             can_offer_draw: false,
             can_offer_takeback: false,
             can_give_time: true,
+            can_chat: true,
             move_history: vec![].into_boxed_slice(),
             position_history: vec!["startpos".into()].into_boxed_slice(),
             captured_by_white: vec!["bP".into()].into_boxed_slice(),
             captured_by_black: vec![].into_boxed_slice(),
             opponent_name: None,
             opponent_rating: None,
-            initial_clock_ms: Some(600_000),
+            game_description: "Casual Rapid • 10+0".into(),
+            first_move_time_ms: None,
+            initial_clock_ms: Some(Box::new(600_000)),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));

@@ -83,7 +83,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.rightMargin: theme.spacingXs
         anchors.verticalCenter: parent.verticalCenter
-        width: clockText.implicitWidth + theme.spacingSmall * 2
+        width: theme.clockChipWidth
         height: parent.height - theme.spacingXs * 2
         radius: theme.cardRadius
         color: playerBar.active
