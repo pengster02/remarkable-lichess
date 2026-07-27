@@ -23,13 +23,22 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 shakmaty = "0.30"
 futures-util = "0.3"
 log = "0.4"
-env_logger = "0.11"
+env_logger = { version = "0.11", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"
 
 [features]
 transport = ["dep:appload-client"]
+# Enable logging. Silent by default: no build outside `production` installs a
+# logger, and with no logger the level defaults to Off, so every log call is
+# inert (the macros never format or emit). The device build (scripts/build-rm.sh)
+# turns it on and caps it at debug so RUST_LOG can raise on-device verbosity
+# without a rebuild. Alternatives: (1) gate only env_logger::init() at runtime,
+# no `log` cap -- same silence, but the shipped binary can't strip below debug;
+# (2) a RUST_LOG-only convention with no feature at all -- zero build knobs, but
+# then "silent unless asked" is a deploy-time promise, not a build guarantee.
+production = ["dep:env_logger", "log/release_max_level_debug"]
 
 [profile.release]
 lto = "thin"
