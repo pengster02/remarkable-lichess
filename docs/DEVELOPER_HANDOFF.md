@@ -216,8 +216,11 @@ TABLET_HOST=10.11.99.1 ./scripts/deploy.sh
 ```
 
 The build creates `dist/remarkable-lichess`. Deployment stages the new app
-before replacing the installed copy. Recheck XOVI/AppLoad compatibility with
-the tablet's current firmware before deployment.
+before replacing the installed copy and retains the previous version under
+`/home/root/xovi/exthome/appload-backups`. Never keep a rollback directory
+inside the AppLoad app root: AppLoad scans every child directory and a duplicate
+manifest ID can shadow the live installation. Recheck XOVI/AppLoad compatibility
+with the tablet's current firmware before deployment.
 
 ## Highest-value remaining work
 
