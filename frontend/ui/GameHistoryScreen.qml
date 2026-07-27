@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5
 
 Rectangle {
     id: gameHistoryScreen
@@ -142,19 +141,17 @@ Rectangle {
 
     AppButton {
         id: backButton
-        // Bottom, full-width, same fixed-position "nav bar" treatment on
-        // every screen that has a back action (see GameReviewScreen,
-        // SettingsScreen, SeekScreen, BoardScreen) rather than each screen
-        // burying it wherever its own content column happened to end.
         anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.margins: theme.pageSideMargin
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: theme.pageSideMargin
+        width: Math.min(parent.width - theme.pageSideMargin * 2, theme.textFieldWidthMedium)
+        compact: true
         text: "Back to Home"
         onClicked: gameHistoryScreen.navigateTo("HomeScreen.qml")
     }
 
-    ListView {
+    EinkPagedFlickable {
+        id: historyList
         // Anchored between the filter header and the Back button instead of a
         // fixed "parent.height - N" offset -- the filter Flows above can wrap to
         // an extra line depending on content width, which a magic-number height
@@ -166,16 +163,19 @@ Rectangle {
         anchors.bottom: backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
-        // No rubber-band overshoot at the ends -- that bounce is a multi-frame
-        // animation, which on e-ink is a real cost (each frame is a partial
-        // refresh) for a purely cosmetic effect with no equivalent value here.
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
-        spacing: theme.spacingSmall
-        model: gameHistoryScreen.games
-        delegate: Rectangle {
+        contentHeight: historyColumn.height
+
+        Column {
+            id: historyColumn
+            width: parent.width
+            spacing: theme.spacingSmall
+
+            Repeater {
+                model: gameHistoryScreen.games
+
+                Rectangle {
                 required property var modelData
-                width: gameHistoryScreen.width - theme.pageSideMargin * 2
+                width: parent.width
                 // Never thinner than the shared list-row touch floor, however
                 // little text a row happens to have.
                 height: Math.max(rowContent.height + theme.spacingMedium, theme.listRowHeight)
@@ -262,8 +262,10 @@ Rectangle {
                         color: theme.textMuted
                     }
                 }
+                }
             }
         }
+    }
 
     function handleMessage(msg) {
         if (msg.type === "GameHistory") {

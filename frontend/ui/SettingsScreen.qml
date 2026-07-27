@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5
 
 Rectangle {
     id: settingsScreen
@@ -41,20 +40,16 @@ Rectangle {
 
     AppButton {
         id: backButton
-        // Same fixed, full-width bottom "nav bar" treatment as every other
-        // screen's back action -- previously just the last item in this
-        // screen's own centered Column, i.e. wherever that column happened
-        // to end, unlike GameHistoryScreen/GameReviewScreen's fixed bottom
-        // placement.
         anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.margins: theme.pageSideMargin
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: theme.pageSideMargin
+        width: Math.min(parent.width - theme.pageSideMargin * 2, theme.textFieldWidthMedium)
+        compact: true
         text: "Back to Home"
         onClicked: settingsScreen.navigateTo("HomeScreen.qml")
     }
 
-    Flickable {
+    EinkPagedFlickable {
         // Top-anchored like every other screen now (was `anchors.centerIn:
         // parent`) -- centering made this screen's title/cards start at a
         // different y-offset than every top-anchored screen's own header,
@@ -70,10 +65,7 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
-        contentWidth: width
         contentHeight: settingsColumn.height
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
 
         Column {
             id: settingsColumn

@@ -72,7 +72,7 @@ Rectangle {
     }
     Timer {
         id: boardFlashTimer
-        interval: 90
+        interval: 60
         onTriggered: gameReviewScreen.flashSquares = []
     }
     // Same flip-for-black-at-bottom convenience as BoardScreen's own manualFlip,
@@ -228,6 +228,10 @@ Rectangle {
     // Cached once per redraw rather than recomputed by each of the 64 squares'
     // own bindings -- same reasoning as BoardScreen's selectedDestinations.
     property var lastMoveSquaresCached: gameReviewScreen.lastMoveSquares()
+    property var lastMoveSquareLookup: gameReviewScreen.squareLookup(
+        gameReviewScreen.lastMoveSquaresCached)
+    property var flashSquareLookup: gameReviewScreen.squareLookup(
+        gameReviewScreen.flashSquares)
     // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
     // rank/file labels every redraw, each call allocating two fresh arrays --
     // same "compute once, index many" reasoning as the piece maps above.
@@ -256,7 +260,15 @@ Rectangle {
     }
 
     property var selectedDestinations: gameReviewScreen.destinationsFrom(gameReviewScreen.selectedSquare)
+    property var selectedDestinationLookup: gameReviewScreen.squareLookup(
+        gameReviewScreen.selectedDestinations)
     property string checkedSquare: gameReviewScreen.explorationCheckedKingSquare()
+
+    function squareLookup(squares) {
+        var lookup = {}
+        for (var i = 0; i < squares.length; i++) lookup[squares[i]] = true
+        return lookup
+    }
 
     function explorationCheckedKingSquare() {
         if (!gameReviewScreen.exploreMode || !gameReviewScreen.exploreInCheck) return ""
@@ -688,18 +700,25 @@ Rectangle {
                         darkMode: gameReviewScreen.darkMode
                         lightSquareColor: boardStyle.lightSquare
                         darkSquareColor: boardStyle.darkSquare
+                        checkSquareColor: boardStyle.checkSquare
+                        highlightSquareColor: boardStyle.highlightSquare
+                        lastMoveSquareColor: boardStyle.lastMoveSquare
+                        premoveSquareColor: boardStyle.premoveSquare
+                        inkColor: boardStyle.ink
                         pieceSet: gameReviewScreen.pieceSet
                         pieceCode: gameReviewScreen.pieceCodeFor(gameReviewScreen.pieceAt(gameReviewScreen.currentFen(), squareName))
+                        property bool isDestination:
+                            gameReviewScreen.selectedDestinationLookup[squareName] === true
                         isHighlighted: gameReviewScreen.exploreMode &&
                             (gameReviewScreen.selectedSquare === squareName ||
-                             gameReviewScreen.selectedDestinations.indexOf(squareName) !== -1)
+                             isDestination)
                         isSelected: gameReviewScreen.exploreMode &&
                             gameReviewScreen.selectedSquare === squareName
                         isLegalDestination: gameReviewScreen.exploreMode &&
-                            gameReviewScreen.selectedDestinations.indexOf(squareName) !== -1
-                        isLastMove: gameReviewScreen.lastMoveSquaresCached.indexOf(squareName) !== -1
+                            isDestination
+                        isLastMove: gameReviewScreen.lastMoveSquareLookup[squareName] === true
                         isCheckSquare: squareName === gameReviewScreen.checkedSquare
-                        flashRefresh: gameReviewScreen.flashSquares.indexOf(squareName) !== -1
+                        flashRefresh: gameReviewScreen.flashSquareLookup[squareName] === true
                     }
                 }
             }
@@ -874,19 +893,16 @@ Rectangle {
 
     AppButton {
         id: backButton
-        // Same fixed, full-width bottom "nav bar" treatment as every other
-        // screen's back action (see GameHistoryScreen/SettingsScreen/
-        // SeekScreen/BoardScreen) instead of this screen's own one-off
-        // bottom-left placement.
         anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.margins: theme.pageSideMargin
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: theme.pageSideMargin
+        width: Math.min(parent.width - theme.pageSideMargin * 2, theme.textFieldWidthMedium)
+        compact: true
         text: "Back to Game History"
         onClicked: gameReviewScreen.navigateTo("GameHistoryScreen.qml")
     }
 
-    Flickable {
+    EinkPagedFlickable {
         id: moveList
         // Anchored between the board controls and the Back button (same
         // pattern as GameHistoryScreen's own ListView) rather than sized by
@@ -900,9 +916,6 @@ Rectangle {
         anchors.bottom: backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
-        contentWidth: width
         contentHeight: moveRowsColumn.height
 
         function revealCurrentMove() {
@@ -913,11 +926,7 @@ Rectangle {
             var rowIndex = Math.floor((gameReviewScreen.currentIndex - 1) / 2)
             var item = moveRowRepeater.itemAt(rowIndex)
             if (!item) return
-            if (item.y < moveList.contentY) {
-                moveList.contentY = item.y
-            } else if (item.y + item.height > moveList.contentY + moveList.height) {
-                moveList.contentY = item.y + item.height - moveList.height
-            }
+            moveList.reveal(item.y, item.height)
         }
 
         Column {

@@ -15,7 +15,7 @@ The current UI supports:
 
 - token setup, home ratings, ongoing games, seeks, direct/open/AI challenges;
 - live games with tap or drag input, legal targets, premoves, promotion,
-  move confirmation, clocks, both players' names/ratings, chat,
+  move confirmation, clocks, both players' names/ratings,
   contract-gated draw/takeback,
   abort/resign, opponent-left claims, time gifts, typed action-completion
   feedback, reconnect and game-over states;
@@ -145,7 +145,7 @@ Minimum emulator smoke test:
    for rated, AI, tournament, and untimed games.
 8. Verify incoming draw/takeback accept and decline, outgoing takeback cancel,
    and opponent-left claim actions.
-9. Open Actions, Moves, Chat (human games), move confirmation, and review Menu;
+9. Open Actions, Moves, move confirmation, and review Menu;
    verify each shared in-canvas dialog fits and scrolls.
 10. In an eligible arena game, verify Berserk requires confirmation and
     disappears after success or the local player's first move.
@@ -168,9 +168,9 @@ Minimum emulator smoke test:
 - Result, termination, speed, variant, clock, annotation, and move-row display
   mappings live in `ChessDisplay.qml`. Live and review history both render the
   same `MoveListRow`; do not reintroduce screen-specific move tokens.
-- Live play keeps a fixed three-control strip below the board: Actions, Moves,
-  and Chat. Chat is disabled for computer games. Draw/takeback offers and
-  disconnect claims change and highlight the Actions label.
+- Live play keeps a fixed two-control strip below the board: Actions and Moves.
+  Draw/takeback offers and disconnect claims change and highlight the Actions
+  label.
 - Turn, submission, check, premove, and connection status share one compact
   Fast-refresh line in the top player bar. Live games cannot navigate Home;
   GameOver enables and reveals the bottom navigation action.

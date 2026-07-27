@@ -1,7 +1,7 @@
-use crate::game::rules::{apply_uci_move, legal_moves, replay_uci_game};
+use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game};
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{BackendMessage, LegalMove};
-use shakmaty::Chess;
+use shakmaty::{Chess, Position};
 use std::time::Instant;
 
 pub struct GameSession {
@@ -11,10 +11,7 @@ pub struct GameSession {
     pub legal: Vec<LegalMove>,
     pub last_move: Option<(String, String)>,
     pub your_color: String,
-    // SAN per move (e.g. "Nf3", "O-O", "Qxh4#"), in play order. Recomputed
-    // wholesale on every update (same as `position` itself) rather than
-    // incrementally, since Lichess's own `moves` field is always the full
-    // game-so-far string, not a delta -- see replay_uci_moves_with_history.
+    // SAN per move (e.g. "Nf3", "O-O", "Qxh4#"), in play order.
     pub move_history: Vec<String>,
     pub position_history: Vec<String>,
     pub captured_by_white: Vec<String>,
@@ -196,7 +193,6 @@ fn to_board_state(session: &GameSession, state: &GameState, now: Instant) -> Bac
             && !session.is_tournament
             && session.opponent_is_human
             && session.initial_clock_ms.is_some(),
-        can_chat: session.opponent_is_human,
         move_history: session.move_history.clone().into_boxed_slice(),
         position_history: session.position_history.clone().into_boxed_slice(),
         captured_by_white: session.captured_by_white.clone().into_boxed_slice(),
@@ -217,6 +213,20 @@ fn last_move_from_uci_list(moves: &str) -> Option<(String, String)> {
         return None;
     }
     Some((last[0..2].to_string(), last[2..4].to_string()))
+}
+
+fn single_appended_move<'a>(previous: &str, next: &'a str) -> Option<&'a str> {
+    let previous = previous.trim();
+    let next = next.trim();
+    let suffix = if previous.is_empty() {
+        next
+    } else {
+        next.strip_prefix(previous)?.strip_prefix(char::is_whitespace)?.trim()
+    };
+    if suffix.is_empty() || suffix.split_whitespace().count() != 1 {
+        return None;
+    }
+    Some(suffix)
 }
 
 impl GameSession {
@@ -274,17 +284,93 @@ impl GameSession {
     }
 
     pub fn apply_state_update(&mut self, state: &GameState) -> anyhow::Result<BackendMessage> {
-        let replay = replay_uci_game(&self.initial_fen, &state.moves)?;
-        self.position = replay.position;
-        self.move_history = replay.move_history;
-        self.position_history = replay.position_history;
-        self.captured_by_white = replay.captured_by_white;
-        self.captured_by_black = replay.captured_by_black;
-        self.legal = legal_moves(&self.position);
-        self.last_move = last_move_from_uci_list(&state.moves);
+        if state.moves != self.state.moves {
+            if let Some(uci) = single_appended_move(&self.state.moves, &state.moves) {
+                let advance = advance_uci_game(&self.position, uci)?;
+                self.move_history.push(advance.san);
+                self.position_history.push(advance.fen);
+                if let Some(piece) = advance.captured_piece {
+                    if advance.mover == shakmaty::Color::White {
+                        self.captured_by_white.push(piece);
+                    } else {
+                        self.captured_by_black.push(piece);
+                    }
+                }
+                self.position = advance.position;
+            } else {
+                let replay = replay_uci_game(&self.initial_fen, &state.moves)?;
+                self.position = replay.position;
+                self.move_history = replay.move_history;
+                self.position_history = replay.position_history;
+                self.captured_by_white = replay.captured_by_white;
+                self.captured_by_black = replay.captured_by_black;
+            }
+            self.legal = legal_moves(&self.position);
+            self.last_move = last_move_from_uci_list(&state.moves);
+        }
         self.state = state.clone();
         self.state_received_at = Instant::now();
         Ok(self.board_state())
+    }
+
+    pub fn apply_accepted_move(
+        &mut self,
+        expected_moves: &str,
+        uci: &str,
+    ) -> anyhow::Result<Option<BackendMessage>> {
+        if self.state.moves != expected_moves || self.state.status != "started" {
+            return Ok(None);
+        }
+        let elapsed_ms = elapsed_whole_millis(self.state_received_at, Instant::now());
+        let mut state = self.state.clone();
+        match self.position.turn() {
+            shakmaty::Color::White => {
+                state.wtime = state.wtime.saturating_sub(elapsed_ms).saturating_add(state.winc)
+            }
+            shakmaty::Color::Black => {
+                state.btime = state.btime.saturating_sub(elapsed_ms).saturating_add(state.binc)
+            }
+        }
+        state.moves = if expected_moves.trim().is_empty() {
+            uci.to_string()
+        } else {
+            format!("{} {}", expected_moves.trim(), uci)
+        };
+        self.apply_state_update(&state).map(Some)
+    }
+
+    pub fn preview_move(&self, uci: &str) -> anyhow::Result<BackendMessage> {
+        anyhow::ensure!(self.state.status == "started", "game is not active");
+        let mover = self.position.turn();
+        let position = apply_uci_move(&self.position, uci)?;
+        let elapsed_ms = elapsed_whole_millis(self.state_received_at, Instant::now());
+        let mut white_time_ms = self.state.wtime;
+        let mut black_time_ms = self.state.btime;
+        match mover {
+            shakmaty::Color::White => {
+                white_time_ms = white_time_ms
+                    .saturating_sub(elapsed_ms)
+                    .saturating_add(self.state.winc);
+            }
+            shakmaty::Color::Black => {
+                black_time_ms = black_time_ms
+                    .saturating_sub(elapsed_ms)
+                    .saturating_add(self.state.binc);
+            }
+        }
+        Ok(BackendMessage::MovePreview {
+            game_id: self.game_id.clone(),
+            fen: shakmaty::fen::Fen::from_position(
+                &position,
+                shakmaty::EnPassantMode::Legal,
+            )
+            .to_string(),
+            turn: turn_name(&position),
+            white_time_ms,
+            black_time_ms,
+            last_move: last_move_from_uci_list(uci).map(Box::new),
+            in_check: position.is_check(),
+        })
     }
 
     /// Returns the UCI string to submit to Lichess, or a MoveRejected message
@@ -389,6 +475,57 @@ mod tests {
             }
             _ => panic!("expected BoardState"),
         }
+    }
+
+    #[test]
+    fn identical_move_list_updates_do_not_rebuild_position_history() {
+        let full = sample_full("e2e4");
+        let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let history_ptr = session.position_history.as_ptr();
+        let mut state = session.state.clone();
+        state.btime = 599_000;
+        session.apply_state_update(&state).unwrap();
+        assert_eq!(session.position_history.as_ptr(), history_ptr);
+        assert_eq!(session.position_history.len(), 2);
+    }
+
+    #[test]
+    fn accepted_move_advances_before_stream_confirmation_without_duplication() {
+        let full = sample_full("");
+        let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let predicted = session.apply_accepted_move("", "e2e4").unwrap().unwrap();
+        match predicted {
+            BackendMessage::BoardState { turn, last_move, .. } => {
+                assert_eq!(turn, "black");
+                assert_eq!(*last_move.unwrap(), ("e2".to_string(), "e4".to_string()));
+            }
+            _ => panic!("expected BoardState"),
+        }
+        assert_eq!(session.move_history, ["e4"]);
+        assert_eq!(session.position_history.len(), 2);
+
+        let mut authoritative = session.state.clone();
+        authoritative.wtime = 598_000;
+        session.apply_state_update(&authoritative).unwrap();
+        assert_eq!(session.move_history, ["e4"]);
+        assert_eq!(session.position_history.len(), 2);
+    }
+
+    #[test]
+    fn move_preview_does_not_mutate_authoritative_session() {
+        let full = sample_full("");
+        let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let preview = session.preview_move("e2e4").unwrap();
+        match preview {
+            BackendMessage::MovePreview { turn, last_move, .. } => {
+                assert_eq!(turn, "black");
+                assert_eq!(*last_move.unwrap(), ("e2".to_string(), "e4".to_string()));
+            }
+            _ => panic!("expected MovePreview"),
+        }
+        assert!(session.state.moves.is_empty());
+        assert!(session.move_history.is_empty());
+        assert_eq!(session.position_history.len(), 1);
     }
 
     #[test]
@@ -747,14 +884,12 @@ mod tests {
                 can_offer_draw,
                 can_offer_takeback,
                 can_give_time,
-                can_chat,
                 ..
             } => {
                 assert!(can_abort);
                 assert!(!can_offer_draw);
                 assert!(!can_offer_takeback);
                 assert!(can_give_time);
-                assert!(can_chat);
             }
             _ => panic!("expected BoardState"),
         }
@@ -852,13 +987,11 @@ mod tests {
                 can_offer_draw,
                 can_offer_takeback,
                 can_give_time,
-                can_chat,
                 ..
             } => {
                 assert!(!can_offer_draw);
                 assert!(!can_offer_takeback);
                 assert!(!can_give_time);
-                assert!(!can_chat);
             }
             _ => panic!("expected BoardState"),
         }

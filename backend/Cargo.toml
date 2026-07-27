@@ -30,3 +30,8 @@ wiremock = "0.6"
 
 [features]
 transport = ["dep:appload-client"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

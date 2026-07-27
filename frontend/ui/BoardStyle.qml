@@ -35,21 +35,26 @@ QtObject {
 
     readonly property color lightSquare: {
         if (boardStyle.boardTheme === "blue")
-            return boardStyle.darkMode ? "#68747a" : "#dce5e8"
+            return boardStyle.darkMode ? "#a9b3b6" : "#dce5e8"
         if (boardStyle.boardTheme === "green")
-            return boardStyle.darkMode ? "#69715f" : "#dfe5d4"
+            return boardStyle.darkMode ? "#acb39d" : "#dfe5d4"
         if (boardStyle.boardTheme === "mono")
-            return boardStyle.darkMode ? "#77746d" : "#e8e6df"
-        return boardStyle.darkMode ? "#5a5648" : "#e8e0d0"
+            return boardStyle.darkMode ? "#b5b1a8" : "#e8e6df"
+        return boardStyle.darkMode ? "#b0a48e" : "#e8e0d0"
     }
 
     readonly property color darkSquare: {
         if (boardStyle.boardTheme === "blue")
-            return boardStyle.darkMode ? "#263b46" : "#4e6f82"
+            return boardStyle.darkMode ? "#687d87" : "#4e6f82"
         if (boardStyle.boardTheme === "green")
-            return boardStyle.darkMode ? "#2c3c28" : "#53704c"
+            return boardStyle.darkMode ? "#6c7d63" : "#53704c"
         if (boardStyle.boardTheme === "mono")
-            return boardStyle.darkMode ? "#242321" : "#5c5a54"
-        return boardStyle.darkMode ? "#211f1a" : "#5c4d3a"
+            return boardStyle.darkMode ? "#74716a" : "#5c5a54"
+        return boardStyle.darkMode ? "#776f60" : "#5c4d3a"
     }
+    readonly property color checkSquare: boardStyle.darkMode ? "#b95b4f" : "#d1483f"
+    readonly property color highlightSquare: boardStyle.darkMode ? "#66946a" : "#4f9d55"
+    readonly property color lastMoveSquare: boardStyle.darkMode ? "#6286a3" : "#4f86ad"
+    readonly property color premoveSquare: boardStyle.darkMode ? "#a48d43" : "#c9a227"
+    readonly property color ink: boardStyle.darkMode ? "#f5f0e5" : "#191817"
 }

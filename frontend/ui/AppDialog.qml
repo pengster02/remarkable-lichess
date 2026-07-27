@@ -39,14 +39,11 @@ Item {
             anchors.fill: parent
         }
 
-        Flickable {
+        EinkPagedFlickable {
             id: dialogFlickable
             anchors.fill: parent
             anchors.margins: theme.spacingSmall
-            contentWidth: width
             contentHeight: dialogContent.height
-            boundsBehavior: Flickable.StopAtBounds
-            clip: true
 
             Column {
                 id: dialogContent

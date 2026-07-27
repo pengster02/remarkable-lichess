@@ -40,7 +40,7 @@ This is further along than the existing docs suggest. Confirmed in
 board orientation flip, last-move highlight, check highlight, coordinates,
 turn-gating, real cburnett piece art, promotion picker (with underpromotion,
 not just auto-queen), draw/takeback offer-and-respond, resign (two-tap armed),
-abort, claim victory/draw, in-game chat, move history in SAN, opponent
+abort, claim victory/draw, move history in SAN, opponent
 name/rating, dark mode, auto-queen setting. Outside the board:
 seek (rated/casual, color choice), direct challenge by username, open
 (link-shareable) challenges, challenge AI by level, incoming-challenge
@@ -58,8 +58,9 @@ navigation): designed in
 ## 2. Confirmed API scope boundary (why the rest of lichess.org isn't "just missing")
 
 Per the official OpenAPI spec (`lichess-org/api`, `doc/specs/lichess-api.yaml`),
-`board:play`'s Board tag covers exactly what's listed above: game stream, move,
-chat, seek, challenge lifecycle, abort/resign/draw/takeback/claim. It explicitly
+`board:play`'s Board tag covers game stream, move, chat, seek, challenge
+lifecycle, abort/resign/draw/takeback/claim. This product deliberately omits
+chat to keep live play focused and e-ink-friendly. The API explicitly
 disallows engine assistance and restricts time controls (Blitz only via direct
 challenge/AI/bulk pairing, not open seek). Everything else lives under
 different tags requiring different scopes never requested by this app:

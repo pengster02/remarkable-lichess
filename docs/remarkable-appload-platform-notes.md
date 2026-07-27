@@ -80,10 +80,15 @@ AppLoad-hosted QML frontend.
 host. Current policy:
 
 - board selection, legal targets, premoves, and the short changed-square clearing
-  pulse use `Fast`;
+  pulse use `Fast`; the clearing pulse must oppose the canvas polarity (light
+  on dark mode, dark on paper mode) or it reinforces piece residue;
 - the settled colored board returns to `Content`;
 - clock chips and changing live status text use `Fast`;
 - shared buttons use `Fast` while pressed and `UI` at rest.
+
+Avoid interactive `Flickable` and `ListView` movement for long pages. A drag
+produces a stream of large damaged regions even with overshoot disabled. Use
+fixed page controls and change `contentY` once per tap.
 
 Do not use `UFast` for the board by default. Its speed is not worth risking
 reduced color/detail on the Paper Pro Move. The PC emulator proves loading and

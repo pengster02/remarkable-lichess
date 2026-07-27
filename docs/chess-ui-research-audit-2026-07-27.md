@@ -37,8 +37,16 @@ expensive analysis or data panels explicitly user-triggered.
   return navigation in the live AppLoad emulator.
 - Added an explicit cloud-evaluation action to review. Results are cached per
   position, show depth and a SAN best line, and never poll in the background.
-- Made the dark, higher-ink palette the default while retaining the light-mode
-  toggle.
+- Kept the paper palette as the default because large dark fills accumulate
+  more visible residue under partial refresh.
+- Raised and separated the dark-mode board tones so black pieces no longer
+  merge into near-black squares, and made the changed-square clearing pulse
+  use the opposite polarity of the canvas.
+- Replaced kinetic scrolling with discrete page controls across forms,
+  settings, history, review moves, and dialogs. Content now settles in one
+  position change per tap instead of repainting every drag frame.
+- Reduced persistent back navigation to the compact touch-target size and
+  replaced the paging button rail with a thin position indicator on the right.
 - Replaced the full-board black clearing frame with a short black clear on only
   squares whose piece occupancy or move/check highlight changed. This covers
   ordinary moves, castling, captures, en passant, and retired highlights
@@ -50,15 +58,28 @@ expensive analysis or data panels explicitly user-triggered.
 - Added the documented 15-second opponent time gift for eligible casual human
   clock games. The backend enforces the endpoint's 5–60 second range.
 - Made Resume immediately replay the cached board state when its game stream is
-  already attached, and restore existing player-room chat through the Board
-  chat GET endpoint.
+  already attached.
 - Kept cached clocks authoritative across Home → Resume by advancing only the
   side to move from the last stream snapshot. Returning to the board no longer
   restores stale time.
-- Replaced the narrow live-action cluster with a fixed Actions/Moves/Chat strip
-  and in-canvas, scrollable sheets. Incoming draw/takeback offers and opponent
-  disconnects replace the Actions label and use the dark highlighted state;
-  Chat is server-disabled for computer games.
+- Replaced the narrow live-action cluster with a fixed Actions/Moves strip and
+  in-canvas, scrollable sheets. Incoming draw/takeback offers and opponent
+  disconnects replace the Actions label and use the dark highlighted state.
+- Removed player chat from the UI, protocol, and network client. Incoming chat
+  stream events are parsed and discarded so they cannot become noisy errors.
+- Move updates now advance the cached position incrementally when Lichess adds
+  one ply, skip all replay work for clock/offer-only updates, and retain a full
+  replay fallback for takebacks or resynchronization.
+- A locally validated move now renders before the Lichess request completes.
+  The authoritative session stays unchanged until acceptance; confirmation
+  merges without a second board repaint, while rejection restores the last
+  streamed position and clock.
+- Board delegates use shared palette values and constant-time square-state
+  lookups, avoid redundant image filtering and alpha blending, and use a 60 ms
+  changed-square clearing pulse instead of 90 ms.
+- Clock/offer-only BoardState messages now update metadata without replacing
+  position, history, capture, or legal-move collections, so all 64 board
+  delegates stay asleep when the FEN did not change.
 - Parsed first-move expiration, AI level, player title, variant, speed, and
   correspondence cadence from `gameFull`/`gameState`. The board now names
   Stockfish levels, shows the time-control summary in the action sheet, and
@@ -162,7 +183,6 @@ can change between the latest stream event and the tap.
 - [Lichess Board draw endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-draw-accept.yaml)
 - [Lichess Board takeback endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-takeback-accept.yaml)
 - [Lichess Board opponent-left draw claim](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-claim-draw.yaml)
-- [Lichess Board chat endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-chat.yaml)
 - [Lichess game-state event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameStateEvent.yaml)
 - [Lichess game-full event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameFullEvent.yaml)
 - [Lichess game player](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameEventPlayer.yaml)

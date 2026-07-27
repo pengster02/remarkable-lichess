@@ -12,6 +12,14 @@ pub struct GameReplay {
     pub captured_by_black: Vec<String>,
 }
 
+pub struct GameAdvance {
+    pub position: Chess,
+    pub san: String,
+    pub fen: String,
+    pub captured_piece: Option<String>,
+    pub mover: Color,
+}
+
 pub fn legal_moves(pos: &Chess) -> Vec<LegalMove> {
     pos.legal_moves()
         .iter()
@@ -75,20 +83,17 @@ pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
         });
     }
     for uci_str in moves.split_whitespace() {
-        let uci: UciMove = uci_str.parse().context("parsing UCI move")?;
-        let m = uci.to_move(&pos).context("resolving UCI move against position")?;
-        let mover = pos.turn();
-        history.push(SanPlus::from_move(pos.clone(), m).to_string());
-        if let Some(role) = m.capture() {
-            let code = captured_piece_code(mover.other(), role);
-            if mover == Color::White {
+        let advance = advance_uci_game(&pos, uci_str)?;
+        history.push(advance.san);
+        if let Some(code) = advance.captured_piece {
+            if advance.mover == Color::White {
                 captured_by_white.push(code);
             } else {
                 captured_by_black.push(code);
             }
         }
-        pos.play_unchecked(m);
-        position_history.push(Fen::from_position(&pos, EnPassantMode::Legal).to_string());
+        pos = advance.position;
+        position_history.push(advance.fen);
     }
     Ok(GameReplay {
         position: pos,
@@ -97,6 +102,18 @@ pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
         captured_by_white,
         captured_by_black,
     })
+}
+
+pub fn advance_uci_game(pos: &Chess, uci_str: &str) -> Result<GameAdvance> {
+    let uci: UciMove = uci_str.parse().context("parsing UCI move")?;
+    let m = uci.to_move(pos).context("resolving UCI move against position")?;
+    let mover = pos.turn();
+    let san = SanPlus::from_move(pos.clone(), m).to_string();
+    let captured_piece = m.capture().map(|role| captured_piece_code(mover.other(), role));
+    let mut position = pos.clone();
+    position.play_unchecked(m);
+    let fen = Fen::from_position(&position, EnPassantMode::Legal).to_string();
+    Ok(GameAdvance { position, san, fen, captured_piece, mover })
 }
 
 fn captured_piece_code(color: Color, role: Role) -> String {

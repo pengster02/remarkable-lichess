@@ -40,6 +40,11 @@ Item {
                 darkMode: preview.darkMode
                 lightSquareColor: boardStyle.lightSquare
                 darkSquareColor: boardStyle.darkSquare
+                checkSquareColor: boardStyle.checkSquare
+                highlightSquareColor: boardStyle.highlightSquare
+                lastMoveSquareColor: boardStyle.lastMoveSquare
+                premoveSquareColor: boardStyle.premoveSquare
+                inkColor: boardStyle.ink
                 pieceSet: preview.pieceSet
                 pieceCode: preview.pieceCodeAt(index)
             }

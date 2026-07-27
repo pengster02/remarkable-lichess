@@ -56,7 +56,6 @@ pub enum FrontendMessage {
     RequestChallenges,
     AcceptChallenge { id: String },
     DeclineChallenge { id: String },
-    SendChat { text: String },
     RequestSettings,
     SaveSettings {
         auto_queen_promotion: bool,
@@ -137,12 +136,6 @@ pub struct ChallengeInfo {
     pub challenger: String,
     pub limit_seconds: Option<u32>,
     pub increment_seconds: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct ChatMessageInfo {
-    pub username: String,
-    pub text: String,
 }
 
 // One of a real account's rated speed categories (bullet/blitz/rapid/classical/
@@ -276,7 +269,6 @@ pub enum BackendMessage {
         can_offer_draw: bool,
         can_offer_takeback: bool,
         can_give_time: bool,
-        can_chat: bool,
         // SAN per move so far (e.g. "e4", "Nf3", "O-O", "Qxh4#"). Sent in full each
         // time (matching every other field here, all recomputed from Lichess's own
         // always-whole-game `moves` string) -- the frontend just re-renders the same
@@ -304,6 +296,15 @@ pub enum BackendMessage {
     },
     GameOver { result: String, reason: String },
     GameActionCompleted { action: GameAction },
+    MovePreview {
+        game_id: String,
+        fen: String,
+        turn: String,
+        white_time_ms: u64,
+        black_time_ms: u64,
+        last_move: Option<Box<(String, String)>>,
+        in_check: bool,
+    },
     MoveSubmitted {
         game_id: String,
         from: String,
@@ -311,7 +312,7 @@ pub enum BackendMessage {
         promotion: Option<String>,
     },
     MoveRejected { reason: String },
-    Reconnecting,
+    GameStreamReconnecting,
     ErrorMsg { message: String },
     // Sent whenever Lichess's own `opponentGone` stream event fires (confirmed
     // against OpponentGoneEvent.yaml). `claim_win_in_seconds` is only meaningful
@@ -321,8 +322,6 @@ pub enum BackendMessage {
     // reject an early claim, same as every other server-authoritative action here.
     OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
-    ChatMessage { username: String, text: String },
-    ChatHistory { messages: Vec<ChatMessageInfo> },
     SettingsState {
         auto_queen_promotion: bool,
         move_confirmation: bool,
@@ -651,13 +650,9 @@ mod tests {
     }
 
     #[test]
-    fn chat_history_serializes_with_player_lines() {
-        let msg = BackendMessage::ChatHistory {
-            messages: vec![ChatMessageInfo { username: "alice".into(), text: "gg".into() }],
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains(r#""type":"ChatHistory""#));
-        assert!(json.contains(r#""username":"alice""#));
+    fn reconnect_signal_is_scoped_to_the_game_stream() {
+        let json = serde_json::to_string(&BackendMessage::GameStreamReconnecting).unwrap();
+        assert_eq!(json, r#"{"type":"GameStreamReconnecting"}"#);
     }
 
     #[test]
@@ -681,7 +676,6 @@ mod tests {
             can_offer_draw: false,
             can_offer_takeback: false,
             can_give_time: true,
-            can_chat: true,
             move_history: vec![].into_boxed_slice(),
             position_history: vec!["startpos".into()].into_boxed_slice(),
             captured_by_white: vec!["bP".into()].into_boxed_slice(),

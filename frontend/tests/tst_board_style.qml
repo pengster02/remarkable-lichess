@@ -20,6 +20,11 @@ TestCase {
         pieceSet: style.pieceSet
         lightSquareColor: style.lightSquare
         darkSquareColor: style.darkSquare
+        checkSquareColor: style.checkSquare
+        highlightSquareColor: style.highlightSquare
+        lastMoveSquareColor: style.lastMoveSquare
+        premoveSquareColor: style.premoveSquare
+        inkColor: style.ink
     }
 
     function init() {
@@ -41,6 +46,12 @@ TestCase {
         style.boardTheme = "blue"
         compare(style.lightSquare, "#dce5e8")
         tryCompare(square, "color", style.lightSquare)
+    }
+
+    function test_darkPaletteKeepsBlackPiecesOffNearBlackSquares() {
+        style.darkMode = true
+        compare(style.lightSquare, "#b0a48e")
+        compare(style.darkSquare, "#776f60")
     }
 
     function test_pieceSetChangesSharedAssetPath() {

@@ -5,7 +5,7 @@ use crate::lichess::models::{EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
-    BackendMessage, ChatMessageInfo, CloudEvaluationLine, FrontendMessage, GameAnalysisSummary,
+    BackendMessage, CloudEvaluationLine, FrontendMessage, GameAnalysisSummary,
     GameAction, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
     MSG_TYPE_BACKEND_TO_FRONTEND,
 };
@@ -125,7 +125,9 @@ impl LichessBackend {
             self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
             return;
         };
-        let ongoing_games = match client.get_playing().await {
+        let (playing_result, account_result) =
+            tokio::join!(client.get_playing(), client.get_account());
+        let ongoing_games = match playing_result {
             Ok(games) => games
                 .into_iter()
                 .map(|g| OngoingGameSummary {
@@ -149,7 +151,7 @@ impl LichessBackend {
         // ratings change from games played elsewhere while this app wasn't open.
         // Not fatal if this second call fails: the ongoing-games list above is
         // the part Home actually needs to be useful.
-        let ratings = match client.get_account().await {
+        let ratings = match account_result {
             Ok(account) => ratings_from_perfs(account.perfs),
             Err(_) => Vec::new(),
         };
@@ -173,33 +175,11 @@ impl LichessBackend {
             .map(GameSession::board_state);
         if let Some(board_state) = cached_state {
             self.send(replier, &board_state);
-            self.send_game_chat_history(replier, &client, &game_id).await;
             return;
         }
-        self.send_game_chat_history(replier, &client, &game_id).await;
         let Some(my_id) = self.my_id.clone() else { return };
         let handle = spawn_game_stream(client, game_id, replier.clone(), self.session.clone(), my_id, self.write_lock.clone());
         replace_game_stream_handle(&self.game_stream_handle, handle).await;
-    }
-
-    async fn send_game_chat_history(
-        &self,
-        replier: &BackendReplier<Self>,
-        client: &LichessClient,
-        game_id: &str,
-    ) {
-        match client.get_game_chat(game_id).await {
-            Ok(lines) => self.send(
-                replier,
-                &BackendMessage::ChatHistory {
-                    messages: lines
-                        .into_iter()
-                        .map(|line| ChatMessageInfo { username: line.user, text: line.text })
-                        .collect(),
-                },
-            ),
-            Err(e) => log::warn!("couldn't restore chat for game {game_id}: {e}"),
-        }
     }
 
     async fn handle_request_game_history(
@@ -536,17 +516,48 @@ impl LichessBackend {
                 self.send(replier, &BackendMessage::MoveRejected { reason: "No active game".into() });
                 return;
             };
-            session
-                .try_move(&from, &to, promotion.as_deref())
-                .map(|uci| (uci, session.game_id.clone()))
+            match session.try_move(&from, &to, promotion.as_deref()) {
+                Ok(uci) => match session.preview_move(&uci) {
+                    Ok(preview) => Ok((
+                        uci,
+                        session.game_id.clone(),
+                        session.state.moves.clone(),
+                        preview,
+                    )),
+                    Err(error) => Err(Box::new(BackendMessage::MoveRejected {
+                        reason: error.to_string(),
+                    })),
+                },
+                Err(rejected) => Err(rejected),
+            }
         };
         match result {
-            Ok((uci, game_id)) => {
+            Ok((uci, game_id, expected_moves, preview)) => {
+                self.send(replier, &preview);
                 match client.make_move(&game_id, &uci).await {
-                    Ok(()) => self.send(
-                        replier,
-                        &BackendMessage::MoveSubmitted { game_id, from, to, promotion },
-                    ),
+                    Ok(()) => {
+                        self.send(
+                            replier,
+                            &BackendMessage::MoveSubmitted {
+                                game_id: game_id.clone(),
+                                from,
+                                to,
+                                promotion,
+                            },
+                        );
+                        let predicted = {
+                            let mut guard = self.session.lock().await;
+                            match guard.as_mut().filter(|session| session.game_id == game_id) {
+                                Some(session) => session.apply_accepted_move(&expected_moves, &uci),
+                                None => Ok(None),
+                            }
+                        };
+                        match predicted {
+                            Ok(Some(board_state)) => self.send(replier, &board_state),
+                            Ok(None) => {}
+                            Err(error) => log::warn!("couldn't apply accepted move locally: {error}"),
+                        }
+                    }
                     Err(error) => self.send(
                         replier,
                         &BackendMessage::MoveRejected { reason: error.to_string() },
@@ -615,7 +626,9 @@ impl LichessBackend {
                         }
                     }
                 }
-                send_locked(&replier, &write_lock, &BackendMessage::Reconnecting);
+                log::warn!(
+                    "account event stream ended; retrying in {backoff_secs}s"
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(30);
             }
@@ -833,13 +846,7 @@ fn spawn_game_stream(
                                     gone: gone.gone,
                                     claim_win_in_seconds: gone.claim_win_in_seconds,
                                 }),
-                                // Only the "player" room is relevant -- this app has no
-                                // spectator mode, so a "spectator" room line has nowhere
-                                // meaningful to be shown.
-                                GameStreamMessage::Chat(chat) if chat.room == "player" => {
-                                    Some(BackendMessage::ChatMessage { username: chat.username, text: chat.text })
-                                }
-                                GameStreamMessage::Chat(_) => None,
+                                GameStreamMessage::Chat => None,
                             };
                             drop(guard);
                             if let Some(m) = board_msg {
@@ -854,7 +861,14 @@ fn spawn_game_stream(
             if game_over {
                 break;
             }
-            send_locked(&replier, &write_lock, &BackendMessage::Reconnecting);
+            log::warn!(
+                "game stream {game_id} ended; retrying in {backoff_secs}s"
+            );
+            send_locked(
+                &replier,
+                &write_lock,
+                &BackendMessage::GameStreamReconnecting,
+            );
             tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
             backoff_secs = (backoff_secs * 2).min(30);
         }
@@ -1023,15 +1037,6 @@ impl AppLoadBackend for LichessBackend {
                 if let Some(client) = &self.client {
                     if let Err(e) = client.decline_challenge(&id).await {
                         self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                    }
-                }
-            }
-            FrontendMessage::SendChat { text } => {
-                if let Some(client) = self.client.clone() {
-                    if let Some(game_id) = self.current_game_id().await {
-                        if let Err(e) = client.send_chat(&game_id, &text).await {
-                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                        }
                     }
                 }
             }

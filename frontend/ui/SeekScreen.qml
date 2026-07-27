@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5
 
 Rectangle {
     id: seekScreen
@@ -27,13 +26,11 @@ Rectangle {
 
     AppButton {
         id: backButton
-        // Same fixed, full-width bottom "nav bar" treatment as every other
-        // screen's back action (see GameHistoryScreen/SettingsScreen) --
-        // previously just the last item in this screen's own centered Column.
         anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.margins: theme.pageSideMargin
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: theme.pageSideMargin
+        width: Math.min(parent.width - theme.pageSideMargin * 2, theme.textFieldWidthMedium)
+        compact: true
         text: "Back to Home"
         onClicked: {
             if (seekScreen.waiting) seekScreen.backendSender({type: "CancelSeek"})
@@ -41,7 +38,7 @@ Rectangle {
         }
     }
 
-    Flickable {
+    EinkPagedFlickable {
         // Top-anchored (was `anchors.centerIn: parent`) for the same
         // cross-page-alignment reason as SettingsScreen, and for a more
         // concrete reason specific to this screen: centered content this
@@ -58,10 +55,7 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
-        contentWidth: width
         contentHeight: seekColumn.height
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
 
     Column {
         id: seekColumn
