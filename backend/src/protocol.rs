@@ -7,6 +7,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_board_theme() -> String {
+    "brown".to_owned()
+}
+
+fn default_piece_set() -> String {
+    "cburnett".to_owned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LegalMove {
     pub from: String,
@@ -60,6 +68,10 @@ pub enum FrontendMessage {
         premoves_enabled: bool,
         #[serde(default = "default_true")]
         live_clock_enabled: bool,
+        #[serde(default = "default_board_theme")]
+        board_theme: String,
+        #[serde(default = "default_piece_set")]
+        piece_set: String,
     },
     // Clears the saved token (see backend/src/settings.rs's sibling token file)
     // and resets to the logged-out state -- there was previously no in-app way
@@ -315,6 +327,8 @@ pub enum BackendMessage {
         minimal_highlights: bool,
         premoves_enabled: bool,
         live_clock_enabled: bool,
+        board_theme: String,
+        piece_set: String,
     },
     GameHistory { games: Vec<HistoryGameSummary> },
     // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- `url` opens
@@ -505,6 +519,8 @@ mod tests {
                 minimal_highlights: false,
                 premoves_enabled: false,
                 live_clock_enabled: true,
+                board_theme: "brown".to_owned(),
+                piece_set: "cburnett".to_owned(),
             }
         );
         assert_eq!(
@@ -518,6 +534,8 @@ mod tests {
                 minimal_highlights: true,
                 premoves_enabled: true,
                 live_clock_enabled: true,
+                board_theme: "brown".to_owned(),
+                piece_set: "cburnett".to_owned(),
             }
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"LogOut"}"#).unwrap(), FrontendMessage::LogOut);
@@ -527,6 +545,8 @@ mod tests {
             minimal_highlights: true,
             premoves_enabled: true,
             live_clock_enabled: false,
+            board_theme: "blue".to_owned(),
+            piece_set: "merida".to_owned(),
         })
         .unwrap();
         assert!(json.contains(r#""type":"SettingsState""#));
@@ -535,6 +555,8 @@ mod tests {
         assert!(json.contains(r#""minimal_highlights":true"#));
         assert!(json.contains(r#""premoves_enabled":true"#));
         assert!(json.contains(r#""live_clock_enabled":false"#));
+        assert!(json.contains(r#""board_theme":"blue""#));
+        assert!(json.contains(r#""piece_set":"merida""#));
     }
 
     #[test]

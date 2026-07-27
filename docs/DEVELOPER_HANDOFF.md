@@ -23,8 +23,8 @@ The current UI supports:
   a linear candidate-line Explore mode with Undo/Reset, and on-demand cached
   Lichess cloud evaluation with a SAN best line;
 - e-ink-focused sizing, a dark-first high-contrast palette, minimal animation,
-  drag hysteresis, fast clock refresh regions, and changed-square-only board
-  clearing.
+  four board palettes, three common piece sets, a live settings preview, drag
+  hysteresis, fast clock refresh regions, and changed-square-only board clearing.
 
 ## Read these files first
 
@@ -33,7 +33,7 @@ The current UI supports:
 | Frontend shell | `frontend/ui/main.qml` | AppLoad endpoint, message routing, navigation, shared state |
 | Live board | `frontend/ui/BoardScreen.qml` | Game interaction and live-game actions |
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
-| Visual system | `frontend/ui/Theme.qml` | E-ink colors, typography, spacing, and touch sizes |
+| Visual system | `frontend/ui/Theme.qml`, `BoardStyle.qml`, `BoardPreview.qml` | App chrome, shared board palettes/piece choices, and the settings preview |
 | Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `EinkRefreshArea.qml`, `MoveRequestGate.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, refresh policy, move submission, move tokens, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
 | Backend router | `backend/src/backend_app.rs` | Dispatches frontend requests and backend events |
@@ -154,11 +154,16 @@ Minimum emulator smoke test:
     Verify `Submitting e2–e4` appears, only the first request reaches Lichess,
     and input unlocks when that exact move arrives in `BoardState`.
 13. Check both light and dark modes.
+14. In Settings, select every board palette and piece set; verify the mini board,
+    live board, review board, captured pieces, and promotion picker stay in sync.
 
 ## UI rules that matter
 
 - The board is the primary surface. Frequent review actions stay in one compact
   line directly below it: Menu, Explore, previous, next.
+- Board palette and piece-set IDs are centralized in `BoardStyle.qml` and
+  validated again in `backend/src/settings.rs`. The preview and gameplay boards
+  use the same `BoardSquare` renderer; do not create a settings-only imitation.
 - Live play keeps a fixed three-control strip below the board: Actions, Moves,
   and Chat. Chat is disabled for computer games. Draw/takeback offers and
   disconnect claims change and highlight the Actions label.

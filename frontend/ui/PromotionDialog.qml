@@ -4,6 +4,7 @@ AppDialog {
     id: promotionDialog
     property var options: []
     property var pieceCodeFor: function() { return "" }
+    property string pieceSet: "cburnett"
     signal chosen(string piece)
 
     title: "Choose promotion"
@@ -35,7 +36,7 @@ AppDialog {
                     height: width
                     fillMode: Image.PreserveAspectFit
                     smooth: true
-                    source: "../assets/pieces/" +
+                    source: "../assets/pieces/" + promotionDialog.pieceSet + "/" +
                         promotionDialog.pieceCodeFor(modelData) + ".png"
                     sourceSize.width: width
                     sourceSize.height: height

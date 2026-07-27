@@ -20,19 +20,45 @@
         <file>ui/GameReviewScreen.qml</file>
         <file>ui/BoardScreen.qml</file>
         <file>ui/BoardSquare.qml</file>
+        <file>ui/BoardStyle.qml</file>
+        <file>ui/BoardPreview.qml</file>
         <file>ui/PlayerBar.qml</file>
         <file>assets/ChessGlyphs.ttf</file>
-        <file>assets/pieces/wK.png</file>
-        <file>assets/pieces/wQ.png</file>
-        <file>assets/pieces/wR.png</file>
-        <file>assets/pieces/wB.png</file>
-        <file>assets/pieces/wN.png</file>
-        <file>assets/pieces/wP.png</file>
-        <file>assets/pieces/bK.png</file>
-        <file>assets/pieces/bQ.png</file>
-        <file>assets/pieces/bR.png</file>
-        <file>assets/pieces/bB.png</file>
-        <file>assets/pieces/bN.png</file>
-        <file>assets/pieces/bP.png</file>
+        <file>assets/pieces/cburnett/wK.png</file>
+        <file>assets/pieces/cburnett/wQ.png</file>
+        <file>assets/pieces/cburnett/wR.png</file>
+        <file>assets/pieces/cburnett/wB.png</file>
+        <file>assets/pieces/cburnett/wN.png</file>
+        <file>assets/pieces/cburnett/wP.png</file>
+        <file>assets/pieces/cburnett/bK.png</file>
+        <file>assets/pieces/cburnett/bQ.png</file>
+        <file>assets/pieces/cburnett/bR.png</file>
+        <file>assets/pieces/cburnett/bB.png</file>
+        <file>assets/pieces/cburnett/bN.png</file>
+        <file>assets/pieces/cburnett/bP.png</file>
+        <file>assets/pieces/merida/wK.png</file>
+        <file>assets/pieces/merida/wQ.png</file>
+        <file>assets/pieces/merida/wR.png</file>
+        <file>assets/pieces/merida/wB.png</file>
+        <file>assets/pieces/merida/wN.png</file>
+        <file>assets/pieces/merida/wP.png</file>
+        <file>assets/pieces/merida/bK.png</file>
+        <file>assets/pieces/merida/bQ.png</file>
+        <file>assets/pieces/merida/bR.png</file>
+        <file>assets/pieces/merida/bB.png</file>
+        <file>assets/pieces/merida/bN.png</file>
+        <file>assets/pieces/merida/bP.png</file>
+        <file>assets/pieces/chessnut/wK.png</file>
+        <file>assets/pieces/chessnut/wQ.png</file>
+        <file>assets/pieces/chessnut/wR.png</file>
+        <file>assets/pieces/chessnut/wB.png</file>
+        <file>assets/pieces/chessnut/wN.png</file>
+        <file>assets/pieces/chessnut/wP.png</file>
+        <file>assets/pieces/chessnut/bK.png</file>
+        <file>assets/pieces/chessnut/bQ.png</file>
+        <file>assets/pieces/chessnut/bR.png</file>
+        <file>assets/pieces/chessnut/bB.png</file>
+        <file>assets/pieces/chessnut/bN.png</file>
+        <file>assets/pieces/chessnut/bP.png</file>
     </qresource>
 </RCC>

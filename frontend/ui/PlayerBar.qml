@@ -23,6 +23,7 @@ Rectangle {
     property var capturedPieces: []
     property string statusText: ""
     property bool statusEmphasized: false
+    property string pieceSet: "cburnett"
 
     Theme { id: theme; darkMode: playerBar.darkMode }
     height: theme.playerBarHeight
@@ -100,7 +101,7 @@ Rectangle {
                         required property string modelData
                         width: theme.fontLarge
                         height: width
-                        source: "../assets/pieces/" + modelData + ".png"
+                        source: "../assets/pieces/" + playerBar.pieceSet + "/" + modelData + ".png"
                         fillMode: Image.PreserveAspectFit
                         smooth: true
                         sourceSize.width: width

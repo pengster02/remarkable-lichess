@@ -23,10 +23,21 @@ Rectangle {
     property var setPremovesEnabled: function() {}
     property bool liveClockEnabled: true
     property var setLiveClockEnabled: function() {}
+    property string boardTheme: "brown"
+    property var setBoardTheme: function() {}
+    property string pieceSet: "cburnett"
+    property var setPieceSet: function() {}
     // Two-tap confirm, same pattern as BoardScreen's Resign button -- logging out
     // clears the saved token entirely (see backend_app.rs's handle_log_out), not
     // something a single mistaken tap should be able to do.
     property bool logOutArmed: false
+
+    BoardStyle {
+        id: appearanceStyle
+        darkMode: settingsScreen.darkMode
+        boardTheme: settingsScreen.boardTheme
+        pieceSet: settingsScreen.pieceSet
+    }
 
     AppButton {
         id: backButton
@@ -95,6 +106,86 @@ Rectangle {
                     text: settingsScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
                     highlighted: settingsScreen.darkMode
                     onClicked: settingsScreen.toggleDarkMode()
+                }
+
+                Text {
+                    width: parent.width
+                    text: "Board preview  ·  " + appearanceStyle.boardLabel() +
+                        " / " + appearanceStyle.pieceLabel()
+                    font.pixelSize: theme.fontBody
+                    font.bold: true
+                    color: theme.text
+                    horizontalAlignment: Text.AlignHCenter
+                }
+
+                BoardPreview {
+                    objectName: "appearanceBoardPreview"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: Math.min(parent.width, 560)
+                    height: width
+                    darkMode: settingsScreen.darkMode
+                    boardTheme: settingsScreen.boardTheme
+                    pieceSet: settingsScreen.pieceSet
+                }
+
+                Text {
+                    width: parent.width
+                    text: "Board color"
+                    font.pixelSize: theme.fontLabel
+                    font.bold: true
+                    color: theme.text
+                }
+
+                Flow {
+                    id: boardThemeFlow
+                    width: parent.width
+                    height: childrenRect.height
+                    spacing: theme.spacingXs
+
+                    Repeater {
+                        id: boardThemeRepeater
+                        model: appearanceStyle.boardOptions
+
+                        AppButton {
+                            required property var modelData
+                            width: (boardThemeFlow.width -
+                                boardThemeFlow.spacing * (boardThemeRepeater.count - 1)) /
+                                boardThemeRepeater.count
+                            text: modelData.label
+                            highlighted: settingsScreen.boardTheme === modelData.id
+                            onClicked: settingsScreen.setBoardTheme(modelData.id)
+                        }
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    text: "Chess pieces"
+                    font.pixelSize: theme.fontLabel
+                    font.bold: true
+                    color: theme.text
+                }
+
+                Flow {
+                    id: pieceSetFlow
+                    width: parent.width
+                    height: childrenRect.height
+                    spacing: theme.spacingXs
+
+                    Repeater {
+                        id: pieceSetRepeater
+                        model: appearanceStyle.pieceOptions
+
+                        AppButton {
+                            required property var modelData
+                            width: (pieceSetFlow.width -
+                                pieceSetFlow.spacing * (pieceSetRepeater.count - 1)) /
+                                pieceSetRepeater.count
+                            text: modelData.label
+                            highlighted: settingsScreen.pieceSet === modelData.id
+                            onClicked: settingsScreen.setPieceSet(modelData.id)
+                        }
+                    }
                 }
 
                 // Tap-to-select highlights every legal destination square (up

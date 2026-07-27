@@ -63,7 +63,7 @@ Rectangle {
                 spacing: theme.spacingSmall
                 Image {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    source: "../assets/pieces/wN.png"
+                    source: "../assets/pieces/cburnett/wN.png"
                     width: 150
                     height: 150
                     fillMode: Image.PreserveAspectFit
