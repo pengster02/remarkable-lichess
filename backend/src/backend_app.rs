@@ -13,8 +13,13 @@ use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COO
 use async_trait::async_trait;
 use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+
+type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct LichessBackend {
     token_path: PathBuf,
@@ -573,12 +578,12 @@ impl LichessBackend {
         let handle = tokio::spawn(async move {
             let mut backoff_secs: u64 = 1;
             loop {
-                match client.stream_lines("/api/stream/event").await {
-                    Ok(mut lines) => {
-                        use futures_util::StreamExt;
-                        backoff_secs = 1;
-                        while let Some(line) = lines.next().await {
-                            match parse_ndjson_line::<EventStreamMessage>(&line) {
+                if let Ok(mut lines) = client.stream_lines("/api/stream/event").await {
+                    backoff_secs = 1;
+                    while let Ok(Some(line)) =
+                        next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
+                    {
+                        match parse_ndjson_line::<EventStreamMessage>(&line) {
                                 Some(EventStreamMessage::GameStart { game }) => {
                                     log::info!("GameStart: {}", game.id);
                                     let handle = spawn_game_stream(
@@ -612,12 +617,11 @@ impl LichessBackend {
                                         }
                                     }
                                 }
-                                _ => {}
-                            }
+                            _ => {}
                         }
                     }
-                    Err(_) => send_locked(&replier, &write_lock, &BackendMessage::Reconnecting),
                 }
+                send_locked(&replier, &write_lock, &BackendMessage::Reconnecting);
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(30);
             }
@@ -704,6 +708,14 @@ fn game_over_result(status: &str, winner: &Option<String>) -> String {
     }
 }
 
+async fn next_stream_line(
+    lines: &mut LineStream,
+    idle_timeout: Duration,
+) -> Result<Option<String>, tokio::time::error::Elapsed> {
+    use futures_util::StreamExt;
+    tokio::time::timeout(idle_timeout, lines.next()).await
+}
+
 fn spawn_hold_connection_open(
     mut lines: std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>,
 ) -> tokio::task::JoinHandle<()> {
@@ -722,15 +734,15 @@ fn spawn_game_stream(
     write_lock: Arc<std::sync::Mutex<()>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        use futures_util::StreamExt;
         let mut backoff_secs: u64 = 1;
         let mut game_over = false;
         while !game_over {
-            match client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
-                Ok(mut lines) => {
-                    backoff_secs = 1;
-                    while let Some(line) = lines.next().await {
-                        if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
+            if let Ok(mut lines) = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
+                backoff_secs = 1;
+                while let Ok(Some(line)) =
+                    next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
+                {
+                    if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
                             let mut guard = session_handle.lock().await;
                             let board_msg = match msg {
                                 // Checks `full.state.status` here, not just on a later
@@ -832,21 +844,41 @@ fn spawn_game_stream(
                             if let Some(m) = board_msg {
                                 send_locked(&replier, &write_lock, &m);
                             }
-                            if game_over {
-                                break;
-                            }
+                        if game_over {
+                            break;
                         }
                     }
                 }
-                Err(_) => send_locked(&replier, &write_lock, &BackendMessage::Reconnecting),
             }
             if game_over {
                 break;
             }
+            send_locked(&replier, &write_lock, &BackendMessage::Reconnecting);
             tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
             backoff_secs = (backoff_secs * 2).min(30);
         }
     })
+}
+
+#[cfg(test)]
+mod stream_watchdog_tests {
+    use super::{next_stream_line, LineStream};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn idle_stream_times_out_so_the_reconnect_loop_can_run() {
+        let mut lines: LineStream = Box::pin(futures_util::stream::pending());
+        let result = next_stream_line(&mut lines, Duration::from_millis(10)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn active_stream_line_resets_progress_before_the_deadline() {
+        let mut lines: LineStream =
+            Box::pin(futures_util::stream::iter(vec!["keepalive".to_string()]));
+        let result = next_stream_line(&mut lines, Duration::from_millis(10)).await;
+        assert_eq!(result.unwrap(), Some("keepalive".to_string()));
+    }
 }
 
 #[async_trait]
