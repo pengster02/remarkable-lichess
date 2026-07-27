@@ -30,6 +30,8 @@ expensive analysis or data panels explicitly user-triggered.
 - Verified Home → History → Review, previous/next navigation, direct move-token
   selection, first/last, board flip, Explore, candidate drag, Undo, Exit, and
   return navigation in the live AppLoad emulator.
+- Added an explicit cloud-evaluation action to review. Results are cached per
+  position, show depth and a SAN best line, and never poll in the background.
 
 ## What the current UI already gets right
 
@@ -43,23 +45,20 @@ expensive analysis or data panels explicitly user-triggered.
 | Clickable move history that follows the current move | Supported |
 | Flip, first, previous, next, and last controls | Supported |
 | Analysis annotations and candidate moves | Supported |
+| On-demand cached cloud evaluation | Supported |
 | Large, consistent touch targets | Supported |
 | Reduced animation for e-ink | Supported |
 
 ## Highest-value features still missing
 
-1. **On-demand cloud evaluation in review.** Use Lichess's cached cloud-eval
-   endpoint only when the user asks. It may return up to five principal
-   variations and can return 404 when a position is not cached. This is a better
-   fit than running Stockfish continuously on the tablet.
-2. **Persistent variation branches.** The current Explore mode is a linear
+1. **Persistent variation branches.** The current Explore mode is a linear
    scratch line. A compact variation bar should appear only when a position has
    multiple saved replies, following Lichess mobile's approach. Do not render a
    full desktop analysis tree beside the board.
-3. **On-demand opening explorer.** Show a compact move table for the current
+2. **On-demand opening explorer.** Show a compact move table for the current
    review position. Keep it off by default so it does not compete with the
    board or generate unnecessary network and display updates.
-4. **PGN export.** Review is complete enough to make copying or exporting the
+3. **PGN export.** Review is complete enough to make copying or exporting the
    game useful. Sharing should come after local export works reliably.
 
 ## Behaviors not worth copying

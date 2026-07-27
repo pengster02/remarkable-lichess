@@ -1,12 +1,12 @@
 use crate::game::session::GameSession;
-use crate::game::rules::{analysis_position, apply_analysis_move};
+use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
 use crate::lichess::client::LichessClient;
 use crate::lichess::models::{EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
-    BackendMessage, FrontendMessage, GameAnalysisSummary, HistoryGameSummary, MoveAnalysis, OngoingGameSummary,
-    RatingSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
+    BackendMessage, CloudEvaluationLine, FrontendMessage, GameAnalysisSummary, HistoryGameSummary,
+    MoveAnalysis, OngoingGameSummary, RatingSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
@@ -226,6 +226,63 @@ impl LichessBackend {
         match crate::game::replay::fens_for_moves(&moves) {
             Ok(fens) => self.send(replier, &BackendMessage::GameMoves { moves, fens, clock_ms, analysis }),
             Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: format!("replaying game moves: {e}") }),
+        }
+    }
+
+    async fn handle_request_cloud_evaluation(
+        &self,
+        replier: &BackendReplier<Self>,
+        requested_fen: String,
+    ) {
+        let Some(client) = self.client.clone() else {
+            self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+            return;
+        };
+        match client.get_cloud_evaluation(&requested_fen).await {
+            Ok(Some(cloud)) => {
+                let Some(pv) = cloud.pvs.into_iter().next() else {
+                    self.send(
+                        replier,
+                        &BackendMessage::CloudEvaluationUnavailable {
+                            requested_fen,
+                        },
+                    );
+                    return;
+                };
+                match replay_uci_moves_with_history(&requested_fen, &pv.moves) {
+                    Ok((_, best_line)) => self.send(
+                        replier,
+                        &BackendMessage::CloudEvaluation {
+                            requested_fen,
+                            evaluation: CloudEvaluationLine {
+                                eval_cp: pv.cp,
+                                mate_in: pv.mate,
+                                depth: cloud.depth,
+                                knodes: cloud.knodes,
+                                best_line,
+                            },
+                        },
+                    ),
+                    Err(e) => self.send(
+                        replier,
+                        &BackendMessage::CloudEvaluationFailed {
+                            requested_fen,
+                            message: format!("couldn't read cloud best line: {e}"),
+                        },
+                    ),
+                }
+            }
+            Ok(None) => self.send(
+                replier,
+                &BackendMessage::CloudEvaluationUnavailable { requested_fen },
+            ),
+            Err(e) => self.send(
+                replier,
+                &BackendMessage::CloudEvaluationFailed {
+                    requested_fen,
+                    message: e.to_string(),
+                },
+            ),
         }
     }
 
@@ -885,6 +942,9 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::RequestGameMoves { game_id } => {
                 self.handle_request_game_moves(replier, game_id).await
+            }
+            FrontendMessage::RequestCloudEvaluation { fen } => {
+                self.handle_request_cloud_evaluation(replier, fen).await
             }
             FrontendMessage::RequestAnalysisPosition { fen } => {
                 self.handle_request_analysis_position(replier, fen)

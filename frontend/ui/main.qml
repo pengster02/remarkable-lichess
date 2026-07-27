@@ -219,7 +219,10 @@ Rectangle {
                 root.reviewClockMs = msg.clock_ms || []
                 root.reviewAnalysis = msg.analysis || []
                 screenLoader.source = "GameReviewScreen.qml"
-            } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove") {
+            } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" ||
+                       msg.type === "CloudEvaluation" ||
+                       msg.type === "CloudEvaluationUnavailable" ||
+                       msg.type === "CloudEvaluationFailed") {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }

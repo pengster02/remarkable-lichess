@@ -91,6 +91,7 @@ pub enum FrontendMessage {
     // GameReviewScreen can navigate purely by array indexing, no chess logic
     // or network round-trip per step (see the game-review design spec).
     RequestGameMoves { game_id: String },
+    RequestCloudEvaluation { fen: String },
     RequestAnalysisPosition { fen: String },
     MakeAnalysisMove {
         fen: String,
@@ -199,6 +200,15 @@ pub struct MoveAnalysis {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CloudEvaluationLine {
+    pub eval_cp: Option<i32>,
+    pub mate_in: Option<i32>,
+    pub depth: u32,
+    pub knodes: u64,
+    pub best_line: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum BackendMessage {
     TokenVerified { username: String },
@@ -284,6 +294,12 @@ pub enum BackendMessage {
     // game that's actually been through its computer review, so the frontend
     // must index defensively rather than assume equal length.
     GameMoves { moves: Vec<String>, fens: Vec<String>, clock_ms: Vec<u32>, analysis: Vec<MoveAnalysis> },
+    CloudEvaluation {
+        requested_fen: String,
+        evaluation: CloudEvaluationLine,
+    },
+    CloudEvaluationUnavailable { requested_fen: String },
+    CloudEvaluationFailed { requested_fen: String, message: String },
     AnalysisPosition {
         requested_fen: String,
         fen: String,
@@ -330,6 +346,13 @@ mod tests {
     fn analysis_messages_round_trip() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
+                r#"{"type":"RequestCloudEvaluation","fen":"startpos"}"#
+            )
+            .unwrap(),
+            FrontendMessage::RequestCloudEvaluation { fen: "startpos".into() }
+        );
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(
                 r#"{"type":"RequestAnalysisPosition","fen":"startpos"}"#
             )
             .unwrap(),
@@ -372,6 +395,20 @@ mod tests {
         })
         .unwrap();
         assert!(position_json.contains(r#""requested_fen":"startpos""#));
+
+        let cloud_json = serde_json::to_string(&BackendMessage::CloudEvaluation {
+            requested_fen: "startpos".into(),
+            evaluation: CloudEvaluationLine {
+                eval_cp: Some(24),
+                mate_in: None,
+                depth: 31,
+                knodes: 123456,
+                best_line: vec!["e4".into(), "e5".into()],
+            },
+        })
+        .unwrap();
+        assert!(cloud_json.contains(r#""type":"CloudEvaluation""#));
+        assert!(cloud_json.contains(r#""best_line":["e4","e5"]"#));
     }
 
     #[test]
