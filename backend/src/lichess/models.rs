@@ -362,6 +362,21 @@ pub struct GameExport {
     pub analysis: Vec<GameMoveAnalysis>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CloudEvaluation {
+    pub depth: u32,
+    pub fen: String,
+    pub knodes: u64,
+    pub pvs: Vec<CloudEvaluationPv>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CloudEvaluationPv {
+    pub cp: Option<i32>,
+    pub mate: Option<i32>,
+    pub moves: String,
+}
+
 // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- only the fields
 // needed to show/share the created link are modeled (variant/perf/timeControl
 // etc. aren't shown anywhere in this app).

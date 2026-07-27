@@ -181,6 +181,16 @@ mod tests {
     }
 
     #[test]
+    fn history_accepts_cloud_evaluation_castling_notation() {
+        let (_, history) = replay_uci_moves_with_history(
+            "startpos",
+            "e2e4 e7e5 g1f3 b8c6 f1c4 g8f6 e1h1",
+        )
+        .unwrap();
+        assert_eq!(history.last().unwrap(), "O-O");
+    }
+
+    #[test]
     fn replay_collects_one_position_per_ply_plus_the_start() {
         let replay = replay_uci_game("startpos", "e2e4 e7e5").unwrap();
         assert_eq!(replay.position_history.len(), 3);

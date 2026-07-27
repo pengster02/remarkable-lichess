@@ -63,6 +63,11 @@ Rectangle {
     property string exploreStatus: ""
     property bool exploreInCheck: false
     property string exploreStatusCode: "playing"
+    property var cloudEvaluations: ({})
+    property var cloudEvaluationUnavailable: ({})
+    property string cloudEvaluationPendingFen: ""
+    property string cloudEvaluationErrorFen: ""
+    property string cloudEvaluationError: ""
 
     function currentFen() {
         if (gameReviewScreen.exploreMode && gameReviewScreen.exploreFen.length > 0) {
@@ -394,6 +399,54 @@ Rectangle {
         return (pawns > 0 ? "+" : "") + pawns.toFixed(2)
     }
 
+    function currentCloudEvaluation() {
+        return gameReviewScreen.cloudEvaluations[gameReviewScreen.currentFen()] || null
+    }
+
+    function formatCloudNodes(knodes) {
+        if (knodes >= 1000000) return (knodes / 1000000).toFixed(1) + "B nodes"
+        if (knodes >= 1000) return (knodes / 1000).toFixed(1) + "M nodes"
+        return knodes.toLocaleString() + "k nodes"
+    }
+
+    function cloudEvaluationLabel() {
+        var fen = gameReviewScreen.currentFen()
+        if (fen === gameReviewScreen.cloudEvaluationPendingFen) {
+            return "Cloud evaluation: loading..."
+        }
+        if (gameReviewScreen.cloudEvaluationUnavailable[fen]) {
+            return "No cached cloud evaluation for this position."
+        }
+        if (fen === gameReviewScreen.cloudEvaluationErrorFen) {
+            return "Cloud evaluation failed: " + gameReviewScreen.cloudEvaluationError
+        }
+        var evaluation = gameReviewScreen.currentCloudEvaluation()
+        if (!evaluation) return ""
+        return "Cloud " + gameReviewScreen.evalLabel(evaluation) +
+            " -- depth " + evaluation.depth +
+            " -- " + gameReviewScreen.formatCloudNodes(evaluation.knodes)
+    }
+
+    function cloudBestLineLabel() {
+        var evaluation = gameReviewScreen.currentCloudEvaluation()
+        if (!evaluation || !evaluation.best_line || evaluation.best_line.length === 0) return ""
+        return "Best line: " + evaluation.best_line.join(" ")
+    }
+
+    function requestCloudEvaluation() {
+        var fen = gameReviewScreen.currentFen()
+        if (fen.length === 0 || fen === gameReviewScreen.cloudEvaluationPendingFen) return
+        gameReviewScreen.cloudEvaluationPendingFen = fen
+        gameReviewScreen.cloudEvaluationErrorFen = ""
+        gameReviewScreen.cloudEvaluationError = ""
+        var unavailable = {}
+        for (var key in gameReviewScreen.cloudEvaluationUnavailable) {
+            if (key !== fen) unavailable[key] = gameReviewScreen.cloudEvaluationUnavailable[key]
+        }
+        gameReviewScreen.cloudEvaluationUnavailable = unavailable
+        gameReviewScreen.backendSender({type: "RequestCloudEvaluation", fen: fen})
+    }
+
     // "1. e4 e5  2. Nf3 Nc6" tokens, one per ply, each carrying its own fens
     // index so a tap can jump straight there -- unlike BoardScreen's own
     // formattedMoveHistory (one joined, unclickable string), every ply here
@@ -566,6 +619,27 @@ Rectangle {
                     ? gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1).judgment
                     : null
             )
+        }
+
+        Text {
+            visible: gameReviewScreen.cloudEvaluationLabel().length > 0
+            text: gameReviewScreen.cloudEvaluationLabel()
+            font.pixelSize: theme.fontSmall
+            font.bold: gameReviewScreen.currentCloudEvaluation() !== null
+            width: parent.width
+            elide: Text.ElideRight
+            color: gameReviewScreen.cloudEvaluationErrorFen === gameReviewScreen.currentFen()
+                ? theme.errorText
+                : theme.textMuted
+        }
+
+        Text {
+            visible: gameReviewScreen.cloudBestLineLabel().length > 0
+            text: gameReviewScreen.cloudBestLineLabel()
+            font.pixelSize: theme.fontSmall
+            width: parent.width
+            elide: Text.ElideRight
+            color: theme.text
         }
 
         Row {
@@ -807,6 +881,24 @@ Rectangle {
                 }
                 AppButton {
                     width: parent.width
+                    text: gameReviewScreen.currentCloudEvaluation() !== null
+                        ? "Cloud evaluation loaded"
+                        : gameReviewScreen.cloudEvaluationUnavailable[gameReviewScreen.currentFen()]
+                            ? "No cloud evaluation cached"
+                            : gameReviewScreen.cloudEvaluationPendingFen === gameReviewScreen.currentFen()
+                                ? "Loading cloud evaluation..."
+                                : "Cloud evaluation"
+                    enabled: gameReviewScreen.currentFen().length > 0 &&
+                             gameReviewScreen.cloudEvaluationPendingFen !== gameReviewScreen.currentFen() &&
+                             gameReviewScreen.currentCloudEvaluation() === null &&
+                             !gameReviewScreen.cloudEvaluationUnavailable[gameReviewScreen.currentFen()]
+                    onClicked: {
+                        gameReviewScreen.requestCloudEvaluation()
+                        gameReviewScreen.showReviewOptions = false
+                    }
+                }
+                AppButton {
+                    width: parent.width
                     text: "Close"
                     onClicked: gameReviewScreen.showReviewOptions = false
                 }
@@ -992,6 +1084,32 @@ Rectangle {
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.selectedSquare = ""
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
+        } else if (msg.type === "CloudEvaluation") {
+            var evaluations = {}
+            for (var key in gameReviewScreen.cloudEvaluations) {
+                evaluations[key] = gameReviewScreen.cloudEvaluations[key]
+            }
+            evaluations[msg.requested_fen] = msg.evaluation
+            gameReviewScreen.cloudEvaluations = evaluations
+            if (gameReviewScreen.cloudEvaluationPendingFen === msg.requested_fen) {
+                gameReviewScreen.cloudEvaluationPendingFen = ""
+            }
+        } else if (msg.type === "CloudEvaluationUnavailable") {
+            var unavailable = {}
+            for (var unavailableKey in gameReviewScreen.cloudEvaluationUnavailable) {
+                unavailable[unavailableKey] = gameReviewScreen.cloudEvaluationUnavailable[unavailableKey]
+            }
+            unavailable[msg.requested_fen] = true
+            gameReviewScreen.cloudEvaluationUnavailable = unavailable
+            if (gameReviewScreen.cloudEvaluationPendingFen === msg.requested_fen) {
+                gameReviewScreen.cloudEvaluationPendingFen = ""
+            }
+        } else if (msg.type === "CloudEvaluationFailed") {
+            if (gameReviewScreen.cloudEvaluationPendingFen === msg.requested_fen) {
+                gameReviewScreen.cloudEvaluationPendingFen = ""
+            }
+            gameReviewScreen.cloudEvaluationErrorFen = msg.requested_fen
+            gameReviewScreen.cloudEvaluationError = msg.message || "unknown error"
         } else if (msg.type === "ErrorMsg" && gameReviewScreen.exploreMode) {
             gameReviewScreen.exploreStatus = msg.message
         }

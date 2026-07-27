@@ -1,6 +1,6 @@
 use crate::lichess::models::{
-    Account, ChallengeListResponse, ChallengeOpenJson, GameExport, GameHistoryFilters, HistoryGame,
-    IncomingChallenge, PlayingGame, PlayingResponse,
+    Account, ChallengeListResponse, ChallengeOpenJson, CloudEvaluation, GameExport,
+    GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame, PlayingResponse,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use anyhow::{anyhow, Result};
@@ -193,6 +193,24 @@ impl LichessClient {
             return Err(error_from_response("export_game", resp).await);
         }
         Ok(resp.json::<GameExport>().await?)
+    }
+
+    pub async fn get_cloud_evaluation(&self, fen: &str) -> Result<Option<CloudEvaluation>> {
+        let resp = self
+            .send_logged(
+                "get_cloud_evaluation",
+                self.http
+                    .get(format!("{}/api/cloud-eval", self.base_url))
+                    .query(&[("fen", fen), ("multiPv", "1")]),
+            )
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(error_from_response("get_cloud_evaluation", resp).await);
+        }
+        Ok(Some(resp.json::<CloudEvaluation>().await?))
     }
 
     pub async fn make_move(&self, game_id: &str, uci: &str) -> Result<()> {
@@ -774,6 +792,47 @@ mod tests {
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let err = client.export_game("missing").await.unwrap_err().to_string();
         assert_eq!(err, "export_game failed with status 404 Not Found");
+    }
+
+    #[tokio::test]
+    async fn cloud_evaluation_sends_fen_and_parses_best_line() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        Mock::given(method("GET"))
+            .and(path("/api/cloud-eval"))
+            .and(query_param("fen", fen))
+            .and(query_param("multiPv", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "depth": 31,
+                "fen": fen,
+                "knodes": 123456,
+                "pvs": [{"cp": 24, "moves": "e2e4 e7e5 g1f3"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let evaluation = client.get_cloud_evaluation(fen).await.unwrap().unwrap();
+        assert_eq!(evaluation.depth, 31);
+        assert_eq!(evaluation.pvs[0].cp, Some(24));
+        assert_eq!(evaluation.pvs[0].moves, "e2e4 e7e5 g1f3");
+    }
+
+    #[tokio::test]
+    async fn cloud_evaluation_returns_none_when_position_is_not_cached() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/cloud-eval"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "No cloud evaluation available for that position"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        assert_eq!(client.get_cloud_evaluation("8/8/8/8/8/8/8/K6k w - - 0 1").await.unwrap(), None);
     }
 
     #[tokio::test]

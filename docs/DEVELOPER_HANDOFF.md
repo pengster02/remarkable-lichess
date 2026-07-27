@@ -19,7 +19,8 @@ The current UI supports:
   reconnect and game-over states;
 - game-history filters and finished-game review;
 - clickable move notation, first/previous/next/last, board flip, annotations,
-  and a linear candidate-line Explore mode with Undo/Reset;
+  a linear candidate-line Explore mode with Undo/Reset, and on-demand cached
+  Lichess cloud evaluation with a SAN best line;
 - e-ink-focused sizing, minimal animation, drag hysteresis, and fast clock
   refresh regions.
 
@@ -121,10 +122,11 @@ Minimum emulator smoke test:
 
 1. Home → Game history → open a game → Back to Game History → Back to Home.
 2. In review, tap move tokens and use previous/next plus first/last from Menu.
-3. Enter Explore, make one tap move and one drag move, Undo, Reset, and Exit.
-4. Start or resume a game and verify orientation, legal targets, promotion,
+3. Request Cloud evaluation from Menu and verify the eval and best line.
+4. Enter Explore, make one tap move and one drag move, Undo, Reset, and Exit.
+5. Start or resume a game and verify orientation, legal targets, promotion,
    premove behavior, clocks, and Back to Home.
-5. Check both light and dark modes.
+6. Check both light and dark modes.
 
 ## UI rules that matter
 
@@ -156,11 +158,10 @@ the tablet's current firmware before deployment.
 
 ## Highest-value remaining work
 
-1. On-demand Lichess cloud evaluation in review.
-2. Persistent variation branches instead of only a linear scratch line.
-3. On-demand opening explorer.
-4. PGN export before platform-specific sharing.
-5. A final real-device pass for ghosting, latency, physical touch size, and
+1. Persistent variation branches instead of only a linear scratch line.
+2. On-demand opening explorer.
+3. PGN export before platform-specific sharing.
+4. A final real-device pass for ghosting, latency, physical touch size, and
    Paper Pro Move orientation.
 
 Do not add a continuously updating engine or dense desktop analysis panel by
