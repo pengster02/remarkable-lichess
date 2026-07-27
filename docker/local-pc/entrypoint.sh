@@ -9,6 +9,10 @@ TOKEN_DIR="/home/root/.config/remarkable-lichess"
 
 mkdir -p "$TOKEN_DIR" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
+if [ -n "${LICHESS_TOKEN:-}" ]; then
+  printf '%s\n' "${LICHESS_TOKEN}" > "${TOKEN_DIR}/token"
+  echo "==> Seeded LICHESS_TOKEN into ${TOKEN_DIR}/token"
+fi
 
 echo "==> Building AppLoad PC emulator for Linux"
 export XOVI_REPO="${XOVI_SRC}"
@@ -63,10 +67,12 @@ websockify --web=/usr/share/novnc 6080 localhost:5900 >/tmp/websockify.log 2>&1 
 
 echo "==> Launching AppLoad emulator"
 cd "${APPLOAD_SRC}"
-# Arg auto-starts that application id (see AppLoadEmuOnly).
-./appload remarkable-lichess >/tmp/appload.log 2>&1 &
-APP_PID=$!
-
-echo "Ready: open http://localhost:6080/vnc.html"
-echo "Auto-starting Lichess app (id=remarkable-lichess)."
-wait "${APP_PID}"
+# Keep the container alive even if the emulator exits; restart for local testing.
+while true; do
+  ./appload remarkable-lichess >>/tmp/appload.log 2>&1 &
+  APP_PID=$!
+  echo "Ready: open http://localhost:6080/vnc.html (appload pid=${APP_PID})"
+  wait "${APP_PID}" || true
+  echo "AppLoad exited; restarting in 2s..." >>/tmp/appload.log
+  sleep 2
+done

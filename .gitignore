@@ -22,6 +22,11 @@ id_ed25519.pub
 dist/
 frontend/resources.rcc
 
+# Local secrets (never commit)
+.lichess-token
+.env
+.env.local
+
 # Editor / OS
 .idea/
 .vscode/
