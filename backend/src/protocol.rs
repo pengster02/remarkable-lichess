@@ -41,6 +41,7 @@ pub enum FrontendMessage {
     DrawAction { accept: bool },
     TakebackAction { accept: bool },
     Abort,
+    Berserk,
     AddTime { seconds: u32 },
     ClaimVictory,
     ClaimDraw,
@@ -247,6 +248,7 @@ pub enum BackendMessage {
         draw_offered_by_you: bool,
         takeback_offered_by_you: bool,
         can_abort: bool,
+        can_berserk: bool,
         can_offer_draw: bool,
         can_offer_takeback: bool,
         can_give_time: bool,
@@ -275,6 +277,7 @@ pub enum BackendMessage {
         initial_clock_ms: Option<Box<u64>>,
     },
     GameOver { result: String, reason: String },
+    Berserked,
     MoveRejected { reason: String },
     Reconnecting,
     ErrorMsg { message: String },
@@ -439,6 +442,10 @@ mod tests {
             FrontendMessage::TakebackAction { accept: false }
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"Abort"}"#).unwrap(), FrontendMessage::Abort);
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(r#"{"type":"Berserk"}"#).unwrap(),
+            FrontendMessage::Berserk
+        );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"AddTime","seconds":15}"#).unwrap(),
             FrontendMessage::AddTime { seconds: 15 }
@@ -612,6 +619,7 @@ mod tests {
             draw_offered_by_you: false,
             takeback_offered_by_you: false,
             can_abort: true,
+            can_berserk: false,
             can_offer_draw: false,
             can_offer_takeback: false,
             can_give_time: true,

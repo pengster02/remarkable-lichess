@@ -282,6 +282,19 @@ impl LichessClient {
         Ok(())
     }
 
+    pub async fn berserk(&self, game_id: &str) -> Result<()> {
+        let resp = self
+            .send_logged("berserk", self.bearer(self.http.post(format!(
+                "{}/api/board/game/{}/berserk",
+                self.base_url, game_id
+            ))))
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("berserk", resp).await);
+        }
+        Ok(())
+    }
+
     pub async fn add_time(&self, game_id: &str, seconds: u32) -> Result<()> {
         let resp = self
             .send_logged("add_time", self.bearer(self.http.post(format!(
@@ -935,6 +948,19 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         client.abort("g1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn berserk_posts_to_correct_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/berserk"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.berserk("g1").await.unwrap();
     }
 
     #[tokio::test]

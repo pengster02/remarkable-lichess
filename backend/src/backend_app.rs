@@ -701,8 +701,17 @@ fn spawn_game_stream(
                                 // as a dropout and reconnected to the same finished game
                                 // forever, every ~30s.
                                 GameStreamMessage::Full(full) => {
+                                    let was_berserked = guard
+                                        .as_ref()
+                                        .is_some_and(|session| {
+                                            session.game_id == full.id && session.berserked
+                                        });
                                     match GameSession::from_game_full(&full, &my_id) {
-                                        Ok((s, board_msg)) => {
+                                        Ok((mut s, mut board_msg)) => {
+                                            if was_berserked {
+                                                s.mark_berserked();
+                                                board_msg = s.board_state();
+                                            }
                                             if full.state.status != "started" {
                                                 game_over = true;
                                                 // Don't bother storing a session for a
@@ -897,6 +906,30 @@ impl AppLoadBackend for LichessBackend {
                     if let Some(game_id) = self.current_game_id().await {
                         if let Err(e) = client.abort(&game_id).await {
                             self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::Berserk => {
+                if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        match client.berserk(&game_id).await {
+                            Ok(()) => {
+                                let mut guard = self.session.lock().await;
+                                if let Some(session) = guard.as_mut() {
+                                    if session.game_id == game_id {
+                                        session.mark_berserked();
+                                    }
+                                }
+                                drop(guard);
+                                self.send(replier, &BackendMessage::Berserked);
+                            }
+                            Err(e) => self.send(
+                                replier,
+                                &BackendMessage::ErrorMsg {
+                                    message: e.to_string(),
+                                },
+                            ),
                         }
                     }
                 }
