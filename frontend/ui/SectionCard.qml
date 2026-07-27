@@ -10,10 +10,12 @@ import QtQuick 2.5
 Rectangle {
     id: sectionCard
     property bool darkMode: false
+    property bool compact: false
     property string title: ""
     default property alias content: contentColumn.children
     width: parent ? parent.width : implicitWidth
-    height: innerColumn.height + theme.spacingSmall * 2
+    height: innerColumn.height +
+        (sectionCard.compact ? theme.spacingXs : theme.spacingSmall) * 2
 
     Theme { id: theme; darkMode: sectionCard.darkMode }
     radius: theme.cardRadius
@@ -26,8 +28,8 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: theme.spacingSmall
-        spacing: theme.spacingSmall
+        anchors.margins: sectionCard.compact ? theme.spacingXs : theme.spacingSmall
+        spacing: sectionCard.compact ? theme.spacingXs : theme.spacingSmall
 
         Text {
             visible: sectionCard.title.length > 0
@@ -40,7 +42,7 @@ Rectangle {
         Column {
             id: contentColumn
             width: parent.width
-            spacing: theme.spacingSmall
+            spacing: sectionCard.compact ? theme.spacingXs : theme.spacingSmall
         }
     }
 }
