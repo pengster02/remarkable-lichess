@@ -15,7 +15,8 @@ The current UI supports:
 
 - token setup, home ratings, ongoing games, seeks, direct/open/AI challenges;
 - live games with tap or drag input, legal targets, premoves, promotion,
-  move confirmation, clocks, player bars, chat, contract-gated draw/takeback,
+  move confirmation, clocks, both players' names/ratings, chat,
+  contract-gated draw/takeback,
   abort/resign, opponent-left claims, time gifts, typed action-completion
   feedback, reconnect and game-over states;
 - game-history filters and finished-game review;
@@ -170,6 +171,8 @@ Minimum emulator smoke test:
 - Turn, submission, check, premove, and connection status share one compact
   Fast-refresh line in the top player bar. Live games cannot navigate Home;
   GameOver enables and reveals the bottom navigation action.
+- Game-over result logic keeps Lichess's raw status internally, but the backend
+  sends a human-readable termination label such as `Time forfeit` for display.
 - Live clocks refresh every 10 seconds above one minute, align one transition
   refresh with the one-minute boundary, and refresh every second thereafter.
   First-move deadlines use the same adaptive cadence.

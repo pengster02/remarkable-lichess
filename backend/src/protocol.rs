@@ -288,6 +288,8 @@ pub enum BackendMessage {
         // Confirmed against lichess-org/api's GameEventPlayer.yaml. Fixed for the
         // game's lifetime (see game::session::GameSession), unlike every field
         // above -- an AI opponent has no rating, only a name/level, hence Option.
+        your_name: Option<String>,
+        your_rating: Option<u32>,
         opponent_name: Option<String>,
         opponent_rating: Option<u32>,
         game_description: Box<str>,
@@ -684,6 +686,8 @@ mod tests {
             position_history: vec!["startpos".into()].into_boxed_slice(),
             captured_by_white: vec!["bP".into()].into_boxed_slice(),
             captured_by_black: vec![].into_boxed_slice(),
+            your_name: Some("Alice".into()),
+            your_rating: Some(1700),
             opponent_name: None,
             opponent_rating: None,
             game_description: "Casual Rapid • 10+0".into(),
@@ -695,5 +699,6 @@ mod tests {
         assert!(json.contains(r#""game_id":"g1""#));
         assert!(json.contains(r#""captured_by_white":["bP"]"#));
         assert!(json.contains(r#""fen":"startpos""#));
+        assert!(json.contains(r#""your_rating":1700"#));
     }
 }

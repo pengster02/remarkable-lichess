@@ -29,6 +29,10 @@ TestCase {
         board.yourColor = "white"
         board.whiteTimeMs = 0
         board.blackTimeMs = 0
+        board.yourName = ""
+        board.yourRating = null
+        board.opponentName = ""
+        board.opponentRating = null
     }
 
     function test_pageDoesNotReserveAFullExitBar() {
@@ -80,5 +84,29 @@ TestCase {
         board.initialClockMs = null
         board.firstMoveTimeMs = 30000
         compare(board.clockRefreshIntervalMs(), 1000)
+    }
+
+    function test_playerBarsUseBothAvailableRatings() {
+        board.yourColor = "white"
+        board.username = "fallback"
+        board.yourName = "GM Alice"
+        board.yourRating = 2210
+        board.opponentName = "Stockfish level 3"
+        board.opponentRating = null
+        compare(board.nameFor("white"), "GM Alice")
+        compare(board.ratingFor("white"), 2210)
+        compare(board.nameFor("black"), "Stockfish level 3")
+        compare(board.ratingFor("black"), null)
+    }
+
+    function test_gameOverReasonIsReadable() {
+        board.yourColor = "white"
+        board.handleMessage({
+            type: "GameOver",
+            result: "black",
+            reason: "Time forfeit"
+        })
+        compare(board.statusText, "Game over: You lost (Time forfeit)")
+        compare(board.gameReason, "Time forfeit")
     }
 }
