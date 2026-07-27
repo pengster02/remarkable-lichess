@@ -64,6 +64,12 @@ expensive analysis or data panels explicitly user-triggered.
 - Explicitly accepts Standard and From Position live games. Other variant
   streams now produce a named unsupported-variant error instead of attempting
   to replay them with Standard chess rules.
+- Added the Board API's arena Berserk action. It is shown only for tournament
+  games before the local player has moved, uses the shared two-step confirmation
+  control, and remains subject to the server's `berserkable` tournament rule.
+- Consolidated abort, draw-offer, resignation, and Berserk confirmation into
+  `ConfirmAction`, with an offscreen QML interaction test for confirm, cancel,
+  and pending states.
 
 ## Live action contract
 
@@ -75,7 +81,7 @@ expensive analysis or data panels explicitly user-triggered.
 | Takeback | Casual non-tournament human games after one full move | `takeback/true`; outgoing offers can be cancelled |
 | Give time | Casual non-tournament human clock games | Round add-time endpoint, fixed at 15 seconds in the UI |
 | Claim victory/draw | Only while the opponent is reported gone | Server validates whether the claim is mature/legal |
-| Berserk | Not exposed | Arena-only and Board clients cannot join tournament pools |
+| Berserk | Arena game, before the local player's first move | Two-step confirmation; server validates whether the arena allows it |
 | Rematch | Not exposed | No public rematch path exists in the OpenAPI contract |
 
 The Lichess stream is still the source of truth. These rules remove impossible
@@ -141,6 +147,7 @@ can change between the latest stream event and the tap.
 - [Lichess game player](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameEventPlayer.yaml)
 - [Lichess variant keys](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/VariantKey.yaml)
 - [Lichess opponent-gone event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/OpponentGoneEvent.yaml)
+- [Lichess Board Berserk endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-berserk.yaml)
 - [Chess.com mobile analysis help](https://support.chess.com/en/articles/10473022-how-do-i-use-game-analysis-on-the-app)
 - [AppLoad](https://github.com/asivery/rm-appload)
 - [reMarkable Qt Quick documentation](https://developer.remarkable.com/documentation/qt_epaper)

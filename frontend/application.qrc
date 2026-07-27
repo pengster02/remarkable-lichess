@@ -5,6 +5,7 @@
         <file>ui/AppButton.qml</file>
         <file>ui/AppDialog.qml</file>
         <file>ui/BoardToolButton.qml</file>
+        <file>ui/ConfirmAction.qml</file>
         <file>ui/MoveTokenButton.qml</file>
         <file>ui/AppTextField.qml</file>
         <file>ui/PromotionDialog.qml</file>

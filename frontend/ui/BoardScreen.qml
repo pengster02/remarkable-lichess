@@ -50,6 +50,7 @@ Rectangle {
     property bool drawOfferedByYou: false
     property bool takebackOfferedByYou: false
     property bool canAbort: false
+    property bool canBerserk: false
     property bool canOfferDraw: false
     property bool canOfferTakeback: false
     property bool canGiveTime: false
@@ -66,9 +67,7 @@ Rectangle {
     // pending, else null. Set instead of immediately sending MakeMove whenever a
     // pawn move has more than one legal promotion option.
     property var pendingPromotion: null
-    // Two-tap confirm so a single mistaken tap can't resign the game outright.
-    property bool resignArmed: false
-    property bool drawArmed: false
+    property bool berserkPending: false
     property bool showGameActions: false
     property bool showMoves: false
     property bool showChat: false
@@ -1076,26 +1075,18 @@ Rectangle {
                 boardScreen.showGameActions = false
             }
         }
-        AppButton {
+        ConfirmAction {
+            id: drawOfferAction
             width: parent.width
-            text: boardScreen.drawArmed ? "Confirm draw offer" : "Offer draw"
+            actionText: "Offer draw"
+            confirmText: "Confirm draw offer"
+            cancelText: "Cancel draw confirmation"
             visible: !boardScreen.gameOver && boardScreen.canOfferDraw &&
                 !boardScreen.drawOfferedByOpponent
-            onClicked: {
-                if (boardScreen.drawArmed) {
-                    boardScreen.backendSender({type: "DrawAction", accept: true})
-                    boardScreen.drawArmed = false
-                    boardScreen.showGameActions = false
-                } else {
-                    boardScreen.drawArmed = true
-                }
+            onConfirmed: {
+                boardScreen.backendSender({type: "DrawAction", accept: true})
+                boardScreen.showGameActions = false
             }
-        }
-        AppButton {
-            width: parent.width
-            text: "Cancel draw confirmation"
-            visible: !boardScreen.gameOver && boardScreen.drawArmed
-            onClicked: boardScreen.drawArmed = false
         }
         Text {
             width: parent.width
@@ -1145,12 +1136,30 @@ Rectangle {
             }
         }
 
-        AppButton {
+        ConfirmAction {
+            id: abortAction
             width: parent.width
-            text: "Abort"
+            actionText: "Abort"
+            confirmText: "Confirm abort"
+            cancelText: "Cancel abort"
             visible: !boardScreen.gameOver && boardScreen.canAbort
-            onClicked: {
+            onConfirmed: {
                 boardScreen.backendSender({type: "Abort"})
+                boardScreen.showGameActions = false
+            }
+        }
+        ConfirmAction {
+            id: berserkAction
+            width: parent.width
+            actionText: "Berserk (halve clock)"
+            confirmText: "Confirm Berserk"
+            cancelText: "Cancel Berserk"
+            busyText: "Berserk requested"
+            busy: boardScreen.berserkPending
+            visible: !boardScreen.gameOver && boardScreen.canBerserk
+            onConfirmed: {
+                boardScreen.backendSender({type: "Berserk"})
+                boardScreen.berserkPending = true
                 boardScreen.showGameActions = false
             }
         }
@@ -1222,25 +1231,17 @@ Rectangle {
             }
         }
 
-        AppButton {
+        ConfirmAction {
+            id: resignAction
             width: parent.width
-            text: boardScreen.resignArmed ? "Confirm resignation" : "Resign"
+            actionText: "Resign"
+            confirmText: "Confirm resignation"
+            cancelText: "Cancel resignation"
             visible: !boardScreen.gameOver && !boardScreen.canAbort
-            onClicked: {
-                if (boardScreen.resignArmed) {
-                    boardScreen.backendSender({type: "Resign"})
-                    boardScreen.resignArmed = false
-                    boardScreen.showGameActions = false
-                } else {
-                    boardScreen.resignArmed = true
-                }
+            onConfirmed: {
+                boardScreen.backendSender({type: "Resign"})
+                boardScreen.showGameActions = false
             }
-        }
-        AppButton {
-            width: parent.width
-            text: "Cancel resignation"
-            visible: !boardScreen.gameOver && boardScreen.resignArmed
-            onClicked: boardScreen.resignArmed = false
         }
         AppButton {
             width: parent.width
@@ -1459,11 +1460,12 @@ Rectangle {
             boardScreen.drawOfferedByYou = msg.draw_offered_by_you || false
             boardScreen.takebackOfferedByYou = msg.takeback_offered_by_you || false
             boardScreen.canAbort = msg.can_abort || false
+            boardScreen.canBerserk = msg.can_berserk || false
             boardScreen.canOfferDraw = msg.can_offer_draw || false
             boardScreen.canOfferTakeback = msg.can_offer_takeback || false
             boardScreen.canGiveTime = msg.can_give_time || false
             boardScreen.canChat = msg.can_chat || false
-            if (!boardScreen.canOfferDraw) boardScreen.drawArmed = false
+            if (!boardScreen.canOfferDraw) drawOfferAction.reset()
             boardScreen.moveHistory = msg.move_history || []
             boardScreen.capturedByWhite = msg.captured_by_white || []
             boardScreen.capturedByBlack = msg.captured_by_black || []
@@ -1473,7 +1475,9 @@ Rectangle {
             boardScreen.firstMoveTimeMs = msg.first_move_time_ms !== undefined
                 ? msg.first_move_time_ms
                 : null
-            boardScreen.resignArmed = false
+            resignAction.reset()
+            abortAction.reset()
+            berserkAction.reset()
             // A RatingDiff for a previous game that never got consumed (its
             // own GameOver never arrived on this screen, e.g. after a
             // Back-to-Home-and-Resume round trip) must not bleed into this
@@ -1519,7 +1523,10 @@ Rectangle {
             boardScreen.pendingPromotion = null
             boardScreen.pendingMoveConfirmation = null
             boardScreen.pendingPremove = null
-            boardScreen.resignArmed = false
+            resignAction.reset()
+            abortAction.reset()
+            berserkAction.reset()
+            boardScreen.berserkPending = false
             boardScreen.statusText = "Game over: " + outcome +
                 (msg.reason && msg.reason.length > 0 ? " (" + msg.reason + ")" : "")
             if (boardScreen.pendingRatingDiffText.length > 0) {
@@ -1533,6 +1540,11 @@ Rectangle {
             } else {
                 boardScreen.pendingRatingDiffText = diffText
             }
+        } else if (msg.type === "Berserked") {
+            boardScreen.canBerserk = false
+            berserkAction.reset()
+            boardScreen.berserkPending = false
+            boardScreen.statusText = "Berserk activated"
         } else if (msg.type === "MoveRejected") {
             boardScreen.statusText = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""
@@ -1553,6 +1565,7 @@ Rectangle {
             // possible") only ever reached main.qml's console.warn -- invisible
             // to an actual player on-device.
             boardScreen.statusText = msg.message
+            boardScreen.berserkPending = false
         }
     }
 }

@@ -245,7 +245,7 @@ Rectangle {
                 }
             } else if (msg.type === "Reconnecting" || msg.type === "OpponentGone" ||
                        msg.type === "ChatMessage" || msg.type === "ChatHistory" ||
-                       msg.type === "RatingDiff") {
+                       msg.type === "RatingDiff" || msg.type === "Berserked") {
                 // Deliberately never navigates on its own (confirmed via the PC
                 // emulator: a bare Reconnecting with no real game yet threw the
                 // user onto a genuinely empty, un-escapable Board screen). Only

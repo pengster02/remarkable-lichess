@@ -26,6 +26,7 @@ pub struct GameSession {
     pub game_description: String,
     pub rated: bool,
     pub is_tournament: bool,
+    pub berserked: bool,
     pub opponent_is_human: bool,
     pub state: GameState,
     // Each side's starting allotment in ms, from GameFull.clock.initial -- fixed
@@ -138,6 +139,11 @@ fn to_board_state(session: &GameSession, state: &GameState, now: Instant) -> Bac
     let draw_by_you = draw_offered_by_you(state, &session.your_color);
     let takeback_by_you = takeback_offered_by_you(state, &session.your_color);
     let has_played_full_move = move_count >= 2;
+    let has_moved = if session.your_color == "black" {
+        move_count >= 2
+    } else {
+        move_count >= 1
+    };
     let elapsed_ms = elapsed_whole_millis(session.state_received_at, now);
     let mut white_time_ms = state.wtime;
     let mut black_time_ms = state.btime;
@@ -169,6 +175,7 @@ fn to_board_state(session: &GameSession, state: &GameState, now: Instant) -> Bac
         draw_offered_by_you: draw_by_you,
         takeback_offered_by_you: takeback_by_you,
         can_abort: move_count < 2 && !session.is_tournament,
+        can_berserk: session.is_tournament && !session.berserked && !has_moved,
         can_offer_draw: has_played_full_move
             && session.opponent_is_human
             && !draw_by_you
@@ -233,6 +240,7 @@ impl GameSession {
             game_description: game_description(full),
             rated: full.rated,
             is_tournament: full.tournament_id.is_some(),
+            berserked: false,
             opponent_is_human: opp.ai_level.is_none() && opp.id.is_some(),
             state: full.state.clone(),
             initial_clock_ms: full.clock.as_ref().map(|c| c.initial),
@@ -244,6 +252,10 @@ impl GameSession {
 
     pub fn board_state(&self) -> BackendMessage {
         self.board_state_at(Instant::now())
+    }
+
+    pub fn mark_berserked(&mut self) {
+        self.berserked = true;
     }
 
     fn board_state_at(&self, now: Instant) -> BackendMessage {
@@ -741,6 +753,37 @@ mod tests {
                 assert!(can_offer_draw);
                 assert!(can_offer_takeback);
             }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn berserk_is_available_until_the_local_players_first_move() {
+        let mut full = sample_full("");
+        full.tournament_id = Some("arena-id".into());
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { can_berserk, .. } => assert!(can_berserk),
+            _ => panic!("expected BoardState"),
+        }
+
+        let mut full = sample_full("e2e4");
+        full.tournament_id = Some("arena-id".into());
+        let (_session, white_msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let (mut black_session, black_msg) =
+            GameSession::from_game_full(&full, "opponent-id").unwrap();
+        match white_msg {
+            BackendMessage::BoardState { can_berserk, .. } => assert!(!can_berserk),
+            _ => panic!("expected BoardState"),
+        }
+        match black_msg {
+            BackendMessage::BoardState { can_berserk, .. } => assert!(can_berserk),
+            _ => panic!("expected BoardState"),
+        }
+
+        black_session.mark_berserked();
+        match black_session.board_state() {
+            BackendMessage::BoardState { can_berserk, .. } => assert!(!can_berserk),
             _ => panic!("expected BoardState"),
         }
     }

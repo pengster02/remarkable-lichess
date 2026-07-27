@@ -34,7 +34,7 @@ The current UI supports:
 | Live board | `frontend/ui/BoardScreen.qml` | Game interaction and live-game actions |
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
 | Visual system | `frontend/ui/Theme.qml` | E-ink colors, typography, spacing, and touch sizes |
-| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, overlays, move tokens, promotion choices, and inputs |
+| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, move tokens, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
 | Backend router | `backend/src/backend_app.rs` | Dispatches frontend requests and backend events |
 | Live chess state | `backend/src/game/session.rs` | Lichess game stream and authoritative board state |
@@ -114,6 +114,15 @@ docker exec remarkable-lichess-local sh -lc \
    --signal disable --required disable --alias disable frontend/ui/*.qml'
 ```
 
+Shared QML interaction tests:
+
+```bash
+docker exec remarkable-lichess-local sh -lc \
+  'cd /workspace/remarkable-lichess &&
+   QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner \
+   -input frontend/tests -import frontend/ui'
+```
+
 Always also run:
 
 ```bash
@@ -136,7 +145,9 @@ Minimum emulator smoke test:
    and opponent-left claim actions.
 9. Open Actions, Moves, Chat (human games), move confirmation, and review Menu;
    verify each shared in-canvas dialog fits and scrolls.
-10. Check both light and dark modes.
+10. In an eligible arena game, verify Berserk requires confirmation and
+    disappears after success or the local player's first move.
+11. Check both light and dark modes.
 
 ## UI rules that matter
 
@@ -150,13 +161,16 @@ Minimum emulator smoke test:
 - Overlays use `AppDialog`, promotion uses `PromotionDialog`, and live/review
   notation uses `MoveTokenButton`. Extend these components instead of creating
   screen-local popup or button styles.
+- Abort, draw offer, resignation, and Berserk use `ConfirmAction`; keep their
+  confirmation and cancel behavior shared instead of duplicating armed-state
+  button pairs.
 - Move notation is directly tappable and automatically reveals the current move.
 - Clock chips use a fixed shared width so both player bars remain aligned when
   a clock changes from two-digit to one-digit minutes.
 - Use tap and drag. `Theme.boardDragThreshold` prevents pen jitter from becoming
   an accidental drag.
 - Action visibility comes from backend-derived `BoardState` flags. Do not infer
-  abort, draw, takeback, or time-gift eligibility independently in QML.
+  abort, Berserk, draw, takeback, or time-gift eligibility independently in QML.
 - Cached `GameSession::board_state` advances the active clock from the last
   stream snapshot. Keep that correction when changing Resume behavior; stream
   clocks update on game events, not once per second.
