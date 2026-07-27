@@ -30,14 +30,11 @@ Rectangle {
     property var legalMoves: []
     property string selectedSquare: ""
     property string statusText: ""
-    // Forces a black frame over the board on every move (see the Timer and
-    // the Rectangle over the Grid) -- Content alone still ghosted on
-    // low-contrast transitions (a black piece leaving a dark square).
-    property bool flashBoard: false
+    property var flashSquares: []
     Timer {
         id: boardFlashTimer
         interval: 90
-        onTriggered: boardScreen.flashBoard = false
+        onTriggered: boardScreen.flashSquares = []
     }
     // Which color the local account is playing -- flips board orientation below.
     // Every reference client (lichess's own official board package included)
@@ -51,6 +48,12 @@ Rectangle {
     property bool inCheck: false
     property bool drawOfferedByOpponent: false
     property bool takebackOfferedByOpponent: false
+    property bool drawOfferedByYou: false
+    property bool takebackOfferedByYou: false
+    property bool canAbort: false
+    property bool canOfferDraw: false
+    property bool canOfferTakeback: false
+    property bool canGiveTime: false
     // Set from the backend's OpponentGone message. Lichess's claim-victory
     // endpoint remains authoritative and rejects an early claim.
     property bool opponentGone: false
@@ -65,6 +68,7 @@ Rectangle {
     property var pendingPromotion: null
     // Two-tap confirm so a single mistaken tap can't resign the game outright.
     property bool resignArmed: false
+    property bool drawArmed: false
     // Set when RatingDiff arrives before GameOver does -- the per-game
     // stream's terminal GameState (driving GameOver) and the account
     // stream's gameFinish (driving RatingDiff) are two independent signals
@@ -286,18 +290,24 @@ Rectangle {
     // to move's own king -- you can't end your move still in check). Iterates a
     // fixed absolute a1..h8 sweep rather than the display-order filesRanks(), since
     // square *names* don't depend on board orientation, only where they're drawn.
-    function checkedKingSquare() {
-        if (!boardScreen.inCheck || boardScreen.viewingHistory) return ""
-        var kingChar = boardScreen.turn === "white" ? "K" : "k"
+    function checkedKingSquareFor(fen, turn, inCheck) {
+        if (!inCheck) return ""
+        var map = boardScreen.buildPieceMap(fen)
+        var kingChar = turn === "white" ? "K" : "k"
         var files = ["a","b","c","d","e","f","g","h"]
         var ranks = ["1","2","3","4","5","6","7","8"]
         for (var r = 0; r < ranks.length; r++) {
             for (var f = 0; f < files.length; f++) {
                 var sq = files[f] + ranks[r]
-                if (boardScreen.pieceAt(sq) === kingChar) return sq
+                if ((map[sq] || "") === kingChar) return sq
             }
         }
         return ""
+    }
+
+    function checkedKingSquare() {
+        if (boardScreen.viewingHistory) return ""
+        return boardScreen.checkedKingSquareFor(boardScreen.fen, boardScreen.turn, boardScreen.inCheck)
     }
 
     // Cached once per redraw instead of recomputed by each of the 64 squares'
@@ -381,8 +391,15 @@ Rectangle {
 
     function changedSquaresForHistory() {
         if (!boardScreen.viewingHistory || boardScreen.historyIndex <= 0) return []
-        var previous = boardScreen.buildPieceMap(boardScreen.positionHistory[boardScreen.historyIndex - 1])
-        var current = boardScreen.pieceMap
+        return boardScreen.changedSquaresBetweenFens(
+            boardScreen.positionHistory[boardScreen.historyIndex - 1],
+            boardScreen.fen
+        )
+    }
+
+    function changedSquaresBetweenFens(previousFen, currentFen) {
+        var previous = boardScreen.buildPieceMap(previousFen)
+        var current = boardScreen.buildPieceMap(currentFen)
         var files = ["a","b","c","d","e","f","g","h"]
         var ranks = ["1","2","3","4","5","6","7","8"]
         var out = []
@@ -393,6 +410,32 @@ Rectangle {
             }
         }
         return out
+    }
+
+    function addRefreshSquare(squares, squareName) {
+        if (squareName && squares.indexOf(squareName) === -1) squares.push(squareName)
+    }
+
+    function mergeChatHistory(messages) {
+        var history = []
+        for (var i = 0; i < messages.length; i++) {
+            history.push(messages[i].username + ": " + messages[i].text)
+        }
+        var overlap = Math.min(history.length, boardScreen.chatMessages.length)
+        while (overlap > 0) {
+            var matches = true
+            for (var j = 0; j < overlap; j++) {
+                if (history[history.length - overlap + j] !== boardScreen.chatMessages[j]) {
+                    matches = false
+                    break
+                }
+            }
+            if (matches) break
+            overlap -= 1
+        }
+        boardScreen.chatMessages = history
+            .concat(boardScreen.chatMessages.slice(overlap))
+            .slice(-50)
     }
 
     // Deliberately keyed by the square name's own characters against
@@ -708,6 +751,7 @@ Rectangle {
                                 boardScreen.pendingPremove.from === squareName
                             isPremoveDestination: boardScreen.pendingPremove !== null &&
                                 boardScreen.pendingPremove.to === squareName
+                            flashRefresh: boardScreen.flashSquares.indexOf(squareName) !== -1
                         }
                     }
                 }
@@ -829,13 +873,6 @@ Rectangle {
                     }
                 }
 
-                // Forces the black-flash ghosting fix (see flashBoard's own
-                // comment) -- sits on top of the Grid, briefly opaque black.
-                Rectangle {
-                    anchors.fill: parent
-                    color: "black"
-                    visible: boardScreen.flashBoard
-                }
             }
         }
 
@@ -976,14 +1013,35 @@ Rectangle {
             spacing: theme.spacingSmall
 
             AppButton {
-                text: boardScreen.drawOfferedByOpponent ? "Accept draw" : "Offer draw"
-                visible: !boardScreen.gameOver
-                onClicked: boardScreen.backendSender({type: "DrawAction", accept: true})
+                text: boardScreen.drawOfferedByOpponent
+                    ? "Accept draw"
+                    : (boardScreen.drawArmed ? "Confirm draw offer" : "Offer draw")
+                visible: !boardScreen.gameOver &&
+                    (boardScreen.drawOfferedByOpponent || boardScreen.canOfferDraw)
+                onClicked: {
+                    if (boardScreen.drawOfferedByOpponent || boardScreen.drawArmed) {
+                        boardScreen.backendSender({type: "DrawAction", accept: true})
+                        boardScreen.drawArmed = false
+                    } else {
+                        boardScreen.drawArmed = true
+                    }
+                }
             }
             AppButton {
                 text: "Decline draw"
                 visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
                 onClicked: boardScreen.backendSender({type: "DrawAction", accept: false})
+            }
+            AppButton {
+                text: "Cancel"
+                visible: !boardScreen.gameOver && boardScreen.drawArmed
+                onClicked: boardScreen.drawArmed = false
+            }
+            Text {
+                text: "Draw offer sent"
+                visible: !boardScreen.gameOver && boardScreen.drawOfferedByYou
+                font.pixelSize: theme.fontSmall
+                color: theme.textMuted
             }
         }
 
@@ -993,12 +1051,18 @@ Rectangle {
 
             AppButton {
                 text: boardScreen.takebackOfferedByOpponent ? "Accept takeback" : "Offer takeback"
-                visible: !boardScreen.gameOver
+                visible: !boardScreen.gameOver &&
+                    (boardScreen.takebackOfferedByOpponent || boardScreen.canOfferTakeback)
                 onClicked: boardScreen.backendSender({type: "TakebackAction", accept: true})
             }
             AppButton {
                 text: "Decline takeback"
                 visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
+                onClicked: boardScreen.backendSender({type: "TakebackAction", accept: false})
+            }
+            AppButton {
+                text: "Cancel takeback offer"
+                visible: !boardScreen.gameOver && boardScreen.takebackOfferedByYou
                 onClicked: boardScreen.backendSender({type: "TakebackAction", accept: false})
             }
         }
@@ -1007,14 +1071,16 @@ Rectangle {
             width: parent.width
             spacing: theme.spacingSmall
 
-            // Lichess itself is the authority on whether an abort is still legal
-            // (before either side's first move) -- lastMove is just a cheap,
-            // already-available client-side hint to hide the button once it
-            // clearly no longer applies, not a full replication of that rule.
             AppButton {
                 text: "Abort"
-                visible: !boardScreen.gameOver && boardScreen.lastMove === null
+                visible: !boardScreen.gameOver && boardScreen.canAbort
                 onClicked: boardScreen.backendSender({type: "Abort"})
+            }
+
+            AppButton {
+                text: "Give opponent 15s"
+                visible: !boardScreen.gameOver && boardScreen.canGiveTime
+                onClicked: boardScreen.backendSender({type: "AddTime", seconds: 15})
             }
 
             AppButton {
@@ -1025,7 +1091,7 @@ Rectangle {
 
             AppButton {
                 text: "Claim draw"
-                visible: !boardScreen.gameOver
+                visible: !boardScreen.gameOver && boardScreen.opponentGone
                 onClicked: boardScreen.backendSender({type: "ClaimDraw"})
             }
 
@@ -1054,7 +1120,7 @@ Rectangle {
 
             AppButton {
                 text: boardScreen.resignArmed ? "Confirm resignation" : "Resign"
-                visible: !boardScreen.gameOver
+                visible: !boardScreen.gameOver && !boardScreen.canAbort
                 onClicked: {
                     if (boardScreen.resignArmed) {
                         boardScreen.backendSender({type: "Resign"})
@@ -1265,7 +1331,22 @@ Rectangle {
             var positionChanged = boardScreen.liveFen !== msg.fen ||
                 (boardScreen.gameId.length > 0 && boardScreen.gameId !== (msg.game_id || ""))
             if (boardScreen.liveFen !== "" && positionChanged) {
-                boardScreen.flashBoard = true
+                var refreshSquares = boardScreen.changedSquaresBetweenFens(boardScreen.liveFen, msg.fen)
+                if (boardScreen.lastMove !== null) {
+                    boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[0])
+                    boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[1])
+                }
+                var nextLastMove = msg.last_move || null
+                if (nextLastMove !== null) {
+                    boardScreen.addRefreshSquare(refreshSquares, nextLastMove[0])
+                    boardScreen.addRefreshSquare(refreshSquares, nextLastMove[1])
+                }
+                boardScreen.addRefreshSquare(refreshSquares, boardScreen.checkedSquare)
+                boardScreen.addRefreshSquare(
+                    refreshSquares,
+                    boardScreen.checkedKingSquareFor(msg.fen, msg.turn, msg.in_check || false)
+                )
+                boardScreen.flashSquares = refreshSquares
                 boardFlashTimer.restart()
             }
             if (positionChanged) boardScreen.clearAnnotations()
@@ -1286,6 +1367,13 @@ Rectangle {
             boardScreen.yourColor = msg.your_color || "white"
             boardScreen.drawOfferedByOpponent = msg.draw_offered_by_opponent || false
             boardScreen.takebackOfferedByOpponent = msg.takeback_offered_by_opponent || false
+            boardScreen.drawOfferedByYou = msg.draw_offered_by_you || false
+            boardScreen.takebackOfferedByYou = msg.takeback_offered_by_you || false
+            boardScreen.canAbort = msg.can_abort || false
+            boardScreen.canOfferDraw = msg.can_offer_draw || false
+            boardScreen.canOfferTakeback = msg.can_offer_takeback || false
+            boardScreen.canGiveTime = msg.can_give_time || false
+            if (!boardScreen.canOfferDraw) boardScreen.drawArmed = false
             boardScreen.moveHistory = msg.move_history || []
             boardScreen.capturedByWhite = msg.captured_by_white || []
             boardScreen.capturedByBlack = msg.captured_by_black || []
@@ -1364,6 +1452,8 @@ Rectangle {
             // correspondence-length) game's entire chat history -- unbounded
             // otherwise, and nothing here ever needs more than recent context.
             boardScreen.chatMessages = boardScreen.chatMessages.concat([msg.username + ": " + msg.text]).slice(-50)
+        } else if (msg.type === "ChatHistory") {
+            boardScreen.mergeChatHistory(msg.messages || [])
         } else if (msg.type === "ErrorMsg") {
             // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
             // possible") only ever reached main.qml's console.warn -- invisible

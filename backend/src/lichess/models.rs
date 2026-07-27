@@ -117,6 +117,8 @@ pub struct Player {
 pub struct GameFull {
     pub id: String,
     pub rated: bool,
+    #[serde(rename = "tournamentId")]
+    pub tournament_id: Option<String>,
     #[serde(rename = "initialFen")]
     pub initial_fen: String,
     pub clock: Option<Clock>,
@@ -134,10 +136,16 @@ pub struct ChatLine {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct PlayerChatLine {
+    pub user: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum GameStreamMessage {
     #[serde(rename = "gameFull")]
-    Full(GameFull),
+    Full(Box<GameFull>),
     #[serde(rename = "gameState")]
     State(GameState),
     #[serde(rename = "opponentGone")]

@@ -22,6 +22,10 @@ pub struct GameSession {
     // from gameFull, not re-derived on every gameState update.
     pub opponent_name: Option<String>,
     pub opponent_rating: Option<u32>,
+    pub rated: bool,
+    pub is_tournament: bool,
+    pub opponent_is_human: bool,
+    pub state: GameState,
     // Each side's starting allotment in ms, from GameFull.clock.initial -- fixed
     // for the game's lifetime like opponent_name/opponent_rating above, unlike
     // the live wtime/btime GameState carries every update. Needed (not just the
@@ -71,8 +75,22 @@ fn takeback_offered_by_opponent(state: &GameState, your_color: &str) -> bool {
     if your_color == "black" { state.wtakeback } else { state.btakeback }
 }
 
+fn draw_offered_by_you(state: &GameState, your_color: &str) -> bool {
+    if your_color == "black" { state.bdraw } else { state.wdraw }
+}
+
+fn takeback_offered_by_you(state: &GameState, your_color: &str) -> bool {
+    if your_color == "black" { state.btakeback } else { state.wtakeback }
+}
+
 fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
     use shakmaty::Position;
+    let move_count = state.moves.split_whitespace().count();
+    let draw_by_opponent = draw_offered_by_opponent(state, &session.your_color);
+    let takeback_by_opponent = takeback_offered_by_opponent(state, &session.your_color);
+    let draw_by_you = draw_offered_by_you(state, &session.your_color);
+    let takeback_by_you = takeback_offered_by_you(state, &session.your_color);
+    let has_played_full_move = move_count >= 2;
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
         fen: shakmaty::fen::Fen::from_position(&session.position, shakmaty::EnPassantMode::Legal)
@@ -84,8 +102,25 @@ fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
         last_move: session.last_move.clone(),
         your_color: session.your_color.clone(),
         in_check: session.position.is_check(),
-        draw_offered_by_opponent: draw_offered_by_opponent(state, &session.your_color),
-        takeback_offered_by_opponent: takeback_offered_by_opponent(state, &session.your_color),
+        draw_offered_by_opponent: draw_by_opponent,
+        takeback_offered_by_opponent: takeback_by_opponent,
+        draw_offered_by_you: draw_by_you,
+        takeback_offered_by_you: takeback_by_you,
+        can_abort: move_count < 2 && !session.is_tournament,
+        can_offer_draw: has_played_full_move
+            && session.opponent_is_human
+            && !draw_by_you
+            && !draw_by_opponent,
+        can_offer_takeback: has_played_full_move
+            && !session.rated
+            && !session.is_tournament
+            && session.opponent_is_human
+            && !takeback_by_you
+            && !takeback_by_opponent,
+        can_give_time: !session.rated
+            && !session.is_tournament
+            && session.opponent_is_human
+            && session.initial_clock_ms.is_some(),
         move_history: session.move_history.clone().into_boxed_slice(),
         position_history: session.position_history.clone().into_boxed_slice(),
         captured_by_white: session.captured_by_white.clone().into_boxed_slice(),
@@ -125,10 +160,18 @@ impl GameSession {
             captured_by_black: replay.captured_by_black,
             opponent_name: opp.name.clone(),
             opponent_rating: opp.rating,
+            rated: full.rated,
+            is_tournament: full.tournament_id.is_some(),
+            opponent_is_human: opp.id.is_some(),
+            state: full.state.clone(),
             initial_clock_ms: full.clock.as_ref().map(|c| c.initial),
         };
-        let msg = to_board_state(&session, &full.state);
+        let msg = session.board_state();
         Ok((session, msg))
+    }
+
+    pub fn board_state(&self) -> BackendMessage {
+        to_board_state(self, &self.state)
     }
 
     pub fn apply_state_update(&mut self, state: &GameState) -> anyhow::Result<BackendMessage> {
@@ -140,7 +183,8 @@ impl GameSession {
         self.captured_by_black = replay.captured_by_black;
         self.legal = legal_moves(&self.position);
         self.last_move = last_move_from_uci_list(&state.moves);
-        Ok(to_board_state(self, state))
+        self.state = state.clone();
+        Ok(self.board_state())
     }
 
     /// Returns the UCI string to submit to Lichess, or a MoveRejected message
@@ -447,7 +491,16 @@ mod tests {
         .unwrap();
         let msg = session.apply_state_update(&state).unwrap();
         match msg {
-            BackendMessage::BoardState { draw_offered_by_opponent, .. } => assert!(!draw_offered_by_opponent),
+            BackendMessage::BoardState {
+                draw_offered_by_opponent,
+                draw_offered_by_you,
+                can_offer_draw,
+                ..
+            } => {
+                assert!(!draw_offered_by_opponent);
+                assert!(draw_offered_by_you);
+                assert!(!can_offer_draw);
+            }
             _ => panic!("expected BoardState"),
         }
     }
@@ -466,6 +519,98 @@ mod tests {
         let msg = session.apply_state_update(&state).unwrap();
         match msg {
             BackendMessage::BoardState { takeback_offered_by_opponent, .. } => assert!(takeback_offered_by_opponent),
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn action_availability_tracks_move_count_and_game_kind() {
+        let full = sample_full("e2e4");
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState {
+                can_abort,
+                can_offer_draw,
+                can_offer_takeback,
+                can_give_time,
+                ..
+            } => {
+                assert!(can_abort);
+                assert!(!can_offer_draw);
+                assert!(!can_offer_takeback);
+                assert!(can_give_time);
+            }
+            _ => panic!("expected BoardState"),
+        }
+
+        let full = sample_full("e2e4 e7e5");
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState {
+                can_abort,
+                can_offer_draw,
+                can_offer_takeback,
+                ..
+            } => {
+                assert!(!can_abort);
+                assert!(can_offer_draw);
+                assert!(can_offer_takeback);
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn cached_board_state_tracks_the_latest_stream_update() {
+        let full = sample_full("");
+        let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let state: GameState = serde_json::from_value(serde_json::json!({
+            "moves": "e2e4", "wtime": 598000, "btime": 600000, "winc": 0, "binc": 0,
+            "status": "started", "winner": null
+        }))
+        .unwrap();
+        session.apply_state_update(&state).unwrap();
+        match session.board_state() {
+            BackendMessage::BoardState { last_move, white_time_ms, turn, .. } => {
+                assert_eq!(last_move, Some(("e2".into(), "e4".into())));
+                assert_eq!(white_time_ms, 598_000);
+                assert_eq!(turn, "black");
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn rated_games_hide_takeback_and_time_gifts() {
+        let mut full = sample_full("e2e4 e7e5");
+        full.rated = true;
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { can_offer_takeback, can_give_time, can_offer_draw, .. } => {
+                assert!(!can_offer_takeback);
+                assert!(!can_give_time);
+                assert!(can_offer_draw);
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn ai_games_hide_negotiation_actions() {
+        let mut full = sample_full("e2e4 e7e5");
+        full.black.id = None;
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState {
+                can_offer_draw,
+                can_offer_takeback,
+                can_give_time,
+                ..
+            } => {
+                assert!(!can_offer_draw);
+                assert!(!can_offer_takeback);
+                assert!(!can_give_time);
+            }
             _ => panic!("expected BoardState"),
         }
     }
