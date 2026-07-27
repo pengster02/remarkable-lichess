@@ -15,14 +15,16 @@ The current UI supports:
 
 - token setup, home ratings, ongoing games, seeks, direct/open/AI challenges;
 - live games with tap or drag input, legal targets, premoves, promotion,
-  move confirmation, clocks, player bars, chat, draw/takeback, resign/abort,
-  reconnect and game-over states;
+  move confirmation, clocks, player bars, chat, contract-gated draw/takeback,
+  abort/resign, opponent-left claims, time gifts, reconnect and game-over
+  states;
 - game-history filters and finished-game review;
 - clickable move notation, first/previous/next/last, board flip, annotations,
   a linear candidate-line Explore mode with Undo/Reset, and on-demand cached
   Lichess cloud evaluation with a SAN best line;
-- e-ink-focused sizing, minimal animation, drag hysteresis, and fast clock
-  refresh regions.
+- e-ink-focused sizing, a dark-first high-contrast palette, minimal animation,
+  drag hysteresis, fast clock refresh regions, and changed-square-only board
+  clearing.
 
 ## Read these files first
 
@@ -126,7 +128,13 @@ Minimum emulator smoke test:
 4. Enter Explore, make one tap move and one drag move, Undo, Reset, and Exit.
 5. Start or resume a game and verify orientation, legal targets, promotion,
    premove behavior, clocks, and Back to Home.
-6. Check both light and dark modes.
+6. Verify abort is shown only through the first ply; after both players move,
+   verify draw/takeback availability and that resign replaces abort.
+7. In a casual human clock game, verify Give opponent 15s; confirm it is absent
+   for rated, AI, tournament, and untimed games.
+8. Verify incoming draw/takeback accept and decline, outgoing takeback cancel,
+   and opponent-left claim actions.
+9. Check both light and dark modes.
 
 ## UI rules that matter
 
@@ -137,9 +145,18 @@ Minimum emulator smoke test:
 - Move notation is directly tappable and automatically reveals the current move.
 - Use tap and drag. `Theme.boardDragThreshold` prevents pen jitter from becoming
   an accidental drag.
+- Action visibility comes from backend-derived `BoardState` flags. Do not infer
+  abort, draw, takeback, or time-gift eligibility independently in QML.
 - Keep cosmetic animation out. Explicitly trigger network-heavy analysis panels.
 - Use `DisplayMethodArea.Fast` only for frequently changing regions such as
   clocks; the PC emulator does not reproduce real e-ink waveform behavior.
+- Import AppLoad's `DisplayMethodArea` through its embedded
+  `qrc:/qt/qml/net/asivery/ApploadUtils` directory. The URI-style module import
+  can pass lint yet fail when the PC emulator has not registered that import
+  path.
+- Piece changes briefly clear only the affected squares. Do not restore the
+  former full-board black flash without real-device evidence that localized
+  clearing is insufficient.
 - Avoid Qt `Popup` for app overlays. AppLoad's host scaling can place it outside
   the scaled canvas. Use an in-canvas, high-`z` `Item` overlay instead.
 - Keep navigation centralized through `main.qml`. Background game-stream events

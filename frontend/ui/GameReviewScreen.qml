@@ -33,12 +33,30 @@ Rectangle {
     // the final position. Deliberately independent of `moves`' own indexing
     // (off by one from it) rather than tracking a "current ply" separately.
     property int currentIndex: 0
-    // Same black-flash ghosting fix as BoardScreen's own flashBoard -- a
-    // low-contrast piece transition (e.g. a black piece leaving a dark
-    // square) can leave a ghost behind at Content-quality alone.
-    property bool flashBoard: false
+    property var flashSquares: []
+    property string lastRenderedFen: ""
+    property var lastRenderedHighlights: []
+    onFensChanged: {
+        gameReviewScreen.lastRenderedFen = gameReviewScreen.currentFen()
+        gameReviewScreen.lastRenderedHighlights = []
+    }
     onCurrentIndexChanged: {
-        gameReviewScreen.flashBoard = true
+        var nextFen = gameReviewScreen.currentFen()
+        var refreshSquares = gameReviewScreen.changedSquaresBetweenFens(
+            gameReviewScreen.lastRenderedFen,
+            nextFen
+        )
+        var nextHighlights = gameReviewScreen.currentIndex > 0
+            ? gameReviewScreen.changedSquaresBetweenFens(
+                gameReviewScreen.fens[gameReviewScreen.currentIndex - 1],
+                nextFen
+            )
+            : []
+        gameReviewScreen.appendUniqueSquares(refreshSquares, gameReviewScreen.lastRenderedHighlights)
+        gameReviewScreen.appendUniqueSquares(refreshSquares, nextHighlights)
+        gameReviewScreen.flashSquares = refreshSquares
+        gameReviewScreen.lastRenderedFen = nextFen
+        gameReviewScreen.lastRenderedHighlights = nextHighlights
         boardFlashTimer.restart()
         Qt.callLater(function() { moveList.revealCurrentMove() })
         if (gameReviewScreen.exploreMode) gameReviewScreen.rebaseExploration()
@@ -46,7 +64,7 @@ Rectangle {
     Timer {
         id: boardFlashTimer
         interval: 90
-        onTriggered: gameReviewScreen.flashBoard = false
+        onTriggered: gameReviewScreen.flashSquares = []
     }
     // Same flip-for-black-at-bottom convenience as BoardScreen's own manualFlip,
     // just with no yourColor to XOR against here -- a finished game has no
@@ -123,6 +141,28 @@ Rectangle {
             }
         }
         return map
+    }
+
+    function changedSquaresBetweenFens(previousFen, currentFen) {
+        if (previousFen === "" || currentFen === "") return []
+        var previous = gameReviewScreen.buildPieceMap(previousFen)
+        var current = gameReviewScreen.buildPieceMap(currentFen)
+        var files = ["a","b","c","d","e","f","g","h"]
+        var ranks = ["1","2","3","4","5","6","7","8"]
+        var changed = []
+        for (var r = 0; r < ranks.length; r++) {
+            for (var f = 0; f < files.length; f++) {
+                var squareName = files[f] + ranks[r]
+                if ((previous[squareName] || "") !== (current[squareName] || "")) changed.push(squareName)
+            }
+        }
+        return changed
+    }
+
+    function appendUniqueSquares(target, additions) {
+        for (var i = 0; i < additions.length; i++) {
+            if (target.indexOf(additions[i]) === -1) target.push(additions[i])
+        }
     }
 
     property var currentPieceMap: gameReviewScreen.buildPieceMap(gameReviewScreen.currentFen())
@@ -694,6 +734,7 @@ Rectangle {
                             gameReviewScreen.selectedDestinations.indexOf(squareName) !== -1
                         isLastMove: gameReviewScreen.lastMoveSquaresCached.indexOf(squareName) !== -1
                         isCheckSquare: squareName === gameReviewScreen.checkedSquare
+                        flashRefresh: gameReviewScreen.flashSquares.indexOf(squareName) !== -1
                     }
                 }
             }
@@ -723,11 +764,6 @@ Rectangle {
                 onCanceled: pressSquare = ""
             }
 
-            Rectangle {
-                anchors.fill: parent
-                color: "black"
-                visible: gameReviewScreen.flashBoard
-            }
             }
         }
 

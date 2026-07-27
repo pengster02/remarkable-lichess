@@ -32,6 +32,38 @@ expensive analysis or data panels explicitly user-triggered.
   return navigation in the live AppLoad emulator.
 - Added an explicit cloud-evaluation action to review. Results are cached per
   position, show depth and a SAN best line, and never poll in the background.
+- Made the dark, higher-ink palette the default while retaining the light-mode
+  toggle.
+- Replaced the full-board black clearing frame with a short black clear on only
+  squares whose piece occupancy or move/check highlight changed. This covers
+  ordinary moves, castling, captures, en passant, and retired highlights
+  without refreshing all 64 squares.
+- Aligned live action visibility with the official stream and endpoint
+  contracts: abort through the first ply, resign after that, draw/takeback only
+  after a full move and only for eligible human games, opponent-left claims
+  only after an `opponentGone` event, and outgoing takeback cancellation.
+- Added the documented 15-second opponent time gift for eligible casual human
+  clock games. The backend enforces the endpoint's 5–60 second range.
+- Made Resume immediately replay the cached board state when its game stream is
+  already attached, and restore existing player-room chat through the Board
+  chat GET endpoint.
+
+## Live action contract
+
+| Action | UI rule | API behavior |
+| --- | --- | --- |
+| Abort | Before both players have moved; hidden in tournaments | Board abort endpoint remains authoritative |
+| Resign | Replaces Abort after the opening full move | Two-tap confirmation |
+| Offer draw | After one full move, against a human, with no active offer | `draw/true`; incoming offers expose Accept/Decline |
+| Takeback | Casual non-tournament human games after one full move | `takeback/true`; outgoing offers can be cancelled |
+| Give time | Casual non-tournament human clock games | Challenge endpoint, fixed at 15 seconds in the UI |
+| Claim victory/draw | Only while the opponent is reported gone | Server validates whether the claim is mature/legal |
+| Berserk | Not exposed | Arena-only and Board clients cannot join tournament pools |
+| Rematch | Not exposed | No public rematch path exists in the OpenAPI contract |
+
+The Lichess stream is still the source of truth. These rules remove impossible
+or misleading controls; endpoint errors are still surfaced because eligibility
+can change between the latest stream event and the tap.
 
 ## What the current UI already gets right
 
@@ -48,6 +80,8 @@ expensive analysis or data panels explicitly user-triggered.
 | On-demand cached cloud evaluation | Supported |
 | Large, consistent touch targets | Supported |
 | Reduced animation for e-ink | Supported |
+| Contract-gated game actions | Supported |
+| Localized changed-square clearing | Supported |
 
 ## Highest-value features still missing
 
@@ -80,6 +114,11 @@ expensive analysis or data panels explicitly user-triggered.
 - [Lichess mobile variation bar](https://github.com/lichess-org/mobile/blob/main/lib/src/widgets/variations_bar.dart)
 - [Lichess PGN viewer goals](https://github.com/lichess-org/pgn-viewer)
 - [Lichess cloud-eval API](https://github.com/lichess-org/api/blob/master/doc/specs/tags/analysis/api-cloud-eval.yaml)
+- [Lichess Board API paths](https://github.com/lichess-org/api/blob/master/doc/specs/lichess-api.yaml)
+- [Lichess add-time endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/challenges/api-round-gameId-add-time-seconds.yaml)
+- [Lichess Board chat endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-chat.yaml)
+- [Lichess game-state event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameStateEvent.yaml)
+- [Lichess opponent-gone event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/OpponentGoneEvent.yaml)
 - [Chess.com mobile analysis help](https://support.chess.com/en/articles/10473022-how-do-i-use-game-analysis-on-the-app)
 - [AppLoad](https://github.com/asivery/rm-appload)
 - [reMarkable Qt Quick documentation](https://developer.remarkable.com/documentation/qt_epaper)

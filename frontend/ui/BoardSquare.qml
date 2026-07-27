@@ -14,6 +14,7 @@ Rectangle {
     property bool isCheckSquare: false
     property bool isPremoveSource: false
     property bool isPremoveDestination: false
+    property bool flashRefresh: false
     property bool darkMode: false
 
     Theme { id: theme; darkMode: square.darkMode }
@@ -118,5 +119,11 @@ Rectangle {
         rotation: -45
         color: theme.text
         visible: square.isPremoveDestination
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: "black"
+        visible: square.flashRefresh
     }
 }

@@ -5,8 +5,9 @@ use crate::lichess::models::{EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
-    BackendMessage, CloudEvaluationLine, FrontendMessage, GameAnalysisSummary, HistoryGameSummary,
-    MoveAnalysis, OngoingGameSummary, RatingSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
+    BackendMessage, ChatMessageInfo, CloudEvaluationLine, FrontendMessage, GameAnalysisSummary,
+    HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
+    MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
@@ -157,13 +158,42 @@ impl LichessBackend {
     /// happened to be `now_playing.first()` (see ResumeGame's own comment).
     async fn handle_resume_game(&mut self, replier: &BackendReplier<Self>, game_id: String) {
         let Some(client) = self.client.clone() else { return };
-        let already_tracking = self.session.lock().await.as_ref().is_some_and(|s| s.game_id == game_id);
-        if already_tracking {
+        let cached_state = self
+            .session
+            .lock()
+            .await
+            .as_ref()
+            .filter(|session| session.game_id == game_id)
+            .map(GameSession::board_state);
+        if let Some(board_state) = cached_state {
+            self.send(replier, &board_state);
+            self.send_game_chat_history(replier, &client, &game_id).await;
             return;
         }
+        self.send_game_chat_history(replier, &client, &game_id).await;
         let Some(my_id) = self.my_id.clone() else { return };
         let handle = spawn_game_stream(client, game_id, replier.clone(), self.session.clone(), my_id, self.write_lock.clone());
         replace_game_stream_handle(&self.game_stream_handle, handle).await;
+    }
+
+    async fn send_game_chat_history(
+        &self,
+        replier: &BackendReplier<Self>,
+        client: &LichessClient,
+        game_id: &str,
+    ) {
+        match client.get_game_chat(game_id).await {
+            Ok(lines) => self.send(
+                replier,
+                &BackendMessage::ChatHistory {
+                    messages: lines
+                        .into_iter()
+                        .map(|line| ChatMessageInfo { username: line.user, text: line.text })
+                        .collect(),
+                },
+            ),
+            Err(e) => log::warn!("couldn't restore chat for game {game_id}: {e}"),
+        }
     }
 
     async fn handle_request_game_history(
@@ -866,6 +896,17 @@ impl AppLoadBackend for LichessBackend {
                 if let Some(client) = self.client.clone() {
                     if let Some(game_id) = self.current_game_id().await {
                         if let Err(e) = client.abort(&game_id).await {
+                            self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                        }
+                    }
+                }
+            }
+            FrontendMessage::AddTime { seconds } => {
+                if !(5..=60).contains(&seconds) {
+                    self.send(replier, &BackendMessage::ErrorMsg { message: "Time gift must be between 5 and 60 seconds".into() });
+                } else if let Some(client) = self.client.clone() {
+                    if let Some(game_id) = self.current_game_id().await {
+                        if let Err(e) = client.add_time(&game_id, seconds).await {
                             self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
                         }
                     }

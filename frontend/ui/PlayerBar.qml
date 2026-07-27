@@ -1,5 +1,5 @@
 import QtQuick 2.5
-import net.asivery.ApploadUtils
+import "qrc:/qt/qml/net/asivery/ApploadUtils"
 
 // One side's identity + clock, shown as a full-width bar directly above or
 // below the board -- the standard chess-client arrangement (lichess mobile,

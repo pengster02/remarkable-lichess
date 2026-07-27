@@ -41,6 +41,7 @@ pub enum FrontendMessage {
     DrawAction { accept: bool },
     TakebackAction { accept: bool },
     Abort,
+    AddTime { seconds: u32 },
     ClaimVictory,
     ClaimDraw,
     RequestChallenges,
@@ -111,6 +112,12 @@ pub struct ChallengeInfo {
     pub challenger: String,
     pub limit_seconds: Option<u32>,
     pub increment_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ChatMessageInfo {
+    pub username: String,
+    pub text: String,
 }
 
 // One of a real account's rated speed categories (bullet/blitz/rapid/classical/
@@ -237,6 +244,12 @@ pub enum BackendMessage {
         // so the frontend only needs one bool each instead of tracking both colors.
         draw_offered_by_opponent: bool,
         takeback_offered_by_opponent: bool,
+        draw_offered_by_you: bool,
+        takeback_offered_by_you: bool,
+        can_abort: bool,
+        can_offer_draw: bool,
+        can_offer_takeback: bool,
+        can_give_time: bool,
         // SAN per move so far (e.g. "e4", "Nf3", "O-O", "Qxh4#"). Sent in full each
         // time (matching every other field here, all recomputed from Lichess's own
         // always-whole-game `moves` string) -- the frontend just re-renders the same
@@ -271,6 +284,7 @@ pub enum BackendMessage {
     OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
     ChatMessage { username: String, text: String },
+    ChatHistory { messages: Vec<ChatMessageInfo> },
     SettingsState {
         auto_queen_promotion: bool,
         move_confirmation: bool,
@@ -423,6 +437,10 @@ mod tests {
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"Abort"}"#).unwrap(), FrontendMessage::Abort);
         assert_eq!(
+            serde_json::from_str::<FrontendMessage>(r#"{"type":"AddTime","seconds":15}"#).unwrap(),
+            FrontendMessage::AddTime { seconds: 15 }
+        );
+        assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"ClaimVictory"}"#).unwrap(),
             FrontendMessage::ClaimVictory
         );
@@ -565,6 +583,16 @@ mod tests {
     }
 
     #[test]
+    fn chat_history_serializes_with_player_lines() {
+        let msg = BackendMessage::ChatHistory {
+            messages: vec![ChatMessageInfo { username: "alice".into(), text: "gg".into() }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"ChatHistory""#));
+        assert!(json.contains(r#""username":"alice""#));
+    }
+
+    #[test]
     fn backend_message_serializes_with_type_tag() {
         let msg = BackendMessage::BoardState {
             game_id: "g1".into(),
@@ -578,6 +606,12 @@ mod tests {
             in_check: false,
             draw_offered_by_opponent: false,
             takeback_offered_by_opponent: false,
+            draw_offered_by_you: false,
+            takeback_offered_by_you: false,
+            can_abort: true,
+            can_offer_draw: false,
+            can_offer_takeback: false,
+            can_give_time: true,
             move_history: vec![].into_boxed_slice(),
             position_history: vec!["startpos".into()].into_boxed_slice(),
             captured_by_white: vec!["bP".into()].into_boxed_slice(),
