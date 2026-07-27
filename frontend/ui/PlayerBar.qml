@@ -21,6 +21,8 @@ Rectangle {
     property bool lowTime: false
     property int materialAdvantage: 0
     property var capturedPieces: []
+    property string statusText: ""
+    property bool statusEmphasized: false
 
     Theme { id: theme; darkMode: playerBar.darkMode }
     height: theme.playerBarHeight
@@ -57,20 +59,53 @@ Rectangle {
 
         Row {
             height: theme.fontLarge
-            spacing: 2
-            visible: playerBar.capturedPieces.length > 0
+            width: parent.width
+            spacing: theme.spacingXs
+            visible: playerBar.statusText.length > 0 ||
+                playerBar.capturedPieces.length > 0
 
-            Repeater {
-                model: playerBar.capturedPieces
-                Image {
-                    required property string modelData
-                    width: theme.fontLarge
-                    height: width
-                    source: "../assets/pieces/" + modelData + ".png"
-                    fillMode: Image.PreserveAspectFit
-                    smooth: true
-                    sourceSize.width: width
-                    sourceSize.height: height
+            Text {
+                objectName: "playerStatusText"
+                visible: playerBar.statusText.length > 0
+                width: visible
+                    ? Math.min(
+                        implicitWidth,
+                        parent.width - capturedPiecesRow.width -
+                            (capturedPiecesRow.visible ? theme.spacingXs : 0)
+                    )
+                    : 0
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
+                text: playerBar.statusText
+                font.pixelSize: theme.fontLabel
+                font.bold: playerBar.statusEmphasized
+                elide: Text.ElideRight
+                color: theme.text
+
+                EinkRefreshArea {
+                    anchors.fill: parent
+                    displayMethod: EinkRefreshArea.Fast
+                }
+            }
+
+            Row {
+                id: capturedPiecesRow
+                height: parent.height
+                spacing: 2
+                visible: playerBar.capturedPieces.length > 0
+
+                Repeater {
+                    model: playerBar.capturedPieces
+                    Image {
+                        required property string modelData
+                        width: theme.fontLarge
+                        height: width
+                        source: "../assets/pieces/" + modelData + ".png"
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
+                        sourceSize.width: width
+                        sourceSize.height: height
+                    }
                 }
             }
         }

@@ -137,6 +137,7 @@ Rectangle {
         if (!boardScreen.premovesEnabled) boardScreen.cancelPremove()
     }
     property bool gameOver: false
+    readonly property bool canNavigateHome: boardScreen.gameOver
     property string gameResult: ""
     property string gameReason: ""
     property bool annotationMode: false
@@ -389,6 +390,40 @@ Rectangle {
         if (boardScreen.drawOfferedByYou) return "Draw pending"
         if (boardScreen.takebackOfferedByYou) return "Takeback pending"
         return "Actions"
+    }
+
+    function topStatusText() {
+        if (boardScreen.statusText.length > 0) return boardScreen.statusText
+        if (boardScreen.gameOver) return "Game over"
+        if (boardScreen.viewingHistory) {
+            return "Viewing move " + boardScreen.historyIndex + " of " +
+                boardScreen.moveHistory.length
+        }
+        if (moveRequestGate.pending !== null) {
+            return "Submitting " + moveRequestGate.pending.from + "–" +
+                moveRequestGate.pending.to +
+                (moveRequestGate.pending.promotion
+                    ? "=" + moveRequestGate.pending.promotion.toUpperCase()
+                    : "")
+        }
+        if (boardScreen.pendingPremove !== null) {
+            return "Premove: " + boardScreen.pendingPremove.from + "–" +
+                boardScreen.pendingPremove.to
+        }
+        if (boardScreen.annotationMode) return "Annotating board"
+        if (boardScreen.inCheck) {
+            return boardScreen.turn === boardScreen.yourColor
+                ? "Check — your move"
+                : "Opponent is in check"
+        }
+        if (boardScreen.turn === boardScreen.yourColor &&
+                boardScreen.displayFirstMoveTimeMs() !== null) {
+            return "Move in ~" +
+                Math.ceil(boardScreen.displayFirstMoveTimeMs() / 1000) + "s"
+        }
+        return boardScreen.turn === boardScreen.yourColor
+            ? "Your move"
+            : "Waiting for opponent"
     }
 
     function requestGameAction(message, action) {
@@ -736,6 +771,9 @@ Rectangle {
             lowTime: boardScreen.isLowTime(boardScreen.displayClockFor(boardScreen.topColor), boardScreen.initialClockMs)
             materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.topColor)
             capturedPieces: boardScreen.capturedPiecesFor(boardScreen.topColor)
+            statusText: boardScreen.topStatusText()
+            statusEmphasized: !boardScreen.gameOver &&
+                boardScreen.turn === boardScreen.yourColor
         }
 
         Row {
@@ -987,73 +1025,6 @@ Rectangle {
             text: "Chat"
             enabled: boardScreen.canChat
             onClicked: boardScreen.showChat = true
-        }
-    }
-
-    Flickable {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: backButton.top
-        anchors.margins: theme.pageSideMargin
-        anchors.top: boardToolbar.bottom
-        anchors.topMargin: theme.spacingXs
-        anchors.bottomMargin: theme.spacingSmall
-        contentWidth: width
-        contentHeight: actionsColumn.height
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
-
-        Column {
-            id: actionsColumn
-            width: parent.width
-            spacing: theme.spacingXs
-
-            Text {
-                visible: boardScreen.statusText.length > 0
-                text: boardScreen.statusText
-                font.pixelSize: theme.fontLarge
-                font.bold: true
-                wrapMode: Text.WordWrap
-                width: parent.width
-                color: theme.text
-
-                EinkRefreshArea {
-                    anchors.fill: parent
-                    displayMethod: EinkRefreshArea.Fast
-                }
-            }
-
-            Text {
-                text: boardScreen.viewingHistory
-                    ? "Viewing move " + boardScreen.historyIndex + " of " + boardScreen.moveHistory.length
-                    : moveRequestGate.pending !== null
-                    ? "Submitting " + moveRequestGate.pending.from + "–" +
-                        moveRequestGate.pending.to +
-                        (moveRequestGate.pending.promotion
-                            ? "=" + moveRequestGate.pending.promotion.toUpperCase()
-                            : "")
-                    : boardScreen.pendingPremove !== null
-                    ? "Premove queued: " + boardScreen.pendingPremove.from + "-" + boardScreen.pendingPremove.to
-                    : boardScreen.annotationMode
-                    ? "Annotate: tap for ring, drag for arrow"
-                    : boardScreen.inCheck
-                    ? (boardScreen.turn === boardScreen.yourColor ? "Check — your move" : "Opponent is in check")
-                    : boardScreen.turn === boardScreen.yourColor &&
-                        boardScreen.displayFirstMoveTimeMs() !== null
-                    ? "First move due in about " +
-                        Math.ceil(boardScreen.displayFirstMoveTimeMs() / 1000) + "s"
-                    : (boardScreen.turn === boardScreen.yourColor ? "Your move" : "Waiting for opponent...")
-                visible: !boardScreen.gameOver
-                font.pixelSize: theme.fontBody
-                width: parent.width
-                wrapMode: Text.WordWrap
-                color: theme.text
-
-                EinkRefreshArea {
-                    anchors.fill: parent
-                    displayMethod: EinkRefreshArea.Fast
-                }
-            }
         }
     }
 
@@ -1378,22 +1349,14 @@ Rectangle {
 
     AppButton {
         id: backButton
-        // Fixed, full-width bottom "nav bar" treatment, same as every other
-        // screen in this pass -- was just the last item inside the Column
-        // above, i.e. wherever the rest of that Column's content happened to
-        // end (variable, since most of what's above it is itself
-        // conditionally visible -- draw/takeback offers, chat history length,
-        // etc.).
-        //
-        // Always available, not just after Game Over -- an in-progress game
-        // keeps running/resumable server-side (see HomeScreen's "Resume"
-        // button, backed by handle_resume_game), so there's no reason
-        // leaving mid-game should require ending or waiting out the game.
+        objectName: "boardBackButton"
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: theme.pageSideMargin
         text: "Back to Home"
+        visible: boardScreen.canNavigateHome
+        enabled: boardScreen.canNavigateHome
         onClicked: boardScreen.navigateTo("HomeScreen.qml")
     }
 
