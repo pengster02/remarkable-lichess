@@ -5,6 +5,7 @@ Rectangle {
     anchors.fill: parent
     color: theme.background
     Theme { id: theme; darkMode: boardScreen.darkMode }
+    ChessDisplay { id: chessDisplay }
     MoveRequestGate {
         id: moveRequestGate
         gameId: boardScreen.gameId
@@ -229,30 +230,8 @@ Rectangle {
         boardScreen.selectedSquare = ""
     }
 
-    // "1. e4 e5  2. Nf3 Nc6  ..." -- pairs white/black plies under one move
-    // number, standard chess notation, matching what cli-chess's MoveListModel
-    // and every mainstream client show.
-    function formattedMoveHistory() {
-        var out = []
-        for (var i = 0; i < boardScreen.moveHistory.length; i++) {
-            if (i % 2 === 0) {
-                out.push((i / 2 + 1) + ". " + boardScreen.moveHistory[i])
-            } else {
-                out[out.length - 1] += " " + boardScreen.moveHistory[i]
-            }
-        }
-        return out.join("  ")
-    }
-
-    function moveTokens() {
-        var out = []
-        for (var i = 0; i < boardScreen.moveHistory.length; i++) {
-            out.push({
-                label: (i % 2 === 0 ? (i / 2 + 1) + ". " : "") + boardScreen.moveHistory[i],
-                fenIndex: i + 1
-            })
-        }
-        return out
+    function moveRows() {
+        return chessDisplay.moveRows(boardScreen.moveHistory, [], [])
     }
 
     function showHistoryPosition(index) {
@@ -276,13 +255,6 @@ Rectangle {
     // Written as two plain literals rather than slice().reverse() -- qmllint
     // infers a QVariantList type for these array literals under Qt6's stricter
     // QML type system, which doesn't reliably expose Array.prototype methods.
-    function formatClock(ms) {
-        var totalSeconds = Math.floor(ms / 1000)
-        var minutes = Math.floor(totalSeconds / 60)
-        var seconds = totalSeconds % 60
-        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
-    }
-
     // Threshold matches the official lichess-org/mobile app's own low-time
     // warning (confirmed via that project's issue #785, not invented): 1/8
     // of the side's total time control, clamped to [10s, 60s] -- a 3-minute
@@ -1312,20 +1284,23 @@ Rectangle {
                 boardScreen.showMoves = false
             }
         }
-        Flow {
+        Column {
             width: parent.width
-            spacing: theme.spacingXs
+            spacing: 0
 
             Repeater {
-                model: boardScreen.moveTokens()
+                model: boardScreen.moveRows()
 
-                MoveTokenButton {
+                MoveListRow {
                     required property var modelData
+                    width: parent.width
                     darkMode: boardScreen.darkMode
-                    text: modelData.label
-                    selected: modelData.fenIndex === boardScreen.historyIndex
-                    onClicked: {
-                        boardScreen.showHistoryPosition(modelData.fenIndex)
+                    moveNumber: modelData.number
+                    whiteMove: modelData.white
+                    blackMove: modelData.black
+                    currentIndex: boardScreen.historyIndex
+                    onMoveSelected: (fenIndex) => {
+                        boardScreen.showHistoryPosition(fenIndex)
                         boardScreen.showMoves = false
                     }
                 }
@@ -1539,8 +1514,7 @@ Rectangle {
             // game_over_result). Shown from the local player's own
             // perspective (yourColor) rather than raw white/black for an
             // actual win/loss, so "you resigned" reads as "You lost", not
-            // just an opaque color name; the raw-status case is titlecased
-            // as-is since there's no "you" to attribute it to.
+            // just an opaque color name.
             var outcome
             if (msg.result === "draw") {
                 outcome = "Draw"
@@ -1551,7 +1525,7 @@ Rectangle {
             } else {
                 outcome = msg.reason && msg.reason.length > 0
                     ? msg.reason
-                    : msg.result.charAt(0).toUpperCase() + msg.result.slice(1)
+                    : chessDisplay.resultLabel(msg.result)
                 boardScreen.gameResult = msg.result
             }
             boardScreen.gameOver = true

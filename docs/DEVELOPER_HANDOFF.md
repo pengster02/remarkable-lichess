@@ -34,8 +34,8 @@ The current UI supports:
 | Frontend shell | `frontend/ui/main.qml` | AppLoad endpoint, message routing, navigation, shared state |
 | Live board | `frontend/ui/BoardScreen.qml` | Game interaction and live-game actions |
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
-| Visual system | `frontend/ui/Theme.qml`, `BoardStyle.qml`, `BoardPreview.qml` | App chrome, shared board palettes/piece choices, and the settings preview |
-| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `EinkRefreshArea.qml`, `MoveRequestGate.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, refresh policy, move submission, move tokens, promotion choices, and inputs |
+| Visual system | `frontend/ui/Theme.qml`, `BoardStyle.qml`, `BoardPreview.qml`, `ChessDisplay.qml` | App chrome, board appearance, settings preview, and API-to-display mappings |
+| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `EinkRefreshArea.qml`, `MoveRequestGate.qml`, `MoveListRow.qml`, `MoveListCell.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, refresh policy, move submission, score-sheet rows, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
 | Backend router | `backend/src/backend_app.rs` | Dispatches frontend requests and backend events |
 | Live chess state | `backend/src/game/session.rs` | Lichess game stream and authoritative board state |
@@ -133,7 +133,7 @@ git diff --check
 Minimum emulator smoke test:
 
 1. Home → Game history → open a game → Back to Game History → Back to Home.
-2. In review, tap move tokens and use previous/next plus first/last from Menu.
+2. In review, tap moves in the score sheet and use previous/next plus first/last from Menu.
 3. Request Cloud evaluation from Menu and verify the eval and best line.
 4. Enter Explore, make one tap move and one drag move, Undo, Reset, and Exit.
 5. Start or resume a game and verify orientation, legal targets, promotion,
@@ -165,6 +165,9 @@ Minimum emulator smoke test:
 - Board palette and piece-set IDs are centralized in `BoardStyle.qml` and
   validated again in `backend/src/settings.rs`. The preview and gameplay boards
   use the same `BoardSquare` renderer; do not create a settings-only imitation.
+- Result, termination, speed, variant, clock, annotation, and move-row display
+  mappings live in `ChessDisplay.qml`. Live and review history both render the
+  same `MoveListRow`; do not reintroduce screen-specific move tokens.
 - Live play keeps a fixed three-control strip below the board: Actions, Moves,
   and Chat. Chat is disabled for computer games. Draw/takeback offers and
   disconnect claims change and highlight the Actions label.

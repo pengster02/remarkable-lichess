@@ -8,7 +8,9 @@
         <file>ui/ConfirmAction.qml</file>
         <file>ui/EinkRefreshArea.qml</file>
         <file>ui/MoveRequestGate.qml</file>
-        <file>ui/MoveTokenButton.qml</file>
+        <file>ui/ChessDisplay.qml</file>
+        <file>ui/MoveListCell.qml</file>
+        <file>ui/MoveListRow.qml</file>
         <file>ui/AppTextField.qml</file>
         <file>ui/PromotionDialog.qml</file>
         <file>ui/SectionCard.qml</file>

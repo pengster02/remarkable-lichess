@@ -1163,30 +1163,50 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
 /// (e.g. a future status Lichess adds) rather than hiding it as "unknown".
 fn termination_label(status: Option<&str>) -> String {
     match status {
+        Some("created") => "Game created".to_string(),
+        Some("started") => "In progress".to_string(),
+        Some("aborted") => "Aborted".to_string(),
         Some("mate") => "Checkmate".to_string(),
         Some("resign") => "Resignation".to_string(),
         Some("stalemate") => "Stalemate".to_string(),
         Some("timeout") => "Opponent left".to_string(),
         Some("outoftime") => "Time forfeit".to_string(),
         Some("draw") => "Draw".to_string(),
-        Some("aborted") => "Aborted".to_string(),
         Some("cheat") => "Cheat detected".to_string(),
         Some("noStart") => "Opponent didn't join".to_string(),
+        Some("unknownFinish") => "Unknown finish".to_string(),
+        Some("insufficientMaterialClaim") => "Insufficient material".to_string(),
         Some("variantEnd") => "Variant ending".to_string(),
-        Some(other) => {
-            let mut chars = other.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => "Unknown".to_string(),
+        Some(other) => humanize_identifier(other),
+        None => "Unknown".to_string(),
+    }
+}
+
+fn humanize_identifier(value: &str) -> String {
+    let mut spaced = String::new();
+    for character in value.chars() {
+        if character == '_' || character == '-' {
+            if !spaced.ends_with(' ') {
+                spaced.push(' ');
             }
+        } else {
+            if character.is_uppercase() && !spaced.is_empty() && !spaced.ends_with(' ') {
+                spaced.push(' ');
+            }
+            spaced.push(character);
         }
+    }
+
+    let mut characters = spaced.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
         None => "Unknown".to_string(),
     }
 }
 
 #[cfg(test)]
 mod game_over_result_tests {
-    use super::{game_over_message, game_over_result};
+    use super::{game_over_message, game_over_result, termination_label};
     use crate::protocol::BackendMessage;
 
     #[test]
@@ -1210,6 +1230,35 @@ mod game_over_result_tests {
                 result: "black".to_string(),
                 reason: "Time forfeit".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn every_official_game_status_has_a_readable_label() {
+        let cases = [
+            ("created", "Game created"),
+            ("started", "In progress"),
+            ("aborted", "Aborted"),
+            ("mate", "Checkmate"),
+            ("resign", "Resignation"),
+            ("stalemate", "Stalemate"),
+            ("timeout", "Opponent left"),
+            ("draw", "Draw"),
+            ("outoftime", "Time forfeit"),
+            ("cheat", "Cheat detected"),
+            ("noStart", "Opponent didn't join"),
+            ("unknownFinish", "Unknown finish"),
+            ("insufficientMaterialClaim", "Insufficient material"),
+            ("variantEnd", "Variant ending"),
+        ];
+
+        for (status, label) in cases {
+            assert_eq!(termination_label(Some(status)), label);
+        }
+
+        assert_eq!(
+            termination_label(Some("futureFinishReason")),
+            "Future Finish Reason"
         );
     }
 

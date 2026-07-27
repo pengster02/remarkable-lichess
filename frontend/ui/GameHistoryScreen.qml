@@ -6,6 +6,7 @@ Rectangle {
     anchors.fill: parent
     color: theme.background
     Theme { id: theme; darkMode: gameHistoryScreen.darkMode }
+    ChessDisplay { id: chessDisplay }
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -54,13 +55,6 @@ Rectangle {
         if (result === "win") return theme.winText
         if (result === "loss") return theme.lossText
         return theme.drawText
-    }
-
-    function resultLabel(result) {
-        if (result === "win") return "Win"
-        if (result === "loss") return "Loss"
-        if (result === "draw") return "Draw"
-        return result.charAt(0).toUpperCase() + result.slice(1)
     }
 
     Column {
@@ -215,7 +209,7 @@ Rectangle {
                     Row {
                         spacing: theme.spacingXs
                         Text {
-                            text: gameHistoryScreen.resultLabel(modelData.result)
+                            text: chessDisplay.resultLabel(modelData.result)
                             font.pixelSize: theme.fontBody
                             font.bold: true
                             color: gameHistoryScreen.resultColor(modelData.result)
@@ -239,8 +233,8 @@ Rectangle {
 
                     Text {
                         text: (modelData.rated ? "Rated" : "Casual") +
-                              (modelData.speed ? " " + modelData.speed : "") +
-                              (modelData.termination ? " -- " + modelData.termination : "") +
+                              (modelData.speed ? " " + chessDisplay.speedLabel(modelData.speed) : "") +
+                              (modelData.termination ? " -- " + chessDisplay.terminationLabel(modelData.termination) : "") +
                               (modelData.opening_name ? " -- " + modelData.opening_name : "") +
                               (modelData.created_at_ms ? " -- " + new Date(modelData.created_at_ms).toLocaleDateString() : "")
                         font.pixelSize: theme.fontSmall
