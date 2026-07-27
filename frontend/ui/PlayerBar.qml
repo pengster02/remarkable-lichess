@@ -74,11 +74,11 @@ Rectangle {
         }
     }
 
-    // Whole-bar Fast region: everything here changes exactly when a move
-    // lands (active flag flips, clocks update), transient enough that speed
-    // beats fidelity -- same reasoning as the board grid's own overlay.
+    // Content, not Fast -- same ghosting fix as the board grid: changing
+    // clock digits are exactly the kind of content a partial waveform can
+    // leave a faint trace of.
     DisplayMethodArea {
         anchors.fill: parent
-        displayMethod: DisplayMethodArea.Fast
+        displayMethod: DisplayMethodArea.Content
     }
 }

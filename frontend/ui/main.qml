@@ -306,7 +306,12 @@ Rectangle {
         Text {
             anchors.centerIn: parent
             text: "X"
-            font.pixelSize: theme.fontHeading
+            // Sized to its own now-smaller button (theme.exitButtonSize ==
+            // theme.touchTarget, was a much bigger dedicated size shared with
+            // nothing else) -- fontLabel, not fontHeading: a corner icon
+            // reads clearly at a size well below any real content button's
+            // own label, on purpose (see exitButtonSize's own comment).
+            font.pixelSize: theme.fontLabel
             font.bold: true
             color: theme.text
         }

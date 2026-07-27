@@ -1,8 +1,29 @@
+# Local tooling / scratch
 .superpowers/
 rm-appload/
-/backend/target/
-dist/
+.DS_Store
 *.core
-frontend/resources.rcc
+*.tar
+*.tar.gz
+
+# SSH keys for device deploy (never commit)
 /remarkable
 /remarkable.pub
+*.pem
+id_rsa
+id_ed25519
+id_ed25519.pub
+
+# Rust build artifacts
+/backend/target/
+**/target/
+
+# AppLoad build output
+dist/
+frontend/resources.rcc
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*~

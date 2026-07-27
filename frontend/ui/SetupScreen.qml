@@ -9,14 +9,30 @@ Rectangle {
     property var backendSender
     property bool darkMode: false
 
-    Column {
-        // Top-anchored (was `anchors.centerIn: parent`) for the same
-        // cross-page alignment reason as every other screen in this pass --
-        // this is most people's very first screen, so it's the single most
-        // important one to already look consistent with the rest of the app.
+    Flickable {
+        // Wrapped in a Flickable (was a bare top-anchored Column) -- this
+        // screen's own Save button alone is now ~430px tall (buttonPaddingV
+        // 170*2 + buttonMinHeight 320 floor), and stacked under the logo,
+        // heading, description text, and token field it doesn't reliably fit
+        // this device's 954px-tall screen even with the top margin alone
+        // eating ~148px of that budget. A bare Column has no scrolling at
+        // all, so an overflow here means the Save button is simply
+        // unreachable -- on a new user's very first screen. Same pattern
+        // every other screen already uses (see SeekScreen/SettingsScreen).
         anchors.top: parent.top
-        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
+        contentWidth: width
+        contentHeight: setupColumn.height
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
+
+    Column {
+        id: setupColumn
+        anchors.horizontalCenter: parent.horizontalCenter
         spacing: theme.spacingMedium
         width: parent.width * 0.85
 
@@ -78,6 +94,7 @@ Rectangle {
                 }
             }
         }
+    }
     }
 
     function handleMessage(msg) {
