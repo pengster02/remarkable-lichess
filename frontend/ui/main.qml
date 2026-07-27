@@ -418,9 +418,26 @@ Rectangle {
         border.width: 1
         border.color: theme.cardBorder
 
-        Text {
+        // Filled dot = online, hollow ring = offline/connecting -- a solid-vs-open
+        // shape reads at a glance on e-ink even where the text color barely shifts.
+        Rectangle {
+            id: statusDot
             anchors.left: parent.left
             anchors.leftMargin: theme.pageSideMargin
+            anchors.verticalCenter: parent.verticalCenter
+            width: theme.fontLabel * 0.55
+            height: width
+            radius: width / 2
+            color: root.online ? theme.text : "transparent"
+            border.width: root.online ? 0 : 2
+            border.color: (root.connectivityKnown && !root.online)
+                ? theme.errorText
+                : theme.textMuted
+        }
+
+        Text {
+            anchors.left: statusDot.right
+            anchors.leftMargin: theme.spacingXs
             anchors.right: parent.right
             anchors.rightMargin: theme.pageSideMargin
             anchors.verticalCenter: parent.verticalCenter
