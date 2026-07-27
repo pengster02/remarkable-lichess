@@ -150,20 +150,6 @@ pub struct GameFull {
     pub state: GameState,
 }
 
-// Confirmed against lichess-org/api's ChatLineEvent.yaml.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ChatLine {
-    pub room: String,
-    pub username: String,
-    pub text: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct PlayerChatLine {
-    pub user: String,
-    pub text: String,
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum GameStreamMessage {
@@ -174,7 +160,7 @@ pub enum GameStreamMessage {
     #[serde(rename = "opponentGone")]
     Gone(OpponentGone),
     #[serde(rename = "chatLine")]
-    Chat(ChatLine),
+    Chat,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -634,5 +620,13 @@ mod tests {
             }
             _ => panic!("expected Gone variant"),
         }
+    }
+
+    #[test]
+    fn chat_events_parse_as_ignored_stream_messages() {
+        let json =
+            r#"{"type":"chatLine","room":"player","username":"opponent","text":"gg"}"#;
+        let msg: GameStreamMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg, GameStreamMessage::Chat);
     }
 }

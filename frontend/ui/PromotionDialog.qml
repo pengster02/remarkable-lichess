@@ -13,6 +13,7 @@ AppDialog {
     Theme { id: theme; darkMode: promotionDialog.darkMode }
 
     Row {
+        id: promotionOptionsRow
         width: parent.width
         spacing: theme.spacingXs
 
@@ -21,7 +22,7 @@ AppDialog {
 
             Rectangle {
                 required property string modelData
-                width: (parent.width - parent.spacing *
+                width: (promotionOptionsRow.width - promotionOptionsRow.spacing *
                     Math.max(0, promotionDialog.options.length - 1)) /
                     Math.max(1, promotionDialog.options.length)
                 height: Math.max(theme.touchTarget, Math.min(width, 160))
@@ -35,7 +36,7 @@ AppDialog {
                     width: parent.height * 0.82
                     height: width
                     fillMode: Image.PreserveAspectFit
-                    smooth: true
+                    smooth: false
                     source: "../assets/pieces/" + promotionDialog.pieceSet + "/" +
                         promotionDialog.pieceCodeFor(modelData) + ".png"
                     sourceSize.width: width

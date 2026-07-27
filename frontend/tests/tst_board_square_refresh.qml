@@ -47,4 +47,11 @@ TestCase {
         square.flashRefresh = false
         compare(square.fastRefresh, false)
     }
+
+    function test_clearPulseOpposesCanvasPolarity() {
+        square.darkMode = false
+        compare(square.refreshFlashColor, "#111111")
+        square.darkMode = true
+        compare(square.refreshFlashColor, "#fffdf7")
+    }
 }

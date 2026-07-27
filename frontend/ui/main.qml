@@ -14,7 +14,7 @@ Rectangle {
 
     property bool hasToken: false
     property string username: ""
-    property bool darkMode: true
+    property bool darkMode: false
     // Persisted server-side (see backend/src/settings.rs) -- pushed into any
     // loaded screen that declares it, same pattern as darkMode below.
     property bool autoQueenPromotion: false
@@ -237,12 +237,11 @@ Rectangle {
                         screenLoader.item.handleMessage(msg)
                     }
                 }
-            } else if (msg.type === "Reconnecting" || msg.type === "OpponentGone" ||
-                       msg.type === "ChatMessage" || msg.type === "ChatHistory" ||
+            } else if (msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
                        msg.type === "RatingDiff" || msg.type === "GameActionCompleted" ||
-                       msg.type === "MoveSubmitted") {
+                       msg.type === "MovePreview" || msg.type === "MoveSubmitted") {
                 // Deliberately never navigates on its own (confirmed via the PC
-                // emulator: a bare Reconnecting with no real game yet threw the
+                // emulator: a bare reconnect message with no real game yet threw the
                 // user onto a genuinely empty, un-escapable Board screen). Only
                 // ever forwarded to whichever screen is already showing.
                 if (screenLoader.item && screenLoader.item.handleMessage) {

@@ -18,6 +18,7 @@ Rectangle {
     property bool showClock: true
     // This side is to move -- inverts the clock chip and bolds the name.
     property bool active: false
+    property bool opponent: false
     property bool lowTime: false
     property int materialAdvantage: 0
     property var capturedPieces: []
@@ -48,12 +49,13 @@ Rectangle {
         spacing: theme.spacingXs / 2
 
         Text {
+            objectName: "playerNameText"
             width: parent.width
             text: playerBar.playerName +
                   (playerBar.rating !== null ? " (" + playerBar.rating + ")" : "") +
                   (playerBar.materialAdvantage > 0 ? "  |  +" + playerBar.materialAdvantage : "")
             font.pixelSize: theme.fontBody
-            font.bold: playerBar.active
+            font.bold: playerBar.opponent || playerBar.active
             elide: Text.ElideRight
             color: theme.text
         }
@@ -103,7 +105,7 @@ Rectangle {
                         height: width
                         source: "../assets/pieces/" + playerBar.pieceSet + "/" + modelData + ".png"
                         fillMode: Image.PreserveAspectFit
-                        smooth: true
+                        smooth: false
                         sourceSize.width: width
                         sourceSize.height: height
                     }

@@ -20,26 +20,30 @@ QQC2.Button {
     background: Rectangle {
         radius: theme.cardRadius
         border.width: control.highlighted ? 3 : 1
-        border.color: control.highlighted ? theme.accentBackground : theme.buttonBorder
-        color: control.pressed
+        border.color: !control.enabled
+            ? theme.cardBorder
+            : (control.highlighted ? theme.accentBackground : theme.buttonBorder)
+        color: !control.enabled
+            ? theme.cardBackground
+            : (control.pressed
             ? theme.text
-            : (control.highlighted ? theme.accentBackground : theme.buttonBackground)
-        opacity: control.enabled ? 1.0 : 0.45
+            : (control.highlighted ? theme.accentBackground : theme.buttonBackground))
     }
 
     contentItem: Text {
         text: control.text
         font.pixelSize: theme.fontSmall
         font.bold: control.highlighted
-        color: control.pressed
+        color: !control.enabled
+            ? theme.textMuted
+            : (control.pressed
             ? theme.background
-            : (control.highlighted ? theme.accentText : theme.text)
+            : (control.highlighted ? theme.accentText : theme.text))
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         fontSizeMode: Text.Fit
         minimumPixelSize: 22
         elide: Text.ElideRight
-        opacity: control.enabled ? 1.0 : 0.45
     }
 
     EinkRefreshArea {

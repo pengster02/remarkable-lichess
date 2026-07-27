@@ -1,6 +1,6 @@
 use crate::lichess::models::{
     Account, ChallengeListResponse, ChallengeOpenJson, CloudEvaluation, GameExport,
-    GameHistoryFilters, HistoryGame, IncomingChallenge, PlayerChatLine, PlayingGame,
+    GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame,
     PlayingResponse,
 };
 use crate::lichess::stream::parse_ndjson_line;
@@ -393,41 +393,6 @@ impl LichessClient {
             return Err(error_from_response("decline_challenge", resp).await);
         }
         Ok(())
-    }
-
-    /// Always posts to the "player" room -- this app has no spectator mode.
-    pub async fn send_chat(&self, game_id: &str, text: &str) -> Result<()> {
-        let resp = self
-            .send_logged("send_chat", self.bearer(self.http.post(format!("{}/api/board/game/{}/chat", self.base_url, game_id)))
-                .form(&[("room", "player"), ("text", text)]))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("send_chat", resp).await);
-        }
-        Ok(())
-    }
-
-    pub async fn get_game_chat(&self, game_id: &str) -> Result<Vec<PlayerChatLine>> {
-        let resp = self
-            .send_logged("get_game_chat", self.bearer(self.http.get(format!(
-                "{}/api/board/game/{}/chat",
-                self.base_url, game_id
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("get_game_chat", resp).await);
-        }
-        let body = resp.text().await?;
-        if body.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        if let Ok(messages) = serde_json::from_str::<Vec<PlayerChatLine>>(&body) {
-            return Ok(messages);
-        }
-        body.lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str::<PlayerChatLine>(line).map_err(Into::into))
-            .collect()
     }
 
     /// `/api/board/seek` is a long-poll endpoint, confirmed live against production:
@@ -1335,55 +1300,6 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         client.decline_challenge("c1").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn send_chat_posts_room_and_text() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/board/game/g1/chat"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        client.send_chat("g1", "gg").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn get_game_chat_parses_array_response() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/board/game/g1/chat"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {"user": "alice", "text": "gg"},
-                {"user": "lichess", "text": "Takeback accepted"}
-            ])))
-            .mount(&server)
-            .await;
-
-        let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let messages = client.get_game_chat("g1").await.unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].user, "alice");
-        assert_eq!(messages[1].text, "Takeback accepted");
-    }
-
-    #[tokio::test]
-    async fn get_game_chat_accepts_ndjson_response() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/board/game/g1/chat"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                "{\"user\":\"alice\",\"text\":\"gg\"}\n{\"user\":\"bob\",\"text\":\"well played\"}\n",
-            ))
-            .mount(&server)
-            .await;
-
-        let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let messages = client.get_game_chat("g1").await.unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1].user, "bob");
     }
 
     #[tokio::test]

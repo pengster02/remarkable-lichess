@@ -17,23 +17,27 @@ Rectangle {
     property bool flashRefresh: false
     property bool darkMode: false
     property string pieceSet: "cburnett"
-    property color lightSquareColor: theme.boardLightSquare
-    property color darkSquareColor: theme.boardDarkSquare
+    property color lightSquareColor: "#e8e0d0"
+    property color darkSquareColor: "#5c4d3a"
+    property color checkSquareColor: "#d1483f"
+    property color highlightSquareColor: "#4f9d55"
+    property color lastMoveSquareColor: "#4f86ad"
+    property color premoveSquareColor: "#c9a227"
+    property color inkColor: "#191817"
+    readonly property color refreshFlashColor: darkMode ? "#fffdf7" : "#111111"
     readonly property bool fastRefresh: isHighlighted || isSelected ||
         isLegalDestination || isPremoveSource || isPremoveDestination ||
         flashRefresh
-
-    Theme { id: theme; darkMode: square.darkMode }
 
     // Precedence when multiple states overlap (e.g. a last-move square that's also
     // tap-selected): check > tap-selection/legal-destination > last-move > base
     // square color (see Theme.qml for the actual values and the device-panel
     // research behind them).
     color: {
-        if (isCheckSquare) return theme.boardCheckSquare
-        if (isHighlighted) return theme.boardHighlightSquare
-        if (isPremoveSource || isPremoveDestination) return theme.boardPremoveSquare
-        if (isLastMove) return theme.boardLastMoveSquare
+        if (isCheckSquare) return square.checkSquareColor
+        if (isHighlighted) return square.highlightSquareColor
+        if (isPremoveSource || isPremoveDestination) return square.premoveSquareColor
+        if (isLastMove) return square.lastMoveSquareColor
         return isLight ? square.lightSquareColor : square.darkSquareColor
     }
 
@@ -54,7 +58,7 @@ Rectangle {
         source: square.pieceCode !== ""
             ? "../assets/pieces/" + square.pieceSet + "/" + square.pieceCode + ".png"
             : ""
-        smooth: true
+        smooth: false
         // Decodes at the actual on-screen size (now backed by 256px source
         // art, up from 192px) instead of the source's full native
         // resolution -- avoids holding a needlessly larger decoded texture
@@ -69,7 +73,7 @@ Rectangle {
         color: "transparent"
         border.width: square.isCheckSquare ? Math.max(4, parent.width * 0.08)
             : (square.isSelected ? Math.max(3, parent.width * 0.06) : 0)
-        border.color: theme.text
+        border.color: square.inkColor
         visible: square.isCheckSquare || square.isSelected
     }
 
@@ -78,9 +82,9 @@ Rectangle {
         width: parent.width * (square.pieceCode === "" ? 0.18 : 0.76)
         height: width
         radius: width / 2
-        color: square.pieceCode === "" ? theme.text : "transparent"
+        color: square.pieceCode === "" ? square.inkColor : "transparent"
         border.width: square.pieceCode === "" ? 0 : Math.max(3, parent.width * 0.05)
-        border.color: theme.text
+        border.color: square.inkColor
         visible: square.isLegalDestination
     }
 
@@ -89,7 +93,7 @@ Rectangle {
         anchors.left: parent.left
         width: Math.max(4, parent.width * 0.13)
         height: width
-        color: theme.text
+        color: square.inkColor
         visible: square.isLastMove
     }
 
@@ -98,7 +102,7 @@ Rectangle {
         anchors.bottom: parent.bottom
         width: Math.max(4, parent.width * 0.13)
         height: width
-        color: theme.text
+        color: square.inkColor
         visible: square.isLastMove
     }
 
@@ -107,7 +111,7 @@ Rectangle {
         anchors.margins: Math.max(3, parent.width * 0.1)
         color: "transparent"
         border.width: Math.max(3, parent.width * 0.05)
-        border.color: theme.text
+        border.color: square.inkColor
         visible: square.isPremoveSource
     }
 
@@ -116,7 +120,7 @@ Rectangle {
         width: parent.width * 0.72
         height: Math.max(3, parent.width * 0.05)
         rotation: 45
-        color: theme.text
+        color: square.inkColor
         visible: square.isPremoveDestination
     }
 
@@ -125,13 +129,14 @@ Rectangle {
         width: parent.width * 0.72
         height: Math.max(3, parent.width * 0.05)
         rotation: -45
-        color: theme.text
+        color: square.inkColor
         visible: square.isPremoveDestination
     }
 
     Rectangle {
+        objectName: "refreshFlash"
         anchors.fill: parent
-        color: "black"
+        color: square.refreshFlashColor
         visible: square.flashRefresh
     }
 

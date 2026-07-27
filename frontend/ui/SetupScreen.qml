@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5
 
 Rectangle {
     id: setupScreen
@@ -9,7 +8,7 @@ Rectangle {
     property var backendSender
     property bool darkMode: false
 
-    Flickable {
+    EinkPagedFlickable {
         // Wrapped in a Flickable (was a bare top-anchored Column) -- this
         // screen's own Save button alone is now ~430px tall (buttonPaddingV
         // 170*2 + buttonMinHeight 320 floor), and stacked under the logo,
@@ -25,10 +24,7 @@ Rectangle {
         anchors.bottom: parent.bottom
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
-        contentWidth: width
         contentHeight: setupColumn.height
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
 
     Column {
         id: setupColumn

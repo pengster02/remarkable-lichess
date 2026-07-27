@@ -7,6 +7,7 @@ QQC2.Button {
     id: control
     property bool darkMode: nearestDarkMode(parent)
     property bool critical: false
+    property bool compact: false
 
     function nearestDarkMode(item) {
         while (item) {
@@ -17,47 +18,50 @@ QQC2.Button {
     }
 
     Theme { id: theme; darkMode: control.darkMode }
-    font.pixelSize: theme.fontButton
-    topPadding: theme.buttonPaddingV
-    bottomPadding: theme.buttonPaddingV
-    leftPadding: theme.buttonPaddingH
-    rightPadding: theme.buttonPaddingH
+    font.pixelSize: control.compact ? theme.fontBody : theme.fontButton
+    topPadding: control.compact ? theme.spacingXs : theme.buttonPaddingV
+    bottomPadding: control.compact ? theme.spacingXs : theme.buttonPaddingV
+    leftPadding: control.compact ? theme.spacingSmall : theme.buttonPaddingH
+    rightPadding: control.compact ? theme.spacingSmall : theme.buttonPaddingH
     // Real height/width, not implicitHeight/implicitWidth: Control's C++
     // side recomputes implicit size from contentItem+padding on its own and
     // silently clears any QML binding on it, throwing away this floor.
-    height: Math.max(contentItem.implicitHeight + topPadding + bottomPadding, theme.buttonMinHeight)
+    height: control.compact
+        ? theme.touchTarget
+        : Math.max(contentItem.implicitHeight + topPadding + bottomPadding, theme.buttonMinHeight)
     width: Math.max(contentItem.implicitWidth + leftPadding + rightPadding, theme.touchTarget * 2)
 
     background: Rectangle {
         radius: theme.cardRadius
         border.width: control.highlighted || control.critical ? 3 : 1
-        border.color: control.critical
+        border.color: !control.enabled
+            ? theme.cardBorder
+            : (control.critical
             ? theme.criticalBackground
-            : (control.highlighted ? theme.accentBackground : theme.buttonBorder)
+            : (control.highlighted ? theme.accentBackground : theme.buttonBorder))
         // Pressed = full color inversion, not a tint -- more visible at
         // e-ink refresh latency than a subtle mid-tone shift.
-        color: control.pressed
+        color: !control.enabled
+            ? theme.cardBackground
+            : (control.pressed
             ? theme.text
             : (control.critical
                 ? theme.criticalBackground
-                : (control.highlighted ? theme.accentBackground : theme.buttonBackground))
-        // Disabled buttons previously looked identical to enabled ones --
-        // a dead tap with no feedback read as "the app froze."
-        opacity: control.enabled ? 1.0 : 0.45
-
+                : (control.highlighted ? theme.accentBackground : theme.buttonBackground)))
     }
 
     contentItem: Text {
         text: control.text
         font: control.font
-        color: control.pressed
+        color: !control.enabled
+            ? theme.textMuted
+            : (control.pressed
             ? theme.background
             : (control.critical
                 ? theme.criticalText
-                : (control.highlighted ? theme.accentText : theme.text))
+                : (control.highlighted ? theme.accentText : theme.text)))
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        opacity: control.enabled ? 1.0 : 0.45
     }
 
     EinkRefreshArea {

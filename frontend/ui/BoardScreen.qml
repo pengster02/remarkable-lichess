@@ -28,13 +28,17 @@ Rectangle {
     property string gameId: ""
     property string fen: ""
     property string liveFen: ""
+    property string previewFen: ""
     property string turn: "white"
+    property string liveTurn: "white"
     // Pushed from main.qml's root state (TokenVerified's username) -- shown
     // on your own player bar below the board, matching every reference
     // client's "your side is a real labeled player too" treatment.
     property string username: ""
     property int whiteTimeMs: 0
     property int blackTimeMs: 0
+    property int liveWhiteTimeMs: 0
+    property int liveBlackTimeMs: 0
     // Fixed for the game's lifetime (see game::session::GameSession) -- null
     // for an untimed/correspondence game, same Option-to-null convention as
     // opponentRating. Needed alongside the live whiteTimeMs/blackTimeMs
@@ -47,7 +51,7 @@ Rectangle {
     property var flashSquares: []
     Timer {
         id: boardFlashTimer
-        interval: 90
+        interval: 60
         onTriggered: boardScreen.flashSquares = []
     }
     // Which color the local account is playing -- flips board orientation below.
@@ -59,7 +63,9 @@ Rectangle {
     // last_move and in_check were already computed and sent by the backend before
     // this change -- last_move was simply never read by this screen.
     property var lastMove: null
+    property var liveLastMove: null
     property bool inCheck: false
+    property bool liveInCheck: false
     property bool drawOfferedByOpponent: false
     property bool takebackOfferedByOpponent: false
     property bool drawOfferedByYou: false
@@ -69,7 +75,6 @@ Rectangle {
     property bool canOfferDraw: false
     property bool canOfferTakeback: false
     property bool canGiveTime: false
-    property bool canChat: false
     // Set from the backend's OpponentGone message. Lichess's claim-victory
     // endpoint remains authoritative and rejects an early claim.
     property bool opponentGone: false
@@ -85,7 +90,6 @@ Rectangle {
     property string pendingGameAction: ""
     property bool showGameActions: false
     property bool showMoves: false
-    property bool showChat: false
     // Set when RatingDiff arrives before GameOver does -- the per-game
     // stream's terminal GameState (driving GameOver) and the account
     // stream's gameFinish (driving RatingDiff) are two independent signals
@@ -93,9 +97,6 @@ Rectangle {
     // GameOver handler once it runs; cleared immediately after so a second,
     // later game's own GameOver doesn't accidentally re-append a stale value.
     property string pendingRatingDiffText: ""
-    // "username: text" lines, player-room only (see backend_app.rs's chat.room
-    // == "player" filter) -- oldest first, matching Lichess's own chat panel.
-    property var chatMessages: []
     // SAN per move, sent whole by the backend each BoardState (see
     // game::session::GameSession.move_history) -- only re-rendered when it
     // actually changes, same as everything else here.
@@ -157,6 +158,7 @@ Rectangle {
     property bool liveClockEnabled: true
     property double lastClockSyncMs: 0
     property int clockPulse: 0
+    property double clockNowMs: Date.now() + boardScreen.clockPulse * 0
     Timer {
         interval: boardScreen.clockRefreshIntervalMs()
         repeat: true
@@ -189,6 +191,22 @@ Rectangle {
         if (!moveRequestGate.submit(from, to, promotion)) return false
         boardScreen.selectedSquare = ""
         return true
+    }
+
+    function rollbackMovePreview() {
+        if (boardScreen.previewFen.length === 0) return
+        boardScreen.flashSquares = boardScreen.changedSquaresBetweenFens(
+            boardScreen.previewFen, boardScreen.liveFen)
+        boardFlashTimer.restart()
+        boardScreen.previewFen = ""
+        boardScreen.fen = boardScreen.liveFen
+        boardScreen.turn = boardScreen.liveTurn
+        boardScreen.whiteTimeMs = boardScreen.liveWhiteTimeMs
+        boardScreen.blackTimeMs = boardScreen.liveBlackTimeMs
+        boardScreen.lastClockSyncMs = Date.now()
+        boardScreen.clockPulse += 1
+        boardScreen.lastMove = boardScreen.liveLastMove
+        boardScreen.inCheck = boardScreen.liveInCheck
     }
 
     function toggleAnnotation(from, to) {
@@ -274,14 +292,6 @@ Rectangle {
         return {files: ["a","b","c","d","e","f","g","h"], ranks: ["8","7","6","5","4","3","2","1"]}
     }
 
-    function isLastMoveSquare(sq) {
-        if (boardScreen.viewingHistory) {
-            return boardScreen.historicalLastMoveSquares.indexOf(sq) !== -1
-        }
-        return boardScreen.lastMove !== null &&
-            (sq === boardScreen.lastMove[0] || sq === boardScreen.lastMove[1])
-    }
-
     // Finds the square of whichever king is currently in check (always the side
     // to move's own king -- you can't end your move still in check). Iterates a
     // fixed absolute a1..h8 sweep rather than the display-order filesRanks(), since
@@ -317,6 +327,7 @@ Rectangle {
     // didn't actually change either way) -- it only cuts redundant CPU work,
     // which matters for how quickly a frame is ready to hand to the display.
     property var selectedDestinations: boardScreen.destinationsFrom(boardScreen.selectedSquare)
+    property var selectedDestinationLookup: boardScreen.squareLookup(boardScreen.selectedDestinations)
     property string checkedSquare: boardScreen.checkedKingSquare()
     // Which color renders at the bottom of the board -- your side unless
     // manually flipped. The player bars below key off this so they follow
@@ -344,13 +355,14 @@ Rectangle {
     }
 
     function displayClockFor(color) {
-        var now = Date.now() + boardScreen.clockPulse * 0
         var base = boardScreen.clockFor(color)
         if (!boardScreen.liveClockEnabled || color !== boardScreen.turn ||
                 boardScreen.lastClockSyncMs <= 0 || boardScreen.gameOver) {
             return base
         }
-        var elapsed = Math.floor(Math.max(0, now - boardScreen.lastClockSyncMs) / 1000) * 1000
+        var elapsed = Math.floor(
+            Math.max(0, boardScreen.clockNowMs - boardScreen.lastClockSyncMs) / 1000
+        ) * 1000
         return Math.max(0, base - elapsed)
     }
 
@@ -359,26 +371,15 @@ Rectangle {
                 boardScreen.firstMoveTimeMs === undefined) {
             return null
         }
-        var now = Date.now() + boardScreen.clockPulse * 0
         if (boardScreen.lastClockSyncMs <= 0) return boardScreen.firstMoveTimeMs
-        var elapsed = Math.floor(Math.max(0, now - boardScreen.lastClockSyncMs) / 1000) * 1000
+        var elapsed = Math.floor(
+            Math.max(0, boardScreen.clockNowMs - boardScreen.lastClockSyncMs) / 1000
+        ) * 1000
         return Math.max(0, boardScreen.firstMoveTimeMs - elapsed)
     }
 
     function clockRefreshIntervalMs() {
-        var remainingMs = null
-        if (boardScreen.initialClockMs !== null &&
-                boardScreen.initialClockMs !== undefined) {
-            remainingMs = boardScreen.displayClockFor(boardScreen.turn)
-        }
-        var firstMoveRemainingMs = boardScreen.displayFirstMoveTimeMs()
-        if (firstMoveRemainingMs !== null) {
-            remainingMs = remainingMs === null
-                ? firstMoveRemainingMs
-                : Math.min(remainingMs, firstMoveRemainingMs)
-        }
-        if (remainingMs === null || remainingMs <= 60000) return 1000
-        return Math.min(10000, Math.max(1000, remainingMs - 60000))
+        return 10000
     }
 
     function gameActionsLabel() {
@@ -432,6 +433,10 @@ Rectangle {
         boardScreen.backendSender(message)
         boardScreen.showGameActions = false
     }
+
+    function resetGameActionControls() {
+        if (gameActionsLoader.item) gameActionsLoader.item.resetActions()
+    }
     // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
     // rank/file labels every redraw, each call allocating two fresh arrays --
     // same "compute once, index many" reasoning as selectedDestinations above.
@@ -442,7 +447,16 @@ Rectangle {
     // was already calling it 64 times by itself).
     property var pieceMap: boardScreen.buildPieceMap(boardScreen.fen)
     property var historicalLastMoveSquares: boardScreen.changedSquaresForHistory()
+    property var historicalLastMoveLookup: boardScreen.squareLookup(
+        boardScreen.historicalLastMoveSquares)
+    property var flashSquareLookup: boardScreen.squareLookup(boardScreen.flashSquares)
     property int materialBalance: boardScreen.calculateMaterialBalance(boardScreen.pieceMap)
+
+    function squareLookup(squares) {
+        var lookup = {}
+        for (var i = 0; i < squares.length; i++) lookup[squares[i]] = true
+        return lookup
+    }
 
     function buildPieceMap(fen) {
         var map = {}
@@ -490,28 +504,6 @@ Rectangle {
 
     function addRefreshSquare(squares, squareName) {
         if (squareName && squares.indexOf(squareName) === -1) squares.push(squareName)
-    }
-
-    function mergeChatHistory(messages) {
-        var history = []
-        for (var i = 0; i < messages.length; i++) {
-            history.push(messages[i].username + ": " + messages[i].text)
-        }
-        var overlap = Math.min(history.length, boardScreen.chatMessages.length)
-        while (overlap > 0) {
-            var matches = true
-            for (var j = 0; j < overlap; j++) {
-                if (history[history.length - overlap + j] !== boardScreen.chatMessages[j]) {
-                    matches = false
-                    break
-                }
-            }
-            if (matches) break
-            overlap -= 1
-        }
-        boardScreen.chatMessages = history
-            .concat(boardScreen.chatMessages.slice(overlap))
-            .slice(-50)
     }
 
     // Deliberately keyed by the square name's own characters against
@@ -748,9 +740,8 @@ Rectangle {
     Column {
         // Fixed (non-scrolling) chess frame: opponent bar, board, your bar --
         // the standard sides arrangement every reference client uses. The
-        // action buttons / move list / chat below live in their own Flickable
-        // so every control stays reachable regardless of how much of it is
-        // visible at once; the board itself never scrolls off-screen.
+        // action buttons and move list below stay independently reachable; the
+        // board itself never scrolls off-screen.
         id: boardColumn
         anchors.top: parent.top
         anchors.left: parent.left
@@ -768,7 +759,8 @@ Rectangle {
             clockMs: boardScreen.displayClockFor(boardScreen.topColor)
             showClock: boardScreen.initialClockMs !== null
             active: boardScreen.turn === boardScreen.topColor
-            lowTime: boardScreen.isLowTime(boardScreen.displayClockFor(boardScreen.topColor), boardScreen.initialClockMs)
+            opponent: boardScreen.topColor !== boardScreen.yourColor
+            lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
             materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.topColor)
             capturedPieces: boardScreen.capturedPiecesFor(boardScreen.topColor)
             statusText: boardScreen.topStatusText()
@@ -824,20 +816,31 @@ Rectangle {
                             darkMode: boardScreen.darkMode
                             lightSquareColor: boardStyle.lightSquare
                             darkSquareColor: boardStyle.darkSquare
+                            checkSquareColor: boardStyle.checkSquare
+                            highlightSquareColor: boardStyle.highlightSquare
+                            lastMoveSquareColor: boardStyle.lastMoveSquare
+                            premoveSquareColor: boardStyle.premoveSquare
+                            inkColor: boardStyle.ink
                             pieceSet: boardScreen.pieceSet
                             pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
+                            property bool isDestination:
+                                boardScreen.selectedDestinationLookup[squareName] === true
                             isHighlighted: boardScreen.selectedSquare === squareName ||
-                                (!boardScreen.minimalHighlights && boardScreen.selectedDestinations.indexOf(squareName) !== -1)
+                                (!boardScreen.minimalHighlights && isDestination)
                             isSelected: boardScreen.selectedSquare === squareName
                             isLegalDestination: !boardScreen.minimalHighlights &&
-                                boardScreen.selectedDestinations.indexOf(squareName) !== -1
-                            isLastMove: boardScreen.isLastMoveSquare(squareName)
+                                isDestination
+                            isLastMove: boardScreen.viewingHistory
+                                ? boardScreen.historicalLastMoveLookup[squareName] === true
+                                : boardScreen.lastMove !== null &&
+                                    (squareName === boardScreen.lastMove[0] ||
+                                     squareName === boardScreen.lastMove[1])
                             isCheckSquare: squareName === boardScreen.checkedSquare
                             isPremoveSource: boardScreen.pendingPremove !== null &&
                                 boardScreen.pendingPremove.from === squareName
                             isPremoveDestination: boardScreen.pendingPremove !== null &&
                                 boardScreen.pendingPremove.to === squareName
-                            flashRefresh: boardScreen.flashSquares.indexOf(squareName) !== -1
+                            flashRefresh: boardScreen.flashSquareLookup[squareName] === true
                         }
                     }
                 }
@@ -982,14 +985,16 @@ Rectangle {
         }
 
         PlayerBar {
-            width: parent.width
+            objectName: "bottomPlayerBar"
+            width: parent.width - theme.pageTopRightInset
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.bottomColor)
             rating: boardScreen.ratingFor(boardScreen.bottomColor)
             clockMs: boardScreen.displayClockFor(boardScreen.bottomColor)
             showClock: boardScreen.initialClockMs !== null
             active: boardScreen.turn === boardScreen.bottomColor
-            lowTime: boardScreen.isLowTime(boardScreen.displayClockFor(boardScreen.bottomColor), boardScreen.initialClockMs)
+            opponent: boardScreen.bottomColor !== boardScreen.yourColor
+            lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
             materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.bottomColor)
             capturedPieces: boardScreen.capturedPiecesFor(boardScreen.bottomColor)
             pieceSet: boardScreen.pieceSet
@@ -998,15 +1003,17 @@ Rectangle {
 
     Row {
         id: boardToolbar
+        objectName: "boardToolbar"
         anchors.top: boardColumn.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: theme.pageSideMargin
+        anchors.rightMargin: theme.pageSideMargin + theme.pageTopRightInset
         anchors.topMargin: theme.spacingXs
         spacing: theme.spacingXs
 
         BoardToolButton {
-            width: (parent.width - parent.spacing * 2) / 3
+            width: (parent.width - parent.spacing) / 2
             text: boardScreen.gameActionsLabel()
             highlighted: boardScreen.pendingGameAction.length > 0 ||
                 boardScreen.gameOver ||
@@ -1020,25 +1027,42 @@ Rectangle {
             }
         }
         BoardToolButton {
-            width: (parent.width - parent.spacing * 2) / 3
+            width: (parent.width - parent.spacing) / 2
             text: "Moves"
             highlighted: boardScreen.viewingHistory
             onClicked: boardScreen.showMoves = true
         }
-        BoardToolButton {
-            width: (parent.width - parent.spacing * 2) / 3
-            text: "Chat"
-            enabled: boardScreen.canChat
-            onClicked: boardScreen.showChat = true
-        }
     }
 
-    AppDialog {
+    Loader {
+        id: gameActionsLoader
+        objectName: "gameActionsLoader"
         anchors.fill: parent
-        visible: boardScreen.showGameActions
-        darkMode: boardScreen.darkMode
-        title: "Game actions"
-        onDismissed: boardScreen.showGameActions = false
+        active: boardScreen.showGameActions
+        sourceComponent: Component {
+        AppDialog {
+            anchors.fill: parent
+            darkMode: boardScreen.darkMode
+            title: "Game actions"
+            onDismissed: boardScreen.showGameActions = false
+
+            function resetActions() {
+                acceptDrawAction.reset()
+                drawOfferAction.reset()
+                abortAction.reset()
+                berserkAction.reset()
+                giveTimeAction.reset()
+                claimDrawAction.reset()
+                resignAction.reset()
+            }
+
+            function resetDrawOffer() {
+                drawOfferAction.reset()
+            }
+
+            function resetBerserk() {
+                berserkAction.reset()
+            }
 
         Text {
             width: parent.width
@@ -1257,101 +1281,67 @@ Rectangle {
             text: "Close"
             onClicked: boardScreen.showGameActions = false
         }
+        }
+        }
     }
 
-    AppDialog {
+    Loader {
+        objectName: "moveHistoryLoader"
         anchors.fill: parent
-        visible: boardScreen.showMoves
-        darkMode: boardScreen.darkMode
-        title: "Moves"
-        onDismissed: boardScreen.showMoves = false
+        active: boardScreen.showMoves
+        sourceComponent: Component {
+            AppDialog {
+                anchors.fill: parent
+                darkMode: boardScreen.darkMode
+                title: "Moves"
+                onDismissed: boardScreen.showMoves = false
 
-        Text {
-            width: parent.width
-            text: "No moves yet"
-            visible: boardScreen.moveHistory.length === 0
-            font.pixelSize: theme.fontBody
-            horizontalAlignment: Text.AlignHCenter
-            color: theme.textMuted
-        }
-        AppButton {
-            width: parent.width
-            text: "Return to live position"
-            highlighted: true
-            visible: boardScreen.viewingHistory
-            onClicked: {
-                boardScreen.returnToLive()
-                boardScreen.showMoves = false
-            }
-        }
-        Column {
-            width: parent.width
-            spacing: 0
-
-            Repeater {
-                model: boardScreen.moveRows()
-
-                MoveListRow {
-                    required property var modelData
+                Text {
                     width: parent.width
-                    darkMode: boardScreen.darkMode
-                    moveNumber: modelData.number
-                    whiteMove: modelData.white
-                    blackMove: modelData.black
-                    currentIndex: boardScreen.historyIndex
-                    onMoveSelected: (fenIndex) => {
-                        boardScreen.showHistoryPosition(fenIndex)
+                    text: "No moves yet"
+                    visible: boardScreen.moveHistory.length === 0
+                    font.pixelSize: theme.fontBody
+                    horizontalAlignment: Text.AlignHCenter
+                    color: theme.textMuted
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Return to live position"
+                    highlighted: true
+                    visible: boardScreen.viewingHistory
+                    onClicked: {
+                        boardScreen.returnToLive()
                         boardScreen.showMoves = false
                     }
                 }
-            }
-        }
-        AppButton {
-            width: parent.width
-            text: "Close"
-            onClicked: boardScreen.showMoves = false
-        }
-    }
+                Column {
+                    width: parent.width
+                    spacing: 0
 
-    AppDialog {
-        anchors.fill: parent
-        visible: boardScreen.showChat
-        darkMode: boardScreen.darkMode
-        title: "Player chat"
-        onDismissed: boardScreen.showChat = false
+                    Repeater {
+                        model: boardScreen.moveRows()
 
-        Text {
-            width: parent.width
-            text: boardScreen.chatMessages.length > 0
-                ? boardScreen.chatMessages.join("\n")
-                : "No messages yet"
-            font.pixelSize: theme.fontSmall
-            wrapMode: Text.WordWrap
-            color: boardScreen.chatMessages.length > 0 ? theme.text : theme.textMuted
-        }
-        Row {
-            width: parent.width
-            spacing: theme.spacingXs
-
-            AppTextField {
-                id: chatInputField
-                width: parent.width - sendChatButton.width - parent.spacing
-                placeholderText: "Message opponent"
-            }
-            AppButton {
-                id: sendChatButton
-                text: "Send"
-                enabled: chatInputField.text.length > 0
-                onClicked: {
-                    boardScreen.backendSender({type: "SendChat", text: chatInputField.text})
-                    chatInputField.text = ""
+                        MoveListRow {
+                            required property var modelData
+                            width: parent.width
+                            darkMode: boardScreen.darkMode
+                            moveNumber: modelData.number
+                            whiteMove: modelData.white
+                            blackMove: modelData.black
+                            currentIndex: boardScreen.historyIndex
+                            onMoveSelected: (fenIndex) => {
+                                boardScreen.showHistoryPosition(fenIndex)
+                                boardScreen.showMoves = false
+                            }
+                        }
+                    }
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Close"
+                    onClicked: boardScreen.showMoves = false
                 }
             }
-        }
-        AppButton {
-            width: parent.width
-            text: "Close"
-            onClicked: boardScreen.showChat = false
         }
     }
 
@@ -1359,64 +1349,79 @@ Rectangle {
         id: backButton
         objectName: "boardBackButton"
         anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.margins: theme.pageSideMargin
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottomMargin: theme.pageSideMargin
+        width: Math.min(parent.width - theme.pageSideMargin * 2, theme.textFieldWidthMedium)
+        compact: true
         text: "Back to Home"
         visible: boardScreen.canNavigateHome
         enabled: boardScreen.canNavigateHome
         onClicked: boardScreen.navigateTo("HomeScreen.qml")
     }
 
-    PromotionDialog {
+    Loader {
+        objectName: "promotionLoader"
         anchors.fill: parent
-        visible: boardScreen.pendingPromotion !== null
-        darkMode: boardScreen.darkMode
-        pieceSet: boardScreen.pieceSet
-        options: boardScreen.pendingPromotion ? boardScreen.pendingPromotion.options : []
-        pieceCodeFor: function(piece) {
-            return boardScreen.promotionPieceCode(piece)
-        }
-        onChosen: (piece) => {
-            var from = boardScreen.pendingPromotion.from
-            var to = boardScreen.pendingPromotion.to
-            var isPremove = boardScreen.pendingPromotion.premove || false
-            boardScreen.pendingPromotion = null
-            if (isPremove) {
-                boardScreen.queuePremove(from, to, piece)
-            } else {
-                boardScreen.requestMove(from, to, piece)
+        active: boardScreen.pendingPromotion !== null
+        sourceComponent: Component {
+            PromotionDialog {
+                anchors.fill: parent
+                darkMode: boardScreen.darkMode
+                pieceSet: boardScreen.pieceSet
+                options: boardScreen.pendingPromotion
+                    ? boardScreen.pendingPromotion.options
+                    : []
+                pieceCodeFor: function(piece) {
+                    return boardScreen.promotionPieceCode(piece)
+                }
+                onChosen: (piece) => {
+                    var from = boardScreen.pendingPromotion.from
+                    var to = boardScreen.pendingPromotion.to
+                    var isPremove = boardScreen.pendingPromotion.premove || false
+                    boardScreen.pendingPromotion = null
+                    if (isPremove) {
+                        boardScreen.queuePremove(from, to, piece)
+                    } else {
+                        boardScreen.requestMove(from, to, piece)
+                    }
+                }
             }
         }
     }
 
-    AppDialog {
+    Loader {
+        objectName: "moveConfirmationLoader"
         anchors.fill: parent
-        visible: boardScreen.pendingMoveConfirmation !== null
-        darkMode: boardScreen.darkMode
-        dismissOnBackground: false
-        title: boardScreen.pendingMoveConfirmation
-            ? "Confirm " + boardScreen.pendingMoveConfirmation.from + "–" +
-                boardScreen.pendingMoveConfirmation.to +
-                (boardScreen.pendingMoveConfirmation.promotion
-                    ? "=" + boardScreen.pendingMoveConfirmation.promotion.toUpperCase()
-                    : "")
-            : ""
+        active: boardScreen.pendingMoveConfirmation !== null
+        sourceComponent: Component {
+            AppDialog {
+                anchors.fill: parent
+                darkMode: boardScreen.darkMode
+                dismissOnBackground: false
+                title: boardScreen.pendingMoveConfirmation
+                    ? "Confirm " + boardScreen.pendingMoveConfirmation.from + "–" +
+                        boardScreen.pendingMoveConfirmation.to +
+                        (boardScreen.pendingMoveConfirmation.promotion
+                            ? "=" + boardScreen.pendingMoveConfirmation.promotion.toUpperCase()
+                            : "")
+                    : ""
 
-        Row {
-            width: parent.width
-            spacing: theme.spacingXs
+                Row {
+                    width: parent.width
+                    spacing: theme.spacingXs
 
-            AppButton {
-                width: (parent.width - parent.spacing) / 2
-                text: "Confirm"
-                highlighted: true
-                onClicked: boardScreen.confirmPendingMove()
-            }
-            AppButton {
-                width: (parent.width - parent.spacing) / 2
-                text: "Cancel"
-                onClicked: boardScreen.cancelPendingMove()
+                    AppButton {
+                        width: (parent.width - parent.spacing) / 2
+                        text: "Confirm"
+                        highlighted: true
+                        onClicked: boardScreen.confirmPendingMove()
+                    }
+                    AppButton {
+                        width: (parent.width - parent.spacing) / 2
+                        text: "Cancel"
+                        onClicked: boardScreen.cancelPendingMove()
+                    }
+                }
             }
         }
     }
@@ -1424,9 +1429,13 @@ Rectangle {
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
             var nextLastMove = msg.last_move || null
+            var nextGameId = msg.game_id || ""
             var positionChanged = boardScreen.liveFen !== msg.fen ||
-                (boardScreen.gameId.length > 0 && boardScreen.gameId !== (msg.game_id || ""))
-            if (boardScreen.liveFen !== "" && positionChanged) {
+                boardScreen.gameId !== nextGameId
+            var previewConfirmed = boardScreen.previewFen.length > 0 &&
+                boardScreen.previewFen === msg.fen &&
+                boardScreen.gameId === nextGameId
+            if (boardScreen.liveFen !== "" && positionChanged && !previewConfirmed) {
                 var refreshSquares = boardScreen.changedSquaresBetweenFens(boardScreen.liveFen, msg.fen)
                 if (boardScreen.lastMove !== null) {
                     boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[0])
@@ -1445,20 +1454,31 @@ Rectangle {
                 boardFlashTimer.restart()
             }
             if (positionChanged) boardScreen.clearAnnotations()
-            boardScreen.gameId = msg.game_id || ""
-            boardScreen.liveFen = msg.fen
-            boardScreen.fen = msg.fen
-            boardScreen.positionHistory = msg.position_history || [msg.fen]
-            boardScreen.historyIndex = boardScreen.positionHistory.length - 1
-            boardScreen.turn = msg.turn
+            boardScreen.gameId = nextGameId
+            if (positionChanged) {
+                boardScreen.liveFen = msg.fen
+                boardScreen.fen = msg.fen
+                boardScreen.previewFen = ""
+                boardScreen.positionHistory = msg.position_history || [msg.fen]
+                boardScreen.historyIndex = boardScreen.positionHistory.length - 1
+                boardScreen.turn = msg.turn
+                boardScreen.liveTurn = msg.turn
+                boardScreen.legalMoves = msg.legal_moves
+                boardScreen.lastMove = nextLastMove
+                boardScreen.liveLastMove = nextLastMove
+                boardScreen.inCheck = msg.in_check || false
+                boardScreen.liveInCheck = msg.in_check || false
+                boardScreen.moveHistory = msg.move_history || []
+                boardScreen.capturedByWhite = msg.captured_by_white || []
+                boardScreen.capturedByBlack = msg.captured_by_black || []
+            }
             boardScreen.whiteTimeMs = msg.white_time_ms
             boardScreen.blackTimeMs = msg.black_time_ms
+            boardScreen.liveWhiteTimeMs = msg.white_time_ms
+            boardScreen.liveBlackTimeMs = msg.black_time_ms
             boardScreen.lastClockSyncMs = Date.now()
             boardScreen.clockPulse += 1
             boardScreen.initialClockMs = msg.initial_clock_ms !== undefined ? msg.initial_clock_ms : null
-            boardScreen.legalMoves = msg.legal_moves
-            boardScreen.lastMove = msg.last_move || null
-            boardScreen.inCheck = msg.in_check || false
             boardScreen.yourColor = msg.your_color || "white"
             boardScreen.drawOfferedByOpponent = msg.draw_offered_by_opponent || false
             boardScreen.takebackOfferedByOpponent = msg.takeback_offered_by_opponent || false
@@ -1469,11 +1489,9 @@ Rectangle {
             boardScreen.canOfferDraw = msg.can_offer_draw || false
             boardScreen.canOfferTakeback = msg.can_offer_takeback || false
             boardScreen.canGiveTime = msg.can_give_time || false
-            boardScreen.canChat = msg.can_chat || false
-            if (!boardScreen.canOfferDraw) drawOfferAction.reset()
-            boardScreen.moveHistory = msg.move_history || []
-            boardScreen.capturedByWhite = msg.captured_by_white || []
-            boardScreen.capturedByBlack = msg.captured_by_black || []
+            if (!boardScreen.canOfferDraw && gameActionsLoader.item) {
+                gameActionsLoader.item.resetDrawOffer()
+            }
             boardScreen.yourName = msg.your_name || ""
             boardScreen.yourRating = msg.your_rating !== undefined ? msg.your_rating : null
             boardScreen.opponentName = msg.opponent_name || ""
@@ -1482,12 +1500,7 @@ Rectangle {
             boardScreen.firstMoveTimeMs = msg.first_move_time_ms !== undefined
                 ? msg.first_move_time_ms
                 : null
-            resignAction.reset()
-            abortAction.reset()
-            berserkAction.reset()
-            acceptDrawAction.reset()
-            claimDrawAction.reset()
-            giveTimeAction.reset()
+            boardScreen.resetGameActionControls()
             // A RatingDiff for a previous game that never got consumed (its
             // own GameOver never arrived on this screen, e.g. after a
             // Back-to-Home-and-Resume round trip) must not bleed into this
@@ -1504,6 +1517,7 @@ Rectangle {
             }
             boardScreen.executePendingPremove()
         } else if (msg.type === "GameOver") {
+            boardScreen.previewFen = ""
             boardScreen.returnToLive()
             boardScreen.whiteTimeMs = boardScreen.displayClockFor("white")
             boardScreen.blackTimeMs = boardScreen.displayClockFor("black")
@@ -1536,12 +1550,7 @@ Rectangle {
             boardScreen.pendingMoveConfirmation = null
             moveRequestGate.clear()
             boardScreen.pendingPremove = null
-            resignAction.reset()
-            abortAction.reset()
-            berserkAction.reset()
-            acceptDrawAction.reset()
-            claimDrawAction.reset()
-            giveTimeAction.reset()
+            boardScreen.resetGameActionControls()
             boardScreen.pendingGameAction = ""
             boardScreen.statusText = "Game over: " + outcome
             if (msg.reason && msg.reason.length > 0 && msg.reason !== outcome) {
@@ -1564,30 +1573,49 @@ Rectangle {
             }
             if (msg.action === "Berserk") {
                 boardScreen.canBerserk = false
-                berserkAction.reset()
+                if (gameActionsLoader.item) gameActionsLoader.item.resetBerserk()
                 boardScreen.statusText = "Berserk activated"
             } else if (msg.action === "AddTime") {
                 boardScreen.statusText = "15 seconds added to opponent"
             }
+        } else if (msg.type === "MovePreview") {
+            if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0) return
+            var previewLastMove = msg.last_move || null
+            var previewRefreshSquares = boardScreen.changedSquaresBetweenFens(
+                boardScreen.liveFen, msg.fen)
+            if (boardScreen.liveLastMove !== null) {
+                boardScreen.addRefreshSquare(previewRefreshSquares, boardScreen.liveLastMove[0])
+                boardScreen.addRefreshSquare(previewRefreshSquares, boardScreen.liveLastMove[1])
+            }
+            if (previewLastMove !== null) {
+                boardScreen.addRefreshSquare(previewRefreshSquares, previewLastMove[0])
+                boardScreen.addRefreshSquare(previewRefreshSquares, previewLastMove[1])
+            }
+            boardScreen.flashSquares = previewRefreshSquares
+            boardFlashTimer.restart()
+            boardScreen.previewFen = msg.fen
+            boardScreen.fen = msg.fen
+            boardScreen.turn = msg.turn
+            boardScreen.whiteTimeMs = msg.white_time_ms
+            boardScreen.blackTimeMs = msg.black_time_ms
+            boardScreen.lastClockSyncMs = Date.now()
+            boardScreen.clockPulse += 1
+            boardScreen.lastMove = previewLastMove
+            boardScreen.inCheck = msg.in_check || false
         } else if (msg.type === "MoveSubmitted") {
             moveRequestGate.acknowledge(
                 msg.game_id, msg.from, msg.to, msg.promotion || null)
         } else if (msg.type === "MoveRejected") {
+            boardScreen.rollbackMovePreview()
             boardScreen.statusText = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""
             moveRequestGate.clear()
-        } else if (msg.type === "Reconnecting") {
+        } else if (msg.type === "GameStreamReconnecting") {
+            boardScreen.rollbackMovePreview()
             boardScreen.statusText = "Reconnecting..."
         } else if (msg.type === "OpponentGone") {
             boardScreen.opponentGone = msg.gone
             boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
-        } else if (msg.type === "ChatMessage") {
-            // Capped rather than left to grow for a whole (possibly
-            // correspondence-length) game's entire chat history -- unbounded
-            // otherwise, and nothing here ever needs more than recent context.
-            boardScreen.chatMessages = boardScreen.chatMessages.concat([msg.username + ": " + msg.text]).slice(-50)
-        } else if (msg.type === "ChatHistory") {
-            boardScreen.mergeChatHistory(msg.messages || [])
         } else if (msg.type === "ErrorMsg") {
             // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
             // possible") only ever reached main.qml's console.warn -- invisible

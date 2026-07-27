@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5
 
 Rectangle {
     id: homeScreen
@@ -39,11 +38,10 @@ Rectangle {
         }
     }
 
-    Flickable {
+    EinkPagedFlickable {
         anchors.fill: parent
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
-        contentWidth: width
         contentHeight: contentColumn.height
         // No rubber-band overshoot at the ends -- same reasoning as every
         // other Flickable/ListView in this app (see GameHistoryScreen's own
@@ -51,8 +49,6 @@ Rectangle {
         // a real e-ink refresh cost for a purely cosmetic effect. This one
         // was missing it before this pass -- the one Flickable in the app
         // that had drifted from that rule.
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
 
         Column {
             id: contentColumn
@@ -68,6 +64,9 @@ Rectangle {
                     width: 150
                     height: 150
                     fillMode: Image.PreserveAspectFit
+                    smooth: false
+                    sourceSize.width: width
+                    sourceSize.height: height
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter

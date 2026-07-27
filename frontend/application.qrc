@@ -7,6 +7,7 @@
         <file>ui/BoardToolButton.qml</file>
         <file>ui/ConfirmAction.qml</file>
         <file>ui/EinkRefreshArea.qml</file>
+        <file>ui/EinkPagedFlickable.qml</file>
         <file>ui/MoveRequestGate.qml</file>
         <file>ui/ChessDisplay.qml</file>
         <file>ui/MoveListCell.qml</file>
@@ -25,7 +26,6 @@
         <file>ui/BoardStyle.qml</file>
         <file>ui/BoardPreview.qml</file>
         <file>ui/PlayerBar.qml</file>
-        <file>assets/ChessGlyphs.ttf</file>
         <file>assets/pieces/cburnett/wK.png</file>
         <file>assets/pieces/cburnett/wQ.png</file>
         <file>assets/pieces/cburnett/wR.png</file>
