@@ -146,7 +146,7 @@ Rectangle {
     property double lastClockSyncMs: 0
     property int clockPulse: 0
     Timer {
-        interval: 1000
+        interval: boardScreen.clockRefreshIntervalMs()
         repeat: true
         running: boardScreen.visible &&
             boardScreen.liveClockEnabled &&
@@ -379,6 +379,22 @@ Rectangle {
         if (boardScreen.lastClockSyncMs <= 0) return boardScreen.firstMoveTimeMs
         var elapsed = Math.floor(Math.max(0, now - boardScreen.lastClockSyncMs) / 1000) * 1000
         return Math.max(0, boardScreen.firstMoveTimeMs - elapsed)
+    }
+
+    function clockRefreshIntervalMs() {
+        var remainingMs = null
+        if (boardScreen.initialClockMs !== null &&
+                boardScreen.initialClockMs !== undefined) {
+            remainingMs = boardScreen.displayClockFor(boardScreen.turn)
+        }
+        var firstMoveRemainingMs = boardScreen.displayFirstMoveTimeMs()
+        if (firstMoveRemainingMs !== null) {
+            remainingMs = remainingMs === null
+                ? firstMoveRemainingMs
+                : Math.min(remainingMs, firstMoveRemainingMs)
+        }
+        if (remainingMs === null || remainingMs <= 60000) return 1000
+        return Math.min(10000, Math.max(1000, remainingMs - 60000))
     }
 
     function gameActionsLabel() {
