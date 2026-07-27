@@ -14,6 +14,15 @@ Rectangle {
     property var navigateTo
     property var openGameReview: function() {}
     property bool darkMode: false
+    property string boardTheme: "brown"
+    property string pieceSet: "cburnett"
+
+    BoardStyle {
+        id: boardStyle
+        darkMode: boardScreen.darkMode
+        boardTheme: boardScreen.boardTheme
+        pieceSet: boardScreen.pieceSet
+    }
 
     property string gameId: ""
     property string fen: ""
@@ -570,7 +579,7 @@ Rectangle {
     }
 
     // FEN piece char -> cburnett filename code (e.g. "K" -> "wK", "q" -> "bQ"),
-    // matching frontend/assets/pieces/<code>.png. Replaced the earlier
+    // matching frontend/assets/pieces/<set>/<code>.png. Replaced the earlier
     // Unicode-glyph glyphFor() map now that real piece art is bundled.
     function pieceCodeFor(pieceChar) {
         if (pieceChar === "") return ""
@@ -790,6 +799,7 @@ Rectangle {
             statusText: boardScreen.topStatusText()
             statusEmphasized: !boardScreen.gameOver &&
                 boardScreen.turn === boardScreen.yourColor
+            pieceSet: boardScreen.pieceSet
         }
 
         Row {
@@ -837,6 +847,9 @@ Rectangle {
                             squareName: boardScreen.fr.files[fileIdx] + boardScreen.fr.ranks[rankIdx]
                             isLight: (fileIdx + rankIdx) % 2 === 0
                             darkMode: boardScreen.darkMode
+                            lightSquareColor: boardStyle.lightSquare
+                            darkSquareColor: boardStyle.darkSquare
+                            pieceSet: boardScreen.pieceSet
                             pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
                             isHighlighted: boardScreen.selectedSquare === squareName ||
                                 (!boardScreen.minimalHighlights && boardScreen.selectedDestinations.indexOf(squareName) !== -1)
@@ -1004,6 +1017,7 @@ Rectangle {
             lowTime: boardScreen.isLowTime(boardScreen.displayClockFor(boardScreen.bottomColor), boardScreen.initialClockMs)
             materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.bottomColor)
             capturedPieces: boardScreen.capturedPiecesFor(boardScreen.bottomColor)
+            pieceSet: boardScreen.pieceSet
         }
     }
 
@@ -1380,6 +1394,7 @@ Rectangle {
         anchors.fill: parent
         visible: boardScreen.pendingPromotion !== null
         darkMode: boardScreen.darkMode
+        pieceSet: boardScreen.pieceSet
         options: boardScreen.pendingPromotion ? boardScreen.pendingPromotion.options : []
         pieceCodeFor: function(piece) {
             return boardScreen.promotionPieceCode(piece)

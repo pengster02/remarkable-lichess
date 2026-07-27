@@ -41,7 +41,7 @@ Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
             Image {
                 anchors.horizontalCenter: parent.horizontalCenter
-                source: "../assets/pieces/wK.png"
+                source: "../assets/pieces/cburnett/wK.png"
                 width: 150
                 height: 150
                 fillMode: Image.PreserveAspectFit

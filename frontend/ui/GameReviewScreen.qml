@@ -13,6 +13,15 @@ Rectangle {
     property var backendSender
     property var navigateTo
     property bool darkMode: false
+    property string boardTheme: "brown"
+    property string pieceSet: "cburnett"
+
+    BoardStyle {
+        id: boardStyle
+        darkMode: gameReviewScreen.darkMode
+        boardTheme: gameReviewScreen.boardTheme
+        pieceSet: gameReviewScreen.pieceSet
+    }
 
     // SAN per move, e.g. ["e4", "e5", "Nf3", ...].
     property var moves: []
@@ -727,6 +736,9 @@ Rectangle {
                         squareName: gameReviewScreen.fr.files[fileIdx] + gameReviewScreen.fr.ranks[rankIdx]
                         isLight: (fileIdx + rankIdx) % 2 === 0
                         darkMode: gameReviewScreen.darkMode
+                        lightSquareColor: boardStyle.lightSquare
+                        darkSquareColor: boardStyle.darkSquare
+                        pieceSet: gameReviewScreen.pieceSet
                         pieceCode: gameReviewScreen.pieceCodeFor(gameReviewScreen.pieceAt(gameReviewScreen.currentFen(), squareName))
                         isHighlighted: gameReviewScreen.exploreMode &&
                             (gameReviewScreen.selectedSquare === squareName ||
@@ -980,6 +992,7 @@ Rectangle {
         anchors.fill: parent
         visible: gameReviewScreen.pendingPromotion !== null
         darkMode: gameReviewScreen.darkMode
+        pieceSet: gameReviewScreen.pieceSet
         options: gameReviewScreen.pendingPromotion
             ? gameReviewScreen.pendingPromotion.options
             : []

@@ -22,6 +22,8 @@ Rectangle {
     property bool minimalHighlights: false
     property bool premovesEnabled: false
     property bool liveClockEnabled: true
+    property string boardTheme: "brown"
+    property string pieceSet: "cburnett"
     // Set from GameMoves right before navigating to GameReviewScreen -- same
     // hand-off pattern as darkMode/autoQueenPromotion above, since a freshly
     // Loader-created screen has no other way to receive this reply's payload.
@@ -56,74 +58,52 @@ Rectangle {
         root.darkMode = !root.darkMode
     }
 
-    // Optimistically updates root state immediately (so the toggle UI responds
-    // without waiting on a round trip) -- SaveSettings's own SettingsState echo
-    // (handled below) will correct this if the write actually failed.
-    //
-    // Every setter always sends all fields together (not just the
-    // one being changed) -- SaveSettings has no partial-update semantics, so
-    // sending only one previously meant toggling auto-queen silently reset
-    // move_confirmation back to its serde default (false) on the backend,
-    // and the same would happen to minimal_highlights if it were left out
-    // here too.
-    function setAutoQueenPromotion(value) {
-        root.autoQueenPromotion = value
+    function persistSettings() {
         root.sendToBackend({
             type: "SaveSettings",
-            auto_queen_promotion: value,
+            auto_queen_promotion: root.autoQueenPromotion,
             move_confirmation: root.moveConfirmation,
             minimal_highlights: root.minimalHighlights,
             premoves_enabled: root.premovesEnabled,
-            live_clock_enabled: root.liveClockEnabled
+            live_clock_enabled: root.liveClockEnabled,
+            board_theme: root.boardTheme,
+            piece_set: root.pieceSet
         })
+    }
+
+    function setAutoQueenPromotion(value) {
+        root.autoQueenPromotion = value
+        root.persistSettings()
     }
 
     function setMoveConfirmation(value) {
         root.moveConfirmation = value
-        root.sendToBackend({
-            type: "SaveSettings",
-            auto_queen_promotion: root.autoQueenPromotion,
-            move_confirmation: value,
-            minimal_highlights: root.minimalHighlights,
-            premoves_enabled: root.premovesEnabled,
-            live_clock_enabled: root.liveClockEnabled
-        })
+        root.persistSettings()
     }
 
     function setMinimalHighlights(value) {
         root.minimalHighlights = value
-        root.sendToBackend({
-            type: "SaveSettings",
-            auto_queen_promotion: root.autoQueenPromotion,
-            move_confirmation: root.moveConfirmation,
-            minimal_highlights: value,
-            premoves_enabled: root.premovesEnabled,
-            live_clock_enabled: root.liveClockEnabled
-        })
+        root.persistSettings()
     }
 
     function setPremovesEnabled(value) {
         root.premovesEnabled = value
-        root.sendToBackend({
-            type: "SaveSettings",
-            auto_queen_promotion: root.autoQueenPromotion,
-            move_confirmation: root.moveConfirmation,
-            minimal_highlights: root.minimalHighlights,
-            premoves_enabled: value,
-            live_clock_enabled: root.liveClockEnabled
-        })
+        root.persistSettings()
     }
 
     function setLiveClockEnabled(value) {
         root.liveClockEnabled = value
-        root.sendToBackend({
-            type: "SaveSettings",
-            auto_queen_promotion: root.autoQueenPromotion,
-            move_confirmation: root.moveConfirmation,
-            minimal_highlights: root.minimalHighlights,
-            premoves_enabled: root.premovesEnabled,
-            live_clock_enabled: value
-        })
+        root.persistSettings()
+    }
+
+    function setBoardTheme(value) {
+        root.boardTheme = value
+        root.persistSettings()
+    }
+
+    function setPieceSet(value) {
+        root.pieceSet = value
+        root.persistSettings()
     }
 
     // Screens are re-created fresh by the Loader on every navigation (Task 10's
@@ -170,6 +150,18 @@ Rectangle {
         }
     }
 
+    onBoardThemeChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("boardTheme")) {
+            screenLoader.item.boardTheme = root.boardTheme
+        }
+    }
+
+    onPieceSetChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("pieceSet")) {
+            screenLoader.item.pieceSet = root.pieceSet
+        }
+    }
+
     // Required by the AppLoad host: it looks up `close`/`unloading` on the
     // root QML item (see rmpp-appload's window.qml Connections/onUnloading
     // wiring). `close` lets the app request that AppLoad tear down its
@@ -200,6 +192,8 @@ Rectangle {
                 root.minimalHighlights = msg.minimal_highlights || false
                 root.premovesEnabled = msg.premoves_enabled || false
                 root.liveClockEnabled = msg.live_clock_enabled !== undefined ? msg.live_clock_enabled : true
+                root.boardTheme = msg.board_theme || "brown"
+                root.pieceSet = msg.piece_set || "cburnett"
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
                 screenLoader.source = "SetupScreen.qml"
@@ -320,6 +314,18 @@ Rectangle {
             }
             if (item.hasOwnProperty("setLiveClockEnabled")) {
                 item.setLiveClockEnabled = root.setLiveClockEnabled
+            }
+            if (item.hasOwnProperty("boardTheme")) {
+                item.boardTheme = root.boardTheme
+            }
+            if (item.hasOwnProperty("setBoardTheme")) {
+                item.setBoardTheme = root.setBoardTheme
+            }
+            if (item.hasOwnProperty("pieceSet")) {
+                item.pieceSet = root.pieceSet
+            }
+            if (item.hasOwnProperty("setPieceSet")) {
+                item.setPieceSet = root.setPieceSet
             }
             if (item.hasOwnProperty("moves")) {
                 item.moves = root.reviewMoves

@@ -1,0 +1,11 @@
+The 12 PNGs in this directory are rasterized from the "chessnut" chess piece
+set by Alexis Luengas, distributed by Lichess at public/piece/chessnut in
+lichess-org/lila.
+
+Source revision: cfef8b516a20cddf89e5d0bb47cab7ab33f6829e
+Source: https://github.com/lichess-org/lila/tree/master/public/piece/chessnut
+
+Lichess lists this piece set under the Apache License 2.0:
+https://github.com/lichess-org/lila/blob/master/COPYING.md
+
+See https://www.apache.org/licenses/LICENSE-2.0 for the full license text.

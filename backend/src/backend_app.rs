@@ -391,6 +391,8 @@ impl LichessBackend {
                 minimal_highlights: settings.minimal_highlights,
                 premoves_enabled: settings.premoves_enabled,
                 live_clock_enabled: settings.live_clock_enabled,
+                board_theme: settings.board_theme,
+                piece_set: settings.piece_set,
             },
         );
     }
@@ -444,19 +446,9 @@ impl LichessBackend {
     fn handle_save_settings(
         &self,
         replier: &BackendReplier<Self>,
-        auto_queen_promotion: bool,
-        move_confirmation: bool,
-        minimal_highlights: bool,
-        premoves_enabled: bool,
-        live_clock_enabled: bool,
+        settings: crate::settings::AppSettings,
     ) {
-        let settings = crate::settings::AppSettings {
-            auto_queen_promotion,
-            move_confirmation,
-            minimal_highlights,
-            premoves_enabled,
-            live_clock_enabled,
-        };
+        let settings = settings.normalized();
         if let Err(e) = crate::settings::save(&self.settings_path, &settings) {
             self.send(replier, &BackendMessage::ErrorMsg { message: format!("failed to save settings: {e}") });
             return;
@@ -467,11 +459,13 @@ impl LichessBackend {
         self.send(
             replier,
             &BackendMessage::SettingsState {
-                auto_queen_promotion,
-                move_confirmation,
-                minimal_highlights,
-                premoves_enabled,
-                live_clock_enabled,
+                auto_queen_promotion: settings.auto_queen_promotion,
+                move_confirmation: settings.move_confirmation,
+                minimal_highlights: settings.minimal_highlights,
+                premoves_enabled: settings.premoves_enabled,
+                live_clock_enabled: settings.live_clock_enabled,
+                board_theme: settings.board_theme,
+                piece_set: settings.piece_set,
             },
         );
     }
@@ -1041,14 +1035,20 @@ impl AppLoadBackend for LichessBackend {
                 minimal_highlights,
                 premoves_enabled,
                 live_clock_enabled,
+                board_theme,
+                piece_set,
             } => {
                 self.handle_save_settings(
                     replier,
-                    auto_queen_promotion,
-                    move_confirmation,
-                    minimal_highlights,
-                    premoves_enabled,
-                    live_clock_enabled,
+                    crate::settings::AppSettings {
+                        auto_queen_promotion,
+                        move_confirmation,
+                        minimal_highlights,
+                        premoves_enabled,
+                        live_clock_enabled,
+                        board_theme,
+                        piece_set,
+                    },
                 )
             }
             FrontendMessage::LogOut => self.handle_log_out(replier),

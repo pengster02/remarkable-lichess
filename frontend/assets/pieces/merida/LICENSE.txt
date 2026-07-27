@@ -1,0 +1,13 @@
+The 12 PNGs in this directory are rasterized from the "merida" chess piece
+set by Armando Hernandez Marroquin, distributed by Lichess at
+public/piece/merida in lichess-org/lila.
+
+Source revision: cfef8b516a20cddf89e5d0bb47cab7ab33f6829e
+Source: https://github.com/lichess-org/lila/tree/master/public/piece/merida
+
+Lichess lists this piece set under GNU GPL version 2 or later:
+https://github.com/lichess-org/lila/blob/master/COPYING.md
+
+GNU GENERAL PUBLIC LICENSE, version 2, June 1991
+
+See https://www.gnu.org/licenses/gpl-2.0.txt for the full license text.

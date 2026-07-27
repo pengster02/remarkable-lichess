@@ -1,13 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Persisted app-level preferences, distinct from the per-account token (see
-/// `main.rs`'s token_path) -- confirmed against real reference clients that this
-/// is a genuinely standard chess-app setting, not a made-up one: chess.com's own
-/// help docs cover "premove, sounds, or the auto-queen" as one of its core
-/// settings categories. Kept to a single real toggle for now rather than padding
-/// this out with settings that don't apply to this app (no sound/board-theme/
-/// piece-set variety needed on a minimalist single-account e-ink client).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
     #[serde(default)]
@@ -32,10 +25,44 @@ pub struct AppSettings {
     pub premoves_enabled: bool,
     #[serde(default = "default_true")]
     pub live_clock_enabled: bool,
+    #[serde(default = "default_board_theme")]
+    pub board_theme: String,
+    #[serde(default = "default_piece_set")]
+    pub piece_set: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_board_theme() -> String {
+    "brown".to_owned()
+}
+
+fn default_piece_set() -> String {
+    "cburnett".to_owned()
+}
+
+pub fn normalize_board_theme(value: &str) -> String {
+    match value {
+        "brown" | "blue" | "green" | "mono" => value.to_owned(),
+        _ => default_board_theme(),
+    }
+}
+
+pub fn normalize_piece_set(value: &str) -> String {
+    match value {
+        "cburnett" | "merida" | "chessnut" => value.to_owned(),
+        _ => default_piece_set(),
+    }
+}
+
+impl AppSettings {
+    pub fn normalized(mut self) -> Self {
+        self.board_theme = normalize_board_theme(&self.board_theme);
+        self.piece_set = normalize_piece_set(&self.piece_set);
+        self
+    }
 }
 
 impl Default for AppSettings {
@@ -46,6 +73,8 @@ impl Default for AppSettings {
             minimal_highlights: false,
             premoves_enabled: false,
             live_clock_enabled: true,
+            board_theme: default_board_theme(),
+            piece_set: default_piece_set(),
         }
     }
 }
@@ -57,11 +86,12 @@ pub fn load(path: &Path) -> AppSettings {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
+        .map(AppSettings::normalized)
         .unwrap_or_default()
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> std::io::Result<()> {
-    let json = serde_json::to_string(settings).expect("AppSettings always serializes");
+    let json = serde_json::to_string(&settings.clone().normalized()).expect("AppSettings always serializes");
     std::fs::write(path, json)
 }
 
@@ -95,6 +125,13 @@ mod tests {
     }
 
     #[test]
+    fn defaults_to_brown_cburnett_appearance() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.board_theme, "brown");
+        assert_eq!(settings.piece_set, "cburnett");
+    }
+
+    #[test]
     fn older_settings_default_live_clock_on() {
         let settings: AppSettings =
             serde_json::from_str(r#"{"auto_queen_promotion":true}"#).unwrap();
@@ -105,11 +142,8 @@ mod tests {
     fn save_then_load_round_trips_move_confirmation() {
         let path = std::env::temp_dir().join("remarkable-lichess-settings-test-move-confirmation.json");
         let settings = AppSettings {
-            auto_queen_promotion: false,
             move_confirmation: true,
-            minimal_highlights: false,
-            premoves_enabled: false,
-            live_clock_enabled: true,
+            ..AppSettings::default()
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), settings);
@@ -120,11 +154,8 @@ mod tests {
     fn save_then_load_round_trips_minimal_highlights() {
         let path = std::env::temp_dir().join("remarkable-lichess-settings-test-minimal-highlights.json");
         let settings = AppSettings {
-            auto_queen_promotion: false,
-            move_confirmation: false,
             minimal_highlights: true,
-            premoves_enabled: false,
-            live_clock_enabled: true,
+            ..AppSettings::default()
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), settings);
@@ -143,10 +174,11 @@ mod tests {
         let path = std::env::temp_dir().join("remarkable-lichess-settings-test-roundtrip.json");
         let settings = AppSettings {
             auto_queen_promotion: true,
-            move_confirmation: false,
-            minimal_highlights: false,
             premoves_enabled: true,
             live_clock_enabled: false,
+            board_theme: "green".to_owned(),
+            piece_set: "merida".to_owned(),
+            ..AppSettings::default()
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), settings);
@@ -157,6 +189,14 @@ mod tests {
     fn load_returns_defaults_for_corrupt_json() {
         let path = std::env::temp_dir().join("remarkable-lichess-settings-test-corrupt.json");
         std::fs::write(&path, "not json").unwrap();
+        assert_eq!(load(&path), AppSettings::default());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_normalizes_unknown_appearance_ids() {
+        let path = std::env::temp_dir().join("remarkable-lichess-settings-test-invalid-appearance.json");
+        std::fs::write(&path, r#"{"board_theme":"../../bad","piece_set":"unknown"}"#).unwrap();
         assert_eq!(load(&path), AppSettings::default());
         let _ = std::fs::remove_file(&path);
     }
