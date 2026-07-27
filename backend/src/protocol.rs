@@ -276,12 +276,25 @@ pub enum BackendMessage {
         can_offer_draw: bool,
         can_offer_takeback: bool,
         can_give_time: bool,
-        // SAN per move so far (e.g. "e4", "Nf3", "O-O", "Qxh4#"). Sent in full each
-        // time (matching every other field here, all recomputed from Lichess's own
-        // always-whole-game `moves` string) -- the frontend just re-renders the same
-        // wrapped Text, no incremental diffing needed.
-        move_history: Box<[String]>,
-        position_history: Box<[String]>,
+        // Move/position history, delivered incrementally. On a full sync (game
+        // load, resume, reconnect, or a takeback that rewrote the line) both
+        // arrays are sent whole and the frontend replaces its copy. On a normal
+        // one-move advance both are absent and `appended_move` carries just the
+        // new SAN -- the frontend pushes it plus this message's `fen`, so an
+        // N-move game sends O(N) history bytes total instead of re-sending the
+        // whole (growing) line every move. That re-send was O(N^2) and trended a
+        // long correspondence game toward the SEQPACKET size cap.
+        // Alternatives: (1) keep sending both whole every message -- simplest, but
+        // it's the actual perf bug being fixed; (2) a distinct BoardAppend message
+        // type rather than optional fields -- cleaner types, but doubles the
+        // frontend's board-message handling and main.qml routing for no real gain
+        // over three skip-if-None fields.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        move_history: Option<Box<[String]>>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        position_history: Option<Box<[String]>>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        appended_move: Option<Box<str>>,
         captured_by_white: Box<[String]>,
         captured_by_black: Box<[String]>,
         // Confirmed against lichess-org/api's GameEventPlayer.yaml. Fixed for the
@@ -695,8 +708,9 @@ mod tests {
             can_offer_draw: false,
             can_offer_takeback: false,
             can_give_time: true,
-            move_history: vec![].into_boxed_slice(),
-            position_history: vec!["startpos".into()].into_boxed_slice(),
+            move_history: Some(vec![].into_boxed_slice()),
+            position_history: Some(vec!["startpos".into()].into_boxed_slice()),
+            appended_move: None,
             captured_by_white: vec!["bP".into()].into_boxed_slice(),
             captured_by_black: vec![].into_boxed_slice(),
             your_name: Some("Alice".into()),

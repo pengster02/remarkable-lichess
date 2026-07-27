@@ -134,8 +134,33 @@ fn game_description(full: &GameFull) -> String {
     parts.join(" • ")
 }
 
-fn to_board_state(session: &GameSession, state: &GameState, now: Instant) -> BackendMessage {
+// How a BoardState delivers move/position history. Full sends both arrays whole
+// (game load, resume, reconnect, takeback); Append sends only the one new SAN and
+// lets the frontend push it plus this message's fen; Unchanged (a clock/offer-only
+// update where the move list didn't move) sends no history. See the wire shape on
+// protocol::BackendMessage::BoardState.
+enum HistoryDelivery<'a> {
+    Full,
+    Append(&'a str),
+    Unchanged,
+}
+
+fn to_board_state(
+    session: &GameSession,
+    state: &GameState,
+    now: Instant,
+    history: HistoryDelivery,
+) -> BackendMessage {
     use shakmaty::Position;
+    let (move_history, position_history, appended_move) = match history {
+        HistoryDelivery::Full => (
+            Some(session.move_history.clone().into_boxed_slice()),
+            Some(session.position_history.clone().into_boxed_slice()),
+            None,
+        ),
+        HistoryDelivery::Append(san) => (None, None, Some(Box::<str>::from(san))),
+        HistoryDelivery::Unchanged => (None, None, None),
+    };
     let move_count = state.moves.split_whitespace().count();
     let draw_by_opponent = draw_offered_by_opponent(state, &session.your_color);
     let takeback_by_opponent = takeback_offered_by_opponent(state, &session.your_color);
@@ -193,8 +218,9 @@ fn to_board_state(session: &GameSession, state: &GameState, now: Instant) -> Bac
             && !session.is_tournament
             && session.opponent_is_human
             && session.initial_clock_ms.is_some(),
-        move_history: session.move_history.clone().into_boxed_slice(),
-        position_history: session.position_history.clone().into_boxed_slice(),
+        move_history,
+        position_history,
+        appended_move,
         captured_by_white: session.captured_by_white.clone().into_boxed_slice(),
         captured_by_black: session.captured_by_black.clone().into_boxed_slice(),
         your_name: session.your_name.clone(),
@@ -280,13 +306,21 @@ impl GameSession {
     }
 
     fn board_state_at(&self, now: Instant) -> BackendMessage {
-        to_board_state(self, &self.state, now)
+        // A standalone re-send of the current state (resume, berserk re-derive) --
+        // the frontend may be freshly loaded with no history, so sync it in full.
+        to_board_state(self, &self.state, now, HistoryDelivery::Full)
     }
 
     pub fn apply_state_update(&mut self, state: &GameState) -> anyhow::Result<BackendMessage> {
-        if state.moves != self.state.moves {
+        enum Change {
+            Appended(String),
+            Rebuilt,
+            Unchanged,
+        }
+        let change = if state.moves != self.state.moves {
             if let Some(uci) = single_appended_move(&self.state.moves, &state.moves) {
                 let advance = advance_uci_game(&self.position, uci)?;
+                let san = advance.san.clone();
                 self.move_history.push(advance.san);
                 self.position_history.push(advance.fen);
                 if let Some(piece) = advance.captured_piece {
@@ -297,6 +331,7 @@ impl GameSession {
                     }
                 }
                 self.position = advance.position;
+                Change::Appended(san)
             } else {
                 let replay = replay_uci_game(&self.initial_fen, &state.moves)?;
                 self.position = replay.position;
@@ -304,13 +339,23 @@ impl GameSession {
                 self.position_history = replay.position_history;
                 self.captured_by_white = replay.captured_by_white;
                 self.captured_by_black = replay.captured_by_black;
+                Change::Rebuilt
             }
+        } else {
+            Change::Unchanged
+        };
+        if !matches!(change, Change::Unchanged) {
             self.legal = legal_moves(&self.position);
             self.last_move = last_move_from_uci_list(&state.moves);
         }
         self.state = state.clone();
         self.state_received_at = Instant::now();
-        Ok(self.board_state())
+        let history = match &change {
+            Change::Appended(san) => HistoryDelivery::Append(san),
+            Change::Rebuilt => HistoryDelivery::Full,
+            Change::Unchanged => HistoryDelivery::Unchanged,
+        };
+        Ok(to_board_state(self, &self.state, self.state_received_at, history))
     }
 
     pub fn apply_accepted_move(
@@ -452,13 +497,14 @@ mod tests {
     }
 
     #[test]
-    fn move_history_flows_through_to_board_state_and_grows_on_updates() {
+    fn history_is_full_on_load_then_appended_one_move_at_a_time() {
         let full = sample_full("e2e4");
         let (mut session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
-            BackendMessage::BoardState { move_history, position_history, .. } => {
-                assert_eq!(&*move_history, ["e4".to_string()]);
-                assert_eq!(position_history.len(), 2);
+            BackendMessage::BoardState { move_history, position_history, appended_move, .. } => {
+                assert_eq!(&*move_history.unwrap(), ["e4".to_string()]);
+                assert_eq!(position_history.unwrap().len(), 2);
+                assert_eq!(appended_move, None);
             }
             _ => panic!("expected BoardState"),
         }
@@ -469,9 +515,51 @@ mod tests {
         .unwrap();
         let msg = session.apply_state_update(&state).unwrap();
         match msg {
-            BackendMessage::BoardState { move_history, position_history, .. } => {
-                assert_eq!(&*move_history, ["e4".to_string(), "e5".to_string()]);
-                assert_eq!(position_history.len(), 3);
+            // The common one-move advance sends neither array, just the new SAN.
+            BackendMessage::BoardState { move_history, position_history, appended_move, .. } => {
+                assert_eq!(move_history, None);
+                assert_eq!(position_history, None);
+                assert_eq!(appended_move.as_deref(), Some("e5"));
+            }
+            _ => panic!("expected BoardState"),
+        }
+        // The session still holds the whole line for the next full sync.
+        assert_eq!(session.move_history, ["e4", "e5"]);
+        assert_eq!(session.position_history.len(), 3);
+    }
+
+    #[test]
+    fn a_non_appending_move_change_resends_the_whole_line() {
+        // A takeback shrinks/diverges the move list rather than appending one move,
+        // so it can't be an append -- the frontend gets a full sync instead.
+        let full = sample_full("e2e4 e7e5");
+        let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let state: GameState = serde_json::from_value(serde_json::json!({
+            "moves": "e2e4", "wtime": 600000, "btime": 600000, "winc": 0, "binc": 0,
+            "status": "started", "winner": null
+        }))
+        .unwrap();
+        match session.apply_state_update(&state).unwrap() {
+            BackendMessage::BoardState { move_history, position_history, appended_move, .. } => {
+                assert_eq!(&*move_history.unwrap(), ["e4".to_string()]);
+                assert_eq!(position_history.unwrap().len(), 2);
+                assert_eq!(appended_move, None);
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn a_clock_only_update_carries_no_history() {
+        let full = sample_full("e2e4");
+        let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let mut state = session.state.clone();
+        state.btime = 599_000;
+        match session.apply_state_update(&state).unwrap() {
+            BackendMessage::BoardState { move_history, position_history, appended_move, .. } => {
+                assert_eq!(move_history, None);
+                assert_eq!(position_history, None);
+                assert_eq!(appended_move, None);
             }
             _ => panic!("expected BoardState"),
         }

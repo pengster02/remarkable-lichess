@@ -1515,7 +1515,21 @@ Rectangle {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
-                boardScreen.positionHistory = msg.position_history || [msg.fen]
+                // Full sync (game load/resume/takeback) carries the whole line and
+                // replaces our copy; a normal one-move advance sends neither array,
+                // just appended_move, so we grow our own copy by this message's fen
+                // and SAN (see backend protocol.rs BoardState).
+                if (msg.position_history !== undefined && msg.position_history !== null) {
+                    boardScreen.positionHistory = msg.position_history
+                    boardScreen.moveHistory = msg.move_history || []
+                } else {
+                    boardScreen.positionHistory =
+                        boardScreen.positionHistory.concat([msg.fen])
+                    if (msg.appended_move !== undefined && msg.appended_move !== null) {
+                        boardScreen.moveHistory =
+                            boardScreen.moveHistory.concat([msg.appended_move])
+                    }
+                }
                 boardScreen.historyIndex = boardScreen.positionHistory.length - 1
                 boardScreen.turn = msg.turn
                 boardScreen.liveTurn = msg.turn
@@ -1524,7 +1538,6 @@ Rectangle {
                 boardScreen.liveLastMove = nextLastMove
                 boardScreen.inCheck = msg.in_check || false
                 boardScreen.liveInCheck = msg.in_check || false
-                boardScreen.moveHistory = msg.move_history || []
                 boardScreen.capturedByWhite = msg.captured_by_white || []
                 boardScreen.capturedByBlack = msg.captured_by_black || []
             }
