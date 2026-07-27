@@ -30,4 +30,27 @@ TestCase {
         compare(topPlayerBar.width, board.width - theme.pageSideMargin * 2 - theme.pageTopRightInset)
         compare(topPlayerBar.y, 0)
     }
+
+    function test_liveStatusUsesTopPlayerBar() {
+        board.statusText = ""
+        board.gameOver = false
+        board.yourColor = "white"
+        board.turn = "white"
+        compare(board.topStatusText(), "Your move")
+        board.turn = "black"
+        compare(board.topStatusText(), "Waiting for opponent")
+        board.statusText = "Reconnecting..."
+        compare(board.topStatusText(), "Reconnecting...")
+    }
+
+    function test_homeNavigationRequiresGameOver() {
+        var backButton = findChild(board, "boardBackButton")
+        verify(backButton !== null)
+        board.gameOver = false
+        compare(board.canNavigateHome, false)
+        compare(backButton.enabled, false)
+        board.gameOver = true
+        compare(board.canNavigateHome, true)
+        tryCompare(backButton, "enabled", true)
+    }
 }

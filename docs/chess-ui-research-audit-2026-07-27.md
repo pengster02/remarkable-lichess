@@ -79,8 +79,8 @@ expensive analysis or data panels explicitly user-triggered.
   and rejects duplicate taps until the endpoint returns.
 - Routed tap, drag, premove, promotion, and confirmed moves through one shared
   move-request gate. Lichess's move endpoint now produces a typed acknowledgement,
-  while only a matching move from the game stream releases input. The compact
-  `Submitting e2–e4` status is the only added interim redraw.
+  while only a matching move from the game stream releases input. Turn and
+  submission feedback share the top player bar's compact Fast-refresh region.
 - Extended confirmation to accepting or claiming a draw and gifting clock
   time. Armed critical actions use one dark full-fill treatment instead of
   relying on a small icon or color alone.

@@ -136,7 +136,8 @@ Minimum emulator smoke test:
 3. Request Cloud evaluation from Menu and verify the eval and best line.
 4. Enter Explore, make one tap move and one drag move, Undo, Reset, and Exit.
 5. Start or resume a game and verify orientation, legal targets, promotion,
-   premove behavior, fixed-width clock alignment, and Back to Home.
+   premove behavior, fixed-width clock alignment, top status, and that Back to
+   Home appears only after GameOver.
 6. Verify abort is shown only through the first ply; after both players move,
    verify draw/takeback availability and that resign replaces abort.
 7. In a casual human clock game, verify Give opponent 15s; confirm it is absent
@@ -161,6 +162,9 @@ Minimum emulator smoke test:
 - Live play keeps a fixed three-control strip below the board: Actions, Moves,
   and Chat. Chat is disabled for computer games. Draw/takeback offers and
   disconnect claims change and highlight the Actions label.
+- Turn, submission, check, premove, and connection status share one compact
+  Fast-refresh line in the top player bar. Live games cannot navigate Home;
+  GameOver enables and reveals the bottom navigation action.
 - Page actions use the 144 px `AppButton`; the board strip uses the visually
   smaller 96 px `BoardToolButton`, still about a 9 mm touch target.
 - Overlays use `AppDialog`, promotion uses `PromotionDialog`, and live/review
