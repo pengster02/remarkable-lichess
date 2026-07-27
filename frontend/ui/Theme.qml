@@ -34,6 +34,7 @@ QtObject {
     readonly property color boardCheckSquare: darkMode ? "#9c3f35" : "#d1483f"
     readonly property color boardHighlightSquare: darkMode ? "#3f7a46" : "#4f9d55"
     readonly property color boardLastMoveSquare: darkMode ? "#3a6485" : "#4f86ad"
+    readonly property color boardPremoveSquare: darkMode ? "#806d2d" : "#c9a227"
 
     // manifest.json sets "supportsScaling": false, so 1 QML pixel = 1 real
     // screen pixel on this ~229 PPI panel -- these are scaled up accordingly.
@@ -55,13 +56,10 @@ QtObject {
     readonly property int exitButtonSize: touchTarget
     readonly property int exitButtonMargin: spacingSmall
 
-    // Buttons: own dedicated size class, decoupled from the body-text scale
-    // above on purpose. Height comes mainly from buttonPaddingV (2x this +
-    // content height); buttonMinHeight is just a floor under that.
-    readonly property int fontButton: 84
-    readonly property int buttonPaddingV: 230
-    readonly property int buttonPaddingH: 90
-    readonly property int buttonMinHeight: 420
+    readonly property int fontButton: 44
+    readonly property int buttonPaddingV: 24
+    readonly property int buttonPaddingH: 36
+    readonly property int buttonMinHeight: 144
 
     // Shared page frame every screen anchors its content to.
     readonly property int pageTopMargin: exitButtonMargin + exitButtonSize + spacingSmall
@@ -76,6 +74,7 @@ QtObject {
     // ~9mm minimum finger target (81px at this panel's 229 PPI).
     readonly property int touchTarget: 96
     readonly property int listRowHeight: 120
+    readonly property int boardDragThreshold: 12
 
     readonly property int playerBarHeight: 140
     readonly property int fontClock: 64

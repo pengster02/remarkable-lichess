@@ -8,10 +8,13 @@ Rectangle {
     property string pieceCode: ""
     property bool isLight: true
     property bool isHighlighted: false
+    property bool isSelected: false
+    property bool isLegalDestination: false
     property bool isLastMove: false
     property bool isCheckSquare: false
+    property bool isPremoveSource: false
+    property bool isPremoveDestination: false
     property bool darkMode: false
-    signal tapped(string squareName)
 
     Theme { id: theme; darkMode: square.darkMode }
 
@@ -22,6 +25,7 @@ Rectangle {
     color: {
         if (isCheckSquare) return theme.boardCheckSquare
         if (isHighlighted) return theme.boardHighlightSquare
+        if (isPremoveSource || isPremoveDestination) return theme.boardPremoveSquare
         if (isLastMove) return theme.boardLastMoveSquare
         return isLight ? theme.boardLightSquare : theme.boardDarkSquare
     }
@@ -50,8 +54,69 @@ Rectangle {
         sourceSize.height: height
     }
 
-    MouseArea {
+    Rectangle {
         anchors.fill: parent
-        onClicked: square.tapped(square.squareName)
+        anchors.margins: Math.max(2, parent.width * 0.05)
+        color: "transparent"
+        border.width: square.isCheckSquare ? Math.max(4, parent.width * 0.08)
+            : (square.isSelected ? Math.max(3, parent.width * 0.06) : 0)
+        border.color: theme.text
+        visible: square.isCheckSquare || square.isSelected
+    }
+
+    Rectangle {
+        anchors.centerIn: parent
+        width: parent.width * (square.pieceCode === "" ? 0.18 : 0.76)
+        height: width
+        radius: width / 2
+        color: square.pieceCode === "" ? theme.text : "transparent"
+        border.width: square.pieceCode === "" ? 0 : Math.max(3, parent.width * 0.05)
+        border.color: theme.text
+        visible: square.isLegalDestination
+    }
+
+    Rectangle {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        width: Math.max(4, parent.width * 0.13)
+        height: width
+        color: theme.text
+        visible: square.isLastMove
+    }
+
+    Rectangle {
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        width: Math.max(4, parent.width * 0.13)
+        height: width
+        color: theme.text
+        visible: square.isLastMove
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: Math.max(3, parent.width * 0.1)
+        color: "transparent"
+        border.width: Math.max(3, parent.width * 0.05)
+        border.color: theme.text
+        visible: square.isPremoveSource
+    }
+
+    Rectangle {
+        anchors.centerIn: parent
+        width: parent.width * 0.72
+        height: Math.max(3, parent.width * 0.05)
+        rotation: 45
+        color: theme.text
+        visible: square.isPremoveDestination
+    }
+
+    Rectangle {
+        anchors.centerIn: parent
+        width: parent.width * 0.72
+        height: Math.max(3, parent.width * 0.05)
+        rotation: -45
+        color: theme.text
+        visible: square.isPremoveDestination
     }
 }

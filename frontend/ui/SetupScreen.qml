@@ -68,7 +68,7 @@ Rectangle {
                 color: theme.textMuted
             }
 
-            TextField {
+            AppTextField {
                 id: tokenField
                 width: parent.width
                 font.pixelSize: theme.fontLarge
@@ -86,7 +86,7 @@ Rectangle {
                 visible: text.length > 0
             }
 
-            Button {
+            AppButton {
                 width: parent.width
                 text: "Save"
                 highlighted: true

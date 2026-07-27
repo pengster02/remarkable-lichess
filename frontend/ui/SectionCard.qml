@@ -13,7 +13,7 @@ Rectangle {
     property string title: ""
     default property alias content: contentColumn.children
     width: parent ? parent.width : implicitWidth
-    height: innerColumn.height + 24
+    height: innerColumn.height + theme.spacingSmall * 2
 
     Theme { id: theme; darkMode: sectionCard.darkMode }
     radius: theme.cardRadius

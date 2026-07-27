@@ -31,6 +31,13 @@ Rectangle {
     // nothing going on", which isn't true, it just hasn't loaded yet.
     property bool loadedOnce: false
 
+    onBackendSenderChanged: {
+        if (homeScreen.backendSender) {
+            homeScreen.backendSender({type: "RequestHome"})
+            homeScreen.backendSender({type: "RequestChallenges"})
+        }
+    }
+
     Flickable {
         anchors.fill: parent
         anchors.margins: theme.pageSideMargin
@@ -132,7 +139,7 @@ Rectangle {
                             width: parent.width
                             color: theme.text
                         }
-                        Button {
+                        AppButton {
                             // Full-width row, not a shrink-wrapped button --
                             // the e-ink list convention (KOReader et al.):
                             // a row's hittability comes from spanning the
@@ -181,13 +188,13 @@ Rectangle {
                             spacing: theme.spacingSmall
                             // Two half-width targets filling the row -- Accept
                             // gets the accent treatment as the primary action.
-                            Button {
+                            AppButton {
                                 width: (parent.width - theme.spacingSmall) / 2
                                 text: "Accept"
                                 highlighted: true
                                 onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
                             }
-                            Button {
+                            AppButton {
                                 width: (parent.width - theme.spacingSmall) / 2
                                 text: "Decline"
                                 onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
@@ -206,23 +213,20 @@ Rectangle {
                 width: parent.width
                 spacing: theme.spacingSmall
 
-                Button {
+                AppButton {
                     width: parent.width
                     text: "New game"
                     highlighted: true
                     onClicked: homeScreen.navigateTo("SeekScreen.qml")
                 }
 
-                Button {
+                AppButton {
                     width: parent.width
                     text: "Game history"
-                    onClicked: {
-                        homeScreen.backendSender({type: "RequestGameHistory"})
-                        homeScreen.navigateTo("GameHistoryScreen.qml")
-                    }
+                    onClicked: homeScreen.navigateTo("GameHistoryScreen.qml")
                 }
 
-                Button {
+                AppButton {
                     // Not a hardware light/warmth control -- reMarkable's frontlight
                     // is brightness-only, no adjustable color temperature (see
                     // docs/remarkable-appload-platform-notes.md). This just swaps
@@ -235,7 +239,7 @@ Rectangle {
                     onClicked: homeScreen.toggleDarkMode()
                 }
 
-                Button {
+                AppButton {
                     width: parent.width
                     text: "Settings"
                     onClicked: homeScreen.navigateTo("SettingsScreen.qml")

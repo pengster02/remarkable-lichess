@@ -1,6 +1,5 @@
 import QtQuick 2.5
 import QtQuick.Controls 2.5
-import net.asivery.ApploadUtils
 
 // Read-only replay of a finished game's move list, opened from
 // GameHistoryScreen (see docs/superpowers/specs/2026-07-21-game-review-move-navigation-design.md).
@@ -41,6 +40,8 @@ Rectangle {
     onCurrentIndexChanged: {
         gameReviewScreen.flashBoard = true
         boardFlashTimer.restart()
+        Qt.callLater(function() { moveList.revealCurrentMove() })
+        if (gameReviewScreen.exploreMode) gameReviewScreen.rebaseExploration()
     }
     Timer {
         id: boardFlashTimer
@@ -51,8 +52,22 @@ Rectangle {
     // just with no yourColor to XOR against here -- a finished game has no
     // "your" side baked into GameMoves, so this is the only orientation control.
     property bool manualFlip: false
+    property bool exploreMode: false
+    property bool showReviewOptions: false
+    property string exploreFen: ""
+    property var exploreLegalMoves: []
+    property var variationFens: []
+    property var variationMoves: []
+    property string selectedSquare: ""
+    property var pendingPromotion: null
+    property string exploreStatus: ""
+    property bool exploreInCheck: false
+    property string exploreStatusCode: "playing"
 
     function currentFen() {
+        if (gameReviewScreen.exploreMode && gameReviewScreen.exploreFen.length > 0) {
+            return gameReviewScreen.exploreFen
+        }
         if (gameReviewScreen.fens.length === 0) return ""
         var idx = Math.max(0, Math.min(gameReviewScreen.currentIndex, gameReviewScreen.fens.length - 1))
         return gameReviewScreen.fens[idx]
@@ -69,6 +84,13 @@ Rectangle {
             return {files: ["h","g","f","e","d","c","b","a"], ranks: ["1","2","3","4","5","6","7","8"]}
         }
         return {files: ["a","b","c","d","e","f","g","h"], ranks: ["8","7","6","5","4","3","2","1"]}
+    }
+
+    function squareAtBoardPoint(x, y) {
+        var fileIndex = Math.floor(x / (grid.width / 8))
+        var rankIndex = Math.floor(y / (grid.height / 8))
+        if (fileIndex < 0 || fileIndex > 7 || rankIndex < 0 || rankIndex > 7) return ""
+        return gameReviewScreen.fr.files[fileIndex] + gameReviewScreen.fr.ranks[rankIndex]
     }
 
     // Same minimal FEN board decode as BoardScreen.buildPieceMap -- computed
@@ -99,9 +121,16 @@ Rectangle {
     }
 
     property var currentPieceMap: gameReviewScreen.buildPieceMap(gameReviewScreen.currentFen())
-    property var previousPieceMap: gameReviewScreen.currentIndex > 0
-        ? gameReviewScreen.buildPieceMap(gameReviewScreen.fens[gameReviewScreen.currentIndex - 1])
-        : ({})
+    property var previousPieceMap: gameReviewScreen.buildPieceMap(gameReviewScreen.previousFen())
+
+    function previousFen() {
+        if (gameReviewScreen.exploreMode && gameReviewScreen.variationFens.length > 1) {
+            return gameReviewScreen.variationFens[gameReviewScreen.variationFens.length - 2]
+        }
+        return gameReviewScreen.currentIndex > 0
+            ? gameReviewScreen.fens[gameReviewScreen.currentIndex - 1]
+            : ""
+    }
 
     // Kept parameterized on `fen` (not hardcoded to currentFen()) so this
     // stays a general-purpose lookup, but the two fens actually in play here
@@ -109,7 +138,7 @@ Rectangle {
     // rebuilding one from scratch on every call.
     function pieceAt(fen, squareName) {
         if (fen === gameReviewScreen.currentFen()) return gameReviewScreen.currentPieceMap[squareName] || ""
-        if (gameReviewScreen.currentIndex > 0 && fen === gameReviewScreen.fens[gameReviewScreen.currentIndex - 1]) {
+        if (fen === gameReviewScreen.previousFen()) {
             return gameReviewScreen.previousPieceMap[squareName] || ""
         }
         return gameReviewScreen.buildPieceMap(fen)[squareName] || ""
@@ -129,7 +158,7 @@ Rectangle {
     // than through pieceAt(), since it already knows exactly which two fens
     // it wants.
     function lastMoveSquares() {
-        if (gameReviewScreen.currentIndex === 0) return []
+        if (gameReviewScreen.previousFen().length === 0) return []
         var files = ["a","b","c","d","e","f","g","h"]
         var ranks = ["1","2","3","4","5","6","7","8"]
         var out = []
@@ -149,6 +178,169 @@ Rectangle {
     // rank/file labels every redraw, each call allocating two fresh arrays --
     // same "compute once, index many" reasoning as the piece maps above.
     property var fr: gameReviewScreen.filesRanks()
+
+    function sideToMove() {
+        var fields = gameReviewScreen.currentFen().split(" ")
+        return fields.length > 1 && fields[1] === "b" ? "black" : "white"
+    }
+
+    function isMovablePiece(piece) {
+        if (piece === "") return false
+        return gameReviewScreen.sideToMove() === "white"
+            ? piece === piece.toUpperCase()
+            : piece === piece.toLowerCase()
+    }
+
+    function destinationsFrom(square) {
+        var out = []
+        for (var i = 0; i < gameReviewScreen.exploreLegalMoves.length; i++) {
+            if (gameReviewScreen.exploreLegalMoves[i].from === square) {
+                out.push(gameReviewScreen.exploreLegalMoves[i].to)
+            }
+        }
+        return out
+    }
+
+    property var selectedDestinations: gameReviewScreen.destinationsFrom(gameReviewScreen.selectedSquare)
+    property string checkedSquare: gameReviewScreen.explorationCheckedKingSquare()
+
+    function explorationCheckedKingSquare() {
+        if (!gameReviewScreen.exploreMode || !gameReviewScreen.exploreInCheck) return ""
+        var king = gameReviewScreen.sideToMove() === "white" ? "K" : "k"
+        for (var square in gameReviewScreen.currentPieceMap) {
+            if (gameReviewScreen.currentPieceMap[square] === king) return square
+        }
+        return ""
+    }
+
+    function explorationPrompt() {
+        if (gameReviewScreen.exploreStatusCode === "checkmate") return "Checkmate — candidate line ends."
+        if (gameReviewScreen.exploreStatusCode === "stalemate") return "Stalemate — candidate line ends."
+        if (gameReviewScreen.exploreStatusCode === "insufficient_material") {
+            return "Draw by insufficient material."
+        }
+        if (gameReviewScreen.exploreStatusCode === "check") return "Check — choose a legal reply."
+        return "Tap or drag a piece to explore a candidate line."
+    }
+
+    function explorationHeader() {
+        if (gameReviewScreen.variationMoves.length === 0) return gameReviewScreen.exploreStatus
+        var label = "Candidate: " + gameReviewScreen.variationMoves.join(" ")
+        if (gameReviewScreen.exploreStatusCode === "checkmate") return label + " — checkmate"
+        if (gameReviewScreen.exploreStatusCode === "stalemate") return label + " — stalemate"
+        if (gameReviewScreen.exploreStatusCode === "insufficient_material") return label + " — draw"
+        if (gameReviewScreen.exploreStatusCode === "check") return label + " — check"
+        return label
+    }
+
+    function promotionOptionsFor(from, to) {
+        var out = []
+        for (var i = 0; i < gameReviewScreen.exploreLegalMoves.length; i++) {
+            var move = gameReviewScreen.exploreLegalMoves[i]
+            if (move.from === from && move.to === to && move.promotion) out.push(move.promotion)
+        }
+        return out
+    }
+
+    function promotionPieceCode(letter) {
+        var piece = gameReviewScreen.pendingPromotion
+            ? (gameReviewScreen.currentPieceMap[gameReviewScreen.pendingPromotion.from] || "")
+            : ""
+        var isWhite = piece.length > 0
+            ? piece === piece.toUpperCase()
+            : gameReviewScreen.sideToMove() === "white"
+        return (isWhite ? "w" : "b") + letter.toUpperCase()
+    }
+
+    function requestExplorationMove(from, to) {
+        if (gameReviewScreen.destinationsFrom(from).indexOf(to) === -1) return false
+        var promotions = gameReviewScreen.promotionOptionsFor(from, to)
+        if (promotions.length > 0) {
+            gameReviewScreen.pendingPromotion = {from: from, to: to, options: promotions}
+        } else {
+            gameReviewScreen.backendSender({
+                type: "MakeAnalysisMove",
+                fen: gameReviewScreen.exploreFen,
+                from: from,
+                to: to,
+                promotion: null
+            })
+        }
+        gameReviewScreen.selectedSquare = ""
+        return true
+    }
+
+    function onExplorationGesture(from, to) {
+        if (!gameReviewScreen.exploreMode || from.length === 0 || to.length === 0) return
+        if (from !== to && gameReviewScreen.requestExplorationMove(from, to)) return
+        if (gameReviewScreen.selectedSquare.length > 0) {
+            if (gameReviewScreen.selectedSquare === to) {
+                gameReviewScreen.selectedSquare = ""
+                return
+            }
+            if (gameReviewScreen.requestExplorationMove(gameReviewScreen.selectedSquare, to)) return
+        }
+        gameReviewScreen.selectedSquare = gameReviewScreen.isMovablePiece(
+            gameReviewScreen.currentPieceMap[to] || ""
+        ) ? to : ""
+    }
+
+    function rebaseExploration() {
+        if (!gameReviewScreen.exploreMode || gameReviewScreen.fens.length === 0) return
+        var base = gameReviewScreen.fens[gameReviewScreen.currentIndex]
+        gameReviewScreen.exploreFen = base
+        gameReviewScreen.variationFens = [base]
+        gameReviewScreen.variationMoves = []
+        gameReviewScreen.exploreLegalMoves = []
+        gameReviewScreen.selectedSquare = ""
+        gameReviewScreen.pendingPromotion = null
+        gameReviewScreen.exploreStatus = "Loading legal moves..."
+        gameReviewScreen.exploreInCheck = false
+        gameReviewScreen.exploreStatusCode = "playing"
+        gameReviewScreen.backendSender({type: "RequestAnalysisPosition", fen: base})
+    }
+
+    function beginExploration() {
+        gameReviewScreen.exploreMode = true
+        gameReviewScreen.rebaseExploration()
+    }
+
+    function stopExploration() {
+        gameReviewScreen.exploreMode = false
+        gameReviewScreen.exploreFen = ""
+        gameReviewScreen.exploreLegalMoves = []
+        gameReviewScreen.variationFens = []
+        gameReviewScreen.variationMoves = []
+        gameReviewScreen.selectedSquare = ""
+        gameReviewScreen.pendingPromotion = null
+        gameReviewScreen.exploreStatus = ""
+        gameReviewScreen.exploreInCheck = false
+        gameReviewScreen.exploreStatusCode = "playing"
+    }
+
+    function undoExplorationMove() {
+        if (gameReviewScreen.variationFens.length <= 1) return
+        var nextFens = []
+        var nextMoves = []
+        for (var i = 0; i < gameReviewScreen.variationFens.length - 1; i++) {
+            nextFens.push(gameReviewScreen.variationFens[i])
+        }
+        for (var j = 0; j < gameReviewScreen.variationMoves.length - 1; j++) {
+            nextMoves.push(gameReviewScreen.variationMoves[j])
+        }
+        gameReviewScreen.variationFens = nextFens
+        gameReviewScreen.variationMoves = nextMoves
+        gameReviewScreen.exploreFen = nextFens[nextFens.length - 1]
+        gameReviewScreen.exploreLegalMoves = []
+        gameReviewScreen.selectedSquare = ""
+        gameReviewScreen.exploreStatus = "Loading legal moves..."
+        gameReviewScreen.exploreInCheck = false
+        gameReviewScreen.exploreStatusCode = "playing"
+        gameReviewScreen.backendSender({
+            type: "RequestAnalysisPosition",
+            fen: gameReviewScreen.exploreFen
+        })
+    }
 
     // Safe, bounds-checked lookup into `analysis`/`clockMs` -- both may be
     // shorter than `moves` or empty (see their own property comments above),
@@ -244,6 +436,20 @@ Rectangle {
         return theme.drawText
     }
 
+    function gameDetailsLabel() {
+        if (!gameReviewScreen.game) return ""
+        var parts = []
+        if (gameReviewScreen.game.rated === true) parts.push("Rated")
+        else if (gameReviewScreen.game.rated === false) parts.push("Casual")
+        if (gameReviewScreen.game.speed) parts.push(gameReviewScreen.game.speed)
+        if (gameReviewScreen.game.termination) parts.push(gameReviewScreen.game.termination)
+        if (gameReviewScreen.game.opening_name) parts.push(gameReviewScreen.game.opening_name)
+        if (gameReviewScreen.game.created_at_ms) {
+            parts.push(new Date(gameReviewScreen.game.created_at_ms).toLocaleDateString())
+        }
+        return parts.join(" -- ")
+    }
+
     function goFirst() { gameReviewScreen.currentIndex = 0 }
     function goPrev() { gameReviewScreen.currentIndex = Math.max(0, gameReviewScreen.currentIndex - 1) }
     function goNext() { gameReviewScreen.currentIndex = Math.min(gameReviewScreen.fens.length - 1, gameReviewScreen.currentIndex + 1) }
@@ -288,13 +494,7 @@ Rectangle {
 
         Text {
             visible: gameReviewScreen.game !== null
-            text: gameReviewScreen.game
-                ? (gameReviewScreen.game.rated ? "Rated" : "Casual") +
-                  (gameReviewScreen.game.speed ? " " + gameReviewScreen.game.speed : "") +
-                  (gameReviewScreen.game.termination ? " -- " + gameReviewScreen.game.termination : "") +
-                  (gameReviewScreen.game.opening_name ? " -- " + gameReviewScreen.game.opening_name : "") +
-                  (gameReviewScreen.game.created_at_ms ? " -- " + new Date(gameReviewScreen.game.created_at_ms).toLocaleDateString() : "")
-                : ""
+            text: gameReviewScreen.gameDetailsLabel()
             font.pixelSize: theme.fontSmall
             wrapMode: Text.WordWrap
             width: parent.width
@@ -325,8 +525,14 @@ Rectangle {
         Row {
             spacing: theme.spacingSmall
             Text {
-                text: "Move " + gameReviewScreen.currentIndex + " of " + Math.max(0, gameReviewScreen.fens.length - 1)
+                text: gameReviewScreen.exploreMode
+                    ? gameReviewScreen.explorationHeader()
+                    : "Move " + gameReviewScreen.currentIndex + " of " +
+                      Math.max(0, gameReviewScreen.fens.length - 1)
                 font.pixelSize: theme.fontBody
+                font.bold: gameReviewScreen.exploreMode
+                width: gameReviewScreen.exploreMode ? boardArea.width : implicitWidth
+                elide: Text.ElideRight
                 color: theme.text
             }
             // Engine eval for the position on the board right now -- from
@@ -335,6 +541,7 @@ Rectangle {
             // as fens/moves themselves). Empty for an unanalyzed game or before
             // any move has been made yet.
             Text {
+                visible: !gameReviewScreen.exploreMode
                 text: gameReviewScreen.evalLabel(gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1))
                 font.pixelSize: theme.fontBody
                 font.bold: true
@@ -381,9 +588,7 @@ Rectangle {
                 }
             }
 
-            // Content, not Fast -- same ghosting fix as BoardScreen's board.
-            DisplayMethodArea {
-                displayMethod: DisplayMethodArea.Content
+            Item {
                 width: grid.width
                 height: grid.height
 
@@ -391,12 +596,7 @@ Rectangle {
                 id: grid
                 columns: 8
                 rows: 8
-                // Capped at half the screen height (not "height - N" the way
-                // BoardScreen sizes its own grid) -- boardArea only wraps the
-                // grid/nav controls here, not the whole screen, so the move
-                // list below always gets its own share of the remaining space
-                // regardless of how tall this device's screen is.
-                width: Math.min(gameReviewScreen.width - rankLabels.width - theme.spacingXs, gameReviewScreen.height * 0.5)
+                width: Math.min(gameReviewScreen.width - rankLabels.width - theme.spacingXs, gameReviewScreen.height * 0.38)
                 height: width
 
                 Repeater {
@@ -411,18 +611,48 @@ Rectangle {
                         isLight: (fileIdx + rankIdx) % 2 === 0
                         darkMode: gameReviewScreen.darkMode
                         pieceCode: gameReviewScreen.pieceCodeFor(gameReviewScreen.pieceAt(gameReviewScreen.currentFen(), squareName))
-                        // No isHighlighted/isCheckSquare here -- read-only review
-                        // has no selection state and no legality to flag, only
-                        // the diff-derived last-move squares above.
+                        isHighlighted: gameReviewScreen.exploreMode &&
+                            (gameReviewScreen.selectedSquare === squareName ||
+                             gameReviewScreen.selectedDestinations.indexOf(squareName) !== -1)
+                        isSelected: gameReviewScreen.exploreMode &&
+                            gameReviewScreen.selectedSquare === squareName
+                        isLegalDestination: gameReviewScreen.exploreMode &&
+                            gameReviewScreen.selectedDestinations.indexOf(squareName) !== -1
                         isLastMove: gameReviewScreen.lastMoveSquaresCached.indexOf(squareName) !== -1
+                        isCheckSquare: squareName === gameReviewScreen.checkedSquare
                     }
                 }
+            }
 
-                Rectangle {
-                    anchors.fill: parent
-                    color: "black"
-                    visible: gameReviewScreen.flashBoard
+            MouseArea {
+                anchors.fill: grid
+                enabled: gameReviewScreen.exploreMode
+                property string pressSquare: ""
+                property real pressX: 0
+                property real pressY: 0
+                preventStealing: true
+                onPressed: (mouse) => {
+                    pressSquare = gameReviewScreen.squareAtBoardPoint(mouse.x, mouse.y)
+                    pressX = mouse.x
+                    pressY = mouse.y
                 }
+                onReleased: (mouse) => {
+                    var releaseSquare = gameReviewScreen.squareAtBoardPoint(mouse.x, mouse.y)
+                    var dx = mouse.x - pressX
+                    var dy = mouse.y - pressY
+                    if (dx * dx + dy * dy < theme.boardDragThreshold * theme.boardDragThreshold) {
+                        releaseSquare = pressSquare
+                    }
+                    gameReviewScreen.onExplorationGesture(pressSquare, releaseSquare)
+                    pressSquare = ""
+                }
+                onCanceled: pressSquare = ""
+            }
+
+            Rectangle {
+                anchors.fill: parent
+                color: "black"
+                visible: gameReviewScreen.flashBoard
             }
             }
         }
@@ -446,38 +676,145 @@ Rectangle {
             }
         }
 
-        Flow {
+        Row {
             width: parent.width
-            spacing: theme.spacingSmall
+            spacing: theme.spacingXs
+            visible: !gameReviewScreen.exploreMode
 
-            Button {
-                text: "|< First"
-                enabled: gameReviewScreen.currentIndex > 0
-                onClicked: gameReviewScreen.goFirst()
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: "Menu"
+                onClicked: gameReviewScreen.showReviewOptions = true
             }
-            Button {
-                text: "< Prev"
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: "Explore"
+                onClicked: gameReviewScreen.beginExploration()
+            }
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: "<"
                 enabled: gameReviewScreen.currentIndex > 0
                 onClicked: gameReviewScreen.goPrev()
             }
-            Button {
-                text: "Next >"
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: ">"
                 enabled: gameReviewScreen.currentIndex < gameReviewScreen.fens.length - 1
                 onClicked: gameReviewScreen.goNext()
             }
-            Button {
-                text: "Last >|"
-                enabled: gameReviewScreen.currentIndex < gameReviewScreen.fens.length - 1
-                onClicked: gameReviewScreen.goLast()
+        }
+
+        Row {
+            width: parent.width
+            spacing: theme.spacingXs
+            visible: gameReviewScreen.exploreMode
+
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: "Menu"
+                onClicked: gameReviewScreen.showReviewOptions = true
             }
-            Button {
-                text: "Flip board"
-                onClicked: gameReviewScreen.manualFlip = !gameReviewScreen.manualFlip
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: "Exit"
+                highlighted: true
+                onClicked: gameReviewScreen.stopExploration()
+            }
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: "Undo"
+                enabled: gameReviewScreen.variationMoves.length > 0
+                onClicked: gameReviewScreen.undoExplorationMove()
+            }
+            BoardToolButton {
+                width: (parent.width - parent.spacing * 3) / 4
+                text: "Reset"
+                enabled: gameReviewScreen.variationMoves.length > 0
+                onClicked: gameReviewScreen.rebaseExploration()
+            }
+        }
+
+    }
+
+    Item {
+        anchors.fill: parent
+        visible: gameReviewScreen.showReviewOptions
+        z: 100
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: gameReviewScreen.showReviewOptions = false
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - theme.pageSideMargin * 2, 840)
+            height: reviewOptionsColumn.height + theme.spacingSmall * 2
+            color: theme.background
+            border.width: 3
+            border.color: theme.text
+            radius: theme.cardRadius
+
+            MouseArea {
+                anchors.fill: parent
+            }
+
+            Column {
+                id: reviewOptionsColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: theme.spacingSmall
+                spacing: theme.spacingXs
+
+                Text {
+                    width: parent.width
+                    text: "Board options"
+                    font.pixelSize: theme.fontLarge
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    color: theme.text
+                }
+
+                AppButton {
+                    width: parent.width
+                    text: "First position"
+                    visible: !gameReviewScreen.exploreMode
+                    enabled: gameReviewScreen.currentIndex > 0
+                    onClicked: {
+                        gameReviewScreen.goFirst()
+                        gameReviewScreen.showReviewOptions = false
+                    }
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Last position"
+                    visible: !gameReviewScreen.exploreMode
+                    enabled: gameReviewScreen.currentIndex < gameReviewScreen.fens.length - 1
+                    onClicked: {
+                        gameReviewScreen.goLast()
+                        gameReviewScreen.showReviewOptions = false
+                    }
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Flip board"
+                    onClicked: {
+                        gameReviewScreen.manualFlip = !gameReviewScreen.manualFlip
+                        gameReviewScreen.showReviewOptions = false
+                    }
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Close"
+                    onClicked: gameReviewScreen.showReviewOptions = false
+                }
             }
         }
     }
 
-    Button {
+    AppButton {
         id: backButton
         // Same fixed, full-width bottom "nav bar" treatment as every other
         // screen's back action (see GameHistoryScreen/SettingsScreen/
@@ -492,6 +829,7 @@ Rectangle {
     }
 
     Flickable {
+        id: moveList
         // Anchored between the board controls and the Back button (same
         // pattern as GameHistoryScreen's own ListView) rather than sized by
         // a fixed height -- a long finished game's move list (80+ plies for
@@ -509,29 +847,153 @@ Rectangle {
         contentWidth: width
         contentHeight: moveFlow.height
 
+        function revealCurrentMove() {
+            if (gameReviewScreen.currentIndex <= 0) {
+                moveList.contentY = 0
+                return
+            }
+            var item = moveRepeater.itemAt(gameReviewScreen.currentIndex - 1)
+            if (!item) return
+            if (item.y < moveList.contentY) {
+                moveList.contentY = item.y
+            } else if (item.y + item.height > moveList.contentY + moveList.height) {
+                moveList.contentY = item.y + item.height - moveList.height
+            }
+        }
+
         Flow {
             id: moveFlow
             width: parent.width
             spacing: theme.spacingSmall
             Repeater {
+                id: moveRepeater
                 model: gameReviewScreen.moveTokens()
-                Text {
+                Rectangle {
                     required property var modelData
-                    text: modelData.label
-                    font.pixelSize: theme.fontSmall
-                    font.bold: modelData.fenIndex === gameReviewScreen.currentIndex
-                    // The current ply always wins the accent color even over a
-                    // judgment color -- "where am I" outranks "was this move
-                    // bad" once you're actually looking at it.
+                    width: moveText.implicitWidth + theme.spacingSmall * 2
+                    height: theme.touchTarget
+                    radius: theme.cardRadius
                     color: modelData.fenIndex === gameReviewScreen.currentIndex
                         ? theme.accentBackground
-                        : gameReviewScreen.judgmentColor(modelData.judgment)
+                        : theme.cardBackground
+                    border.width: modelData.fenIndex === gameReviewScreen.currentIndex ? 3 : 1
+                    border.color: modelData.fenIndex === gameReviewScreen.currentIndex
+                        ? theme.accentBackground
+                        : theme.cardBorder
+
+                    Text {
+                        id: moveText
+                        anchors.centerIn: parent
+                        text: modelData.label
+                        font.pixelSize: theme.fontSmall
+                        font.bold: modelData.fenIndex === gameReviewScreen.currentIndex
+                        color: modelData.fenIndex === gameReviewScreen.currentIndex
+                            ? theme.accentText
+                            : gameReviewScreen.judgmentColor(modelData.judgment)
+                    }
+
                     MouseArea {
                         anchors.fill: parent
                         onClicked: gameReviewScreen.currentIndex = modelData.fenIndex
                     }
                 }
             }
+        }
+    }
+
+    Popup {
+        visible: gameReviewScreen.pendingPromotion !== null
+        modal: true
+        dim: false
+        enter: null
+        exit: null
+        closePolicy: Popup.NoAutoClose
+        anchors.centerIn: parent
+
+        Row {
+            spacing: theme.spacingSmall
+            Repeater {
+                model: gameReviewScreen.pendingPromotion
+                    ? gameReviewScreen.pendingPromotion.options
+                    : []
+                Rectangle {
+                    required property string modelData
+                    width: 128
+                    height: 128
+                    color: theme.cardBackground
+                    border.width: 1
+                    border.color: theme.text
+
+                    Image {
+                        anchors.centerIn: parent
+                        width: parent.width * 0.82
+                        height: parent.height * 0.82
+                        fillMode: Image.PreserveAspectFit
+                        source: "../assets/pieces/" +
+                            gameReviewScreen.promotionPieceCode(modelData) + ".png"
+                        sourceSize.width: width
+                        sourceSize.height: height
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: {
+                            var from = gameReviewScreen.pendingPromotion.from
+                            var to = gameReviewScreen.pendingPromotion.to
+                            gameReviewScreen.pendingPromotion = null
+                            gameReviewScreen.backendSender({
+                                type: "MakeAnalysisMove",
+                                fen: gameReviewScreen.exploreFen,
+                                from: from,
+                                to: to,
+                                promotion: modelData
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    function handleMessage(msg) {
+        if (msg.type === "AnalysisPosition") {
+            if (!gameReviewScreen.exploreMode ||
+                    msg.requested_fen !== gameReviewScreen.exploreFen) return
+            var normalized = []
+            for (var i = 0; i < gameReviewScreen.variationFens.length; i++) {
+                normalized.push(i === gameReviewScreen.variationFens.length - 1
+                    ? msg.fen
+                    : gameReviewScreen.variationFens[i])
+            }
+            gameReviewScreen.variationFens = normalized
+            gameReviewScreen.exploreFen = msg.fen
+            gameReviewScreen.exploreLegalMoves = msg.legal_moves || []
+            gameReviewScreen.exploreInCheck = msg.in_check || false
+            gameReviewScreen.exploreStatusCode = msg.status || "playing"
+            gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
+        } else if (msg.type === "AnalysisMove") {
+            if (!gameReviewScreen.exploreMode ||
+                    msg.from_fen !== gameReviewScreen.exploreFen) return
+            var nextFens = []
+            var nextMoves = []
+            for (var j = 0; j < gameReviewScreen.variationFens.length; j++) {
+                nextFens.push(gameReviewScreen.variationFens[j])
+            }
+            for (var k = 0; k < gameReviewScreen.variationMoves.length; k++) {
+                nextMoves.push(gameReviewScreen.variationMoves[k])
+            }
+            nextFens.push(msg.fen)
+            nextMoves.push(msg.san)
+            gameReviewScreen.variationFens = nextFens
+            gameReviewScreen.variationMoves = nextMoves
+            gameReviewScreen.exploreFen = msg.fen
+            gameReviewScreen.exploreLegalMoves = msg.legal_moves || []
+            gameReviewScreen.exploreInCheck = msg.in_check || false
+            gameReviewScreen.exploreStatusCode = msg.status || "playing"
+            gameReviewScreen.selectedSquare = ""
+            gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
+        } else if (msg.type === "ErrorMsg" && gameReviewScreen.exploreMode) {
+            gameReviewScreen.exploreStatus = msg.message
         }
     }
 }

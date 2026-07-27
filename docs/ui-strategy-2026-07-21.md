@@ -1,5 +1,25 @@
 # UI strategy: whole-app gap audit vs. official Lichess, and roadmap
 
+**Status update (2026-07-26):** P0, P1, P2, and P3 are implemented. Game
+review now includes move navigation, clocks, analysis judgments/evaluation,
+large tappable move tokens, current-move auto-scroll, and offline candidate
+lines with legal tap/drag input, promotion, undo, and reset. The live board now
+shows rating change, opt-in move confirmation, low-time styling, material
+advantage, exact captured-piece icons, redundant non-color
+selection/legal/last-move/check cues, dual tap-tap/drag-to-move input, and a
+post-game review/new-game flow. The active clock now projects from each
+authoritative server state once per second, with a persisted opt-out for
+minimum e-ink refresh activity. Opt-in premoves include queued-state markers,
+safe authoritative execution/cancellation, and underpromotion choice. P4 is
+implemented without intermediate drag animation so it avoids selection
+redraws; its device-level refresh benefit still needs physical-panel
+measurement. The live move list is now made of tappable plies that can browse
+the position history and return to the current position. P5 is implemented
+through an explicit annotation mode: tap for a square ring, drag for an arrow,
+repeat a mark to remove it, or clear all marks. The current Board API exposes
+no rematch endpoint, so rematch is not treated as a missing button that can be
+wired up independently of a new challenge flow.
+
 Supersedes `docs/chess-ux-gaps-vs-reference-apps.md` in scope (that doc only ever
 covered `BoardScreen.qml`; all 6 of its findings are now closed, see its own
 correction note). This one covers every screen and is grounded in two things:
@@ -125,8 +145,7 @@ a `hapticFeedback` bool (default **on**), and
 `HapticFeedback.lightImpact()` on a normal move and `.mediumImpact()` when the
 move gives check — a deliberately distinct "something important happened"
 buzz. This is a genuinely cheap, zero-extra-e-ink-redraw way to confirm a tap
-registered (useful given no live clock tick and no confirmed move sound either
-— see P3). Gate this the same way as sound: don't ship it until it's confirmed
+registered. Gate this the same way as sound: don't ship it until it's confirmed
 the reMarkable hardware this app targets actually has a haptic motor at all
 (unlike a phone, that's not a safe default assumption — check
 `docs/remarkable-appload-platform-notes.md` / the AppLoad host API before
@@ -135,42 +154,35 @@ committing to this).
 ### P3 — Low-time visual warning (no audio claim)
 `lichess-org/mobile` issue #785 confirms the official app has a clock warning
 at ~1/8 of total time remaining (min 10s, max 60s), implemented as *audio*.
-This app's clock deliberately has no local ticking Timer (see `BoardScreen.qml`'s
-own comment on the e-ink-redraw-cost tradeoff), and there's no confirmed
-speaker on this reMarkable hardware family in `docs/remarkable-appload-platform-notes.md`
-— don't build audio on a guess. But a one-shot *visual* change (clock text
-turns red, or bolds) the next time a `BoardState` arrives with either side
-under that same threshold costs zero extra redraws over what already happens
-on every move, since it only changes color within a redraw that was happening
-anyway. Worth doing; don't scope in sound until hardware has a confirmed
-speaker.
+The active clock now projects locally once per second from the latest
+authoritative `BoardState`, so this warning can appear at the correct moment.
+Users can disable live ticking in Settings to minimize e-ink refresh activity.
+There is no confirmed speaker on this reMarkable hardware family in
+`docs/remarkable-appload-platform-notes.md`, so audio remains out of scope.
 
-### P4 — Carry forward, don't re-decide: drag-to-move alternative
-Already correctly flagged in the old doc as "not a gap, an intentional
-divergence" (chessmarkable supports drag-to-move specifically to avoid
-highlight-related e-ink redraws; this app only has tap-tap). Nothing to build
-now — just don't lose this thread. Revisit only if on-device testing shows
-tap-then-tap's highlight redraws are actually a problem in practice, not
-preemptively.
+### P4 — Implemented: drag-to-move alternative
+`BoardScreen.qml` accepts both tap-tap and press-drag-release through the same
+legality, promotion, auto-queen, and move-confirmation path. Dragging has no
+piece-follow animation or intermediate highlight update; the board changes
+only on release, preserving the e-ink refresh advantage that chessmarkable
+identified. White and black orientations, ordinary moves, confirmation, and
+the promotion picker are covered by emulator harness checks. Physical-device
+testing is still needed to quantify the refresh improvement.
 
-### P5 (idea, not a gap) — Pen-drawn move annotation, an opportunity this hardware has that a phone doesn't
+### P5 — Pen-drawn move annotation
 Cloning `lichess-org/flutter-chessground` (the official board-rendering
 package both lichess web and mobile build on) turned up
 `lib/src/widgets/board_annotation.dart` plus a genuine premove system
 (`board_settings.dart`'s `premovable`/`autoQueenPromotionOnPremove` etc.) —
 lichess supports user-drawn arrows/circles on the board (right-click-drag on
 web, long-press-drag on mobile) for annotating candidate moves, a real,
-established feature, not an edge case. This app has neither, and premove
-genuinely doesn't fit its current no-live-clock-tick architecture well (a
-premove is specifically about not waiting for the opponent's move to render
-before queuing your own — see P3's tradeoff). But arrow/shape annotation is
-worth a second look for a completely different reason than "match lichess":
-reMarkable hardware has a pressure-sensitive stylus, which every other chess
-client (web mouse-drag, phone touch-drag) is emulating with a worse input
-device than what's already sitting in this app's actual target user's hand.
-Not scoped or speced here — flagging it as a "we have an input modality
-lichess's own client wasn't designed around" opportunity worth its own design
-pass, not folding it into this backlog's prioritization.
+established feature, not an edge case. Premoves are now implemented as an
+opt-in preference: the queued move is marked without animation, then checked
+against the next authoritative legal-move list before it can be sent. The
+Arrow/shape annotation is implemented as an explicit board
+mode so it cannot collide with normal move gestures. A tap adds a square ring
+and a drag adds an arrow; repeating the same gesture removes that mark. Marks
+clear on position changes, and the rendering follows either board orientation.
 
 ## 4. Explicitly out of scope (and why that's a decision, not a gap)
 

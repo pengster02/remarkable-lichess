@@ -33,8 +33,15 @@ Rectangle {
     // the latter) -- so a bad export/replay leaves the user on this screen
     // with a visible reason instead of silently doing nothing.
     property string errorMessage: ""
+    property bool loading: true
+
+    onBackendSenderChanged: {
+        if (gameHistoryScreen.backendSender) gameHistoryScreen.requestFiltered()
+    }
 
     function requestFiltered() {
+        gameHistoryScreen.loading = true
+        gameHistoryScreen.errorMessage = ""
         gameHistoryScreen.backendSender({
             type: "RequestGameHistory",
             rated: gameHistoryScreen.filterRated === "all" ? null : gameHistoryScreen.filterRated === "rated",
@@ -76,7 +83,7 @@ Rectangle {
             spacing: theme.spacingSmall
             Repeater {
                 model: ["all", "rated", "casual"]
-                Button {
+                AppButton {
                     required property string modelData
                     text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
                     highlighted: gameHistoryScreen.filterRated === modelData
@@ -93,7 +100,7 @@ Rectangle {
             spacing: theme.spacingSmall
             Repeater {
                 model: ["all", "bullet", "blitz", "rapid", "classical", "correspondence"]
-                Button {
+                AppButton {
                     required property string modelData
                     text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
                     highlighted: gameHistoryScreen.filterSpeed === modelData
@@ -110,7 +117,7 @@ Rectangle {
             spacing: theme.spacingSmall
             Repeater {
                 model: ["all", "white", "black"]
-                Button {
+                AppButton {
                     required property string modelData
                     text: "Played " + modelData.charAt(0).toUpperCase() + modelData.slice(1)
                     highlighted: gameHistoryScreen.filterColor === modelData
@@ -123,8 +130,8 @@ Rectangle {
         }
 
         Text {
-            visible: gameHistoryScreen.games.length === 0
-            text: "No games match these filters."
+            visible: gameHistoryScreen.loading || gameHistoryScreen.games.length === 0
+            text: gameHistoryScreen.loading ? "Loading games..." : "No games match these filters."
             font.pixelSize: theme.fontBody
             color: theme.text
         }
@@ -139,7 +146,7 @@ Rectangle {
         }
     }
 
-    Button {
+    AppButton {
         id: backButton
         // Bottom, full-width, same fixed-position "nav bar" treatment on
         // every screen that has a back action (see GameReviewScreen,
@@ -266,8 +273,10 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "GameHistory") {
+            gameHistoryScreen.loading = false
             gameHistoryScreen.games = msg.games || []
         } else if (msg.type === "ErrorMsg") {
+            gameHistoryScreen.loading = false
             gameHistoryScreen.errorMessage = msg.message
         }
     }

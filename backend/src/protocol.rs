@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 pub const MSG_TYPE_FRONTEND_TO_BACKEND: u32 = 1;
 pub const MSG_TYPE_BACKEND_TO_FRONTEND: u32 = 2;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LegalMove {
     pub from: String,
@@ -50,6 +54,10 @@ pub enum FrontendMessage {
         move_confirmation: bool,
         #[serde(default)]
         minimal_highlights: bool,
+        #[serde(default)]
+        premoves_enabled: bool,
+        #[serde(default = "default_true")]
+        live_clock_enabled: bool,
     },
     // Clears the saved token (see backend/src/settings.rs's sibling token file)
     // and resets to the logged-out state -- there was previously no in-app way
@@ -83,6 +91,13 @@ pub enum FrontendMessage {
     // GameReviewScreen can navigate purely by array indexing, no chess logic
     // or network round-trip per step (see the game-review design spec).
     RequestGameMoves { game_id: String },
+    RequestAnalysisPosition { fen: String },
+    MakeAnalysisMove {
+        fen: String,
+        from: String,
+        to: String,
+        promotion: Option<String>,
+    },
 }
 
 // Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
@@ -192,11 +207,12 @@ pub enum BackendMessage {
     SeekCreated,
     ChallengeCreated,
     BoardState {
+        game_id: String,
         fen: String,
         turn: String,
         white_time_ms: u64,
         black_time_ms: u64,
-        legal_moves: Vec<LegalMove>,
+        legal_moves: Box<[LegalMove]>,
         last_move: Option<(String, String)>,
         // Which color the local account is playing in this game -- needed so the
         // frontend can flip board orientation (every reference client does this;
@@ -215,7 +231,10 @@ pub enum BackendMessage {
         // time (matching every other field here, all recomputed from Lichess's own
         // always-whole-game `moves` string) -- the frontend just re-renders the same
         // wrapped Text, no incremental diffing needed.
-        move_history: Vec<String>,
+        move_history: Box<[String]>,
+        position_history: Box<[String]>,
+        captured_by_white: Box<[String]>,
+        captured_by_black: Box<[String]>,
         // Confirmed against lichess-org/api's GameEventPlayer.yaml. Fixed for the
         // game's lifetime (see game::session::GameSession), unlike every field
         // above -- an AI opponent has no rating, only a name/level, hence Option.
@@ -242,7 +261,13 @@ pub enum BackendMessage {
     OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
     ChatMessage { username: String, text: String },
-    SettingsState { auto_queen_promotion: bool, move_confirmation: bool, minimal_highlights: bool },
+    SettingsState {
+        auto_queen_promotion: bool,
+        move_confirmation: bool,
+        minimal_highlights: bool,
+        premoves_enabled: bool,
+        live_clock_enabled: bool,
+    },
     GameHistory { games: Vec<HistoryGameSummary> },
     // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- `url` opens
     // to a color-choice/random assignment, `url_white`/`url_black` claim that
@@ -259,6 +284,21 @@ pub enum BackendMessage {
     // game that's actually been through its computer review, so the frontend
     // must index defensively rather than assume equal length.
     GameMoves { moves: Vec<String>, fens: Vec<String>, clock_ms: Vec<u32>, analysis: Vec<MoveAnalysis> },
+    AnalysisPosition {
+        requested_fen: String,
+        fen: String,
+        legal_moves: Box<[LegalMove]>,
+        in_check: bool,
+        status: String,
+    },
+    AnalysisMove {
+        from_fen: String,
+        fen: String,
+        san: String,
+        legal_moves: Box<[LegalMove]>,
+        in_check: bool,
+        status: String,
+    },
     // Sent when the account event stream's `gameFinish` (see
     // lichess::models::GameFinishInfo) arrives for the currently-tracked
     // game and carries a rating change (rated games only -- casual games
@@ -287,6 +327,54 @@ mod tests {
     }
 
     #[test]
+    fn analysis_messages_round_trip() {
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(
+                r#"{"type":"RequestAnalysisPosition","fen":"startpos"}"#
+            )
+            .unwrap(),
+            FrontendMessage::RequestAnalysisPosition { fen: "startpos".into() }
+        );
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(
+                r#"{"type":"MakeAnalysisMove","fen":"startpos","from":"e2","to":"e4","promotion":null}"#
+            )
+            .unwrap(),
+            FrontendMessage::MakeAnalysisMove {
+                fen: "startpos".into(),
+                from: "e2".into(),
+                to: "e4".into(),
+                promotion: None,
+            }
+        );
+        let json = serde_json::to_string(&BackendMessage::AnalysisMove {
+            from_fen: "startpos".into(),
+            fen: "after-e4".into(),
+            san: "e4".into(),
+            legal_moves: vec![LegalMove {
+                from: "e7".into(),
+                to: "e5".into(),
+                promotion: None,
+            }]
+            .into_boxed_slice(),
+            in_check: false,
+            status: "playing".into(),
+        })
+        .unwrap();
+        assert!(json.contains(r#""type":"AnalysisMove""#));
+        assert!(json.contains(r#""san":"e4""#));
+        let position_json = serde_json::to_string(&BackendMessage::AnalysisPosition {
+            requested_fen: "startpos".into(),
+            fen: "normalized".into(),
+            legal_moves: vec![].into_boxed_slice(),
+            in_check: false,
+            status: "playing".into(),
+        })
+        .unwrap();
+        assert!(position_json.contains(r#""requested_fen":"startpos""#));
+    }
+
+    #[test]
     fn new_game_action_frontend_messages_parse() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"DrawAction","accept":true}"#).unwrap(),
@@ -312,26 +400,42 @@ mod tests {
             // RequestGameHistory's optional filters.
             serde_json::from_str::<FrontendMessage>(r#"{"type":"SaveSettings","auto_queen_promotion":true}"#)
                 .unwrap(),
-            FrontendMessage::SaveSettings { auto_queen_promotion: true, move_confirmation: false, minimal_highlights: false }
+            FrontendMessage::SaveSettings {
+                auto_queen_promotion: true,
+                move_confirmation: false,
+                minimal_highlights: false,
+                premoves_enabled: false,
+                live_clock_enabled: true,
+            }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
-                r#"{"type":"SaveSettings","auto_queen_promotion":false,"move_confirmation":true,"minimal_highlights":true}"#
+                r#"{"type":"SaveSettings","auto_queen_promotion":false,"move_confirmation":true,"minimal_highlights":true,"premoves_enabled":true}"#
             )
             .unwrap(),
-            FrontendMessage::SaveSettings { auto_queen_promotion: false, move_confirmation: true, minimal_highlights: true }
+            FrontendMessage::SaveSettings {
+                auto_queen_promotion: false,
+                move_confirmation: true,
+                minimal_highlights: true,
+                premoves_enabled: true,
+                live_clock_enabled: true,
+            }
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"LogOut"}"#).unwrap(), FrontendMessage::LogOut);
         let json = serde_json::to_string(&BackendMessage::SettingsState {
             auto_queen_promotion: true,
             move_confirmation: true,
             minimal_highlights: true,
+            premoves_enabled: true,
+            live_clock_enabled: false,
         })
         .unwrap();
         assert!(json.contains(r#""type":"SettingsState""#));
         assert!(json.contains(r#""auto_queen_promotion":true"#));
         assert!(json.contains(r#""move_confirmation":true"#));
         assert!(json.contains(r#""minimal_highlights":true"#));
+        assert!(json.contains(r#""premoves_enabled":true"#));
+        assert!(json.contains(r#""live_clock_enabled":false"#));
     }
 
     #[test]
@@ -426,23 +530,29 @@ mod tests {
     #[test]
     fn backend_message_serializes_with_type_tag() {
         let msg = BackendMessage::BoardState {
+            game_id: "g1".into(),
             fen: "startpos".into(),
             turn: "white".into(),
             white_time_ms: 600_000,
             black_time_ms: 600_000,
-            legal_moves: vec![LegalMove { from: "e2".into(), to: "e4".into(), promotion: None }],
+            legal_moves: vec![LegalMove { from: "e2".into(), to: "e4".into(), promotion: None }].into_boxed_slice(),
             last_move: None,
             your_color: "white".into(),
             in_check: false,
             draw_offered_by_opponent: false,
             takeback_offered_by_opponent: false,
-            move_history: vec![],
+            move_history: vec![].into_boxed_slice(),
+            position_history: vec!["startpos".into()].into_boxed_slice(),
+            captured_by_white: vec!["bP".into()].into_boxed_slice(),
+            captured_by_black: vec![].into_boxed_slice(),
             opponent_name: None,
             opponent_rating: None,
             initial_clock_ms: Some(600_000),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));
+        assert!(json.contains(r#""game_id":"g1""#));
+        assert!(json.contains(r#""captured_by_white":["bP"]"#));
         assert!(json.contains(r#""fen":"startpos""#));
     }
 }

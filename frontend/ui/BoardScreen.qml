@@ -1,6 +1,5 @@
 import QtQuick 2.5
 import QtQuick.Controls 2.5
-import net.asivery.ApploadUtils
 
 Rectangle {
     id: boardScreen
@@ -9,9 +8,12 @@ Rectangle {
     Theme { id: theme; darkMode: boardScreen.darkMode }
     property var backendSender
     property var navigateTo
+    property var openGameReview: function() {}
     property bool darkMode: false
 
+    property string gameId: ""
     property string fen: ""
+    property string liveFen: ""
     property string turn: "white"
     // Pushed from main.qml's root state (TokenVerified's username) -- shown
     // on your own player bar below the board, matching every reference
@@ -49,9 +51,8 @@ Rectangle {
     property bool inCheck: false
     property bool drawOfferedByOpponent: false
     property bool takebackOfferedByOpponent: false
-    // Set from the backend's OpponentGone message. No local countdown against
-    // claim_win_in_seconds -- same no-idle-redraw reasoning as the clock below;
-    // Lichess's own claim-victory endpoint rejects an early claim regardless.
+    // Set from the backend's OpponentGone message. Lichess's claim-victory
+    // endpoint remains authoritative and rejects an early claim.
     property bool opponentGone: false
     property int claimWinInSeconds: 0
     // User-controlled override, independent of yourColor -- XORed with the
@@ -78,6 +79,13 @@ Rectangle {
     // game::session::GameSession.move_history) -- only re-rendered when it
     // actually changes, same as everything else here.
     property var moveHistory: []
+    property var positionHistory: []
+    property int historyIndex: -1
+    property bool viewingHistory: boardScreen.positionHistory.length > 0 &&
+        boardScreen.historyIndex >= 0 &&
+        boardScreen.historyIndex < boardScreen.positionHistory.length - 1
+    property var capturedByWhite: []
+    property var capturedByBlack: []
     // Fixed for the game's lifetime (see game::session::GameSession) -- an AI
     // opponent has no rating, only a name/level, hence the Option on the
     // backend and the "" / null fallback here.
@@ -110,6 +118,28 @@ Rectangle {
     // Off by default: full highlighting is the more helpful default, this
     // just trades some of that away for speed once someone wants it.
     property bool minimalHighlights: false
+    property bool premovesEnabled: false
+    property var pendingPremove: null
+    onPremovesEnabledChanged: {
+        if (!boardScreen.premovesEnabled) boardScreen.cancelPremove()
+    }
+    property bool gameOver: false
+    property string gameResult: ""
+    property string gameReason: ""
+    property bool annotationMode: false
+    property var boardAnnotations: []
+    property bool liveClockEnabled: true
+    property double lastClockSyncMs: 0
+    property int clockPulse: 0
+    Timer {
+        interval: 1000
+        repeat: true
+        running: boardScreen.liveClockEnabled &&
+            boardScreen.initialClockMs !== null &&
+            !boardScreen.gameOver &&
+            boardScreen.fen.length > 0
+        onTriggered: boardScreen.clockPulse += 1
+    }
 
     // Single choke point for "a move is fully resolved (including any
     // promotion piece) and ready to send" -- either sends it immediately, or
@@ -125,6 +155,33 @@ Rectangle {
             boardScreen.backendSender({type: "MakeMove", from: from, to: to, promotion: promotion})
             boardScreen.selectedSquare = ""
         }
+    }
+
+    function toggleAnnotation(from, to) {
+        if (from.length === 0 || to.length === 0) return
+        var next = []
+        var removed = false
+        for (var i = 0; i < boardScreen.boardAnnotations.length; i++) {
+            var annotation = boardScreen.boardAnnotations[i]
+            if (annotation.from === from && annotation.to === to) {
+                removed = true
+            } else {
+                next.push(annotation)
+            }
+        }
+        if (!removed) next.push({from: from, to: to})
+        boardScreen.boardAnnotations = next
+    }
+
+    function clearAnnotations() {
+        boardScreen.boardAnnotations = []
+    }
+
+    function setAnnotationMode(enabled) {
+        boardScreen.annotationMode = enabled
+        boardScreen.selectedSquare = ""
+        boardScreen.pendingPromotion = null
+        boardScreen.pendingMoveConfirmation = null
     }
 
     function confirmPendingMove() {
@@ -159,6 +216,33 @@ Rectangle {
         return out.join("  ")
     }
 
+    function moveTokens() {
+        var out = []
+        for (var i = 0; i < boardScreen.moveHistory.length; i++) {
+            out.push({
+                label: (i % 2 === 0 ? (i / 2 + 1) + ". " : "") + boardScreen.moveHistory[i],
+                fenIndex: i + 1
+            })
+        }
+        return out
+    }
+
+    function showHistoryPosition(index) {
+        if (boardScreen.positionHistory.length === 0) return
+        var bounded = Math.max(0, Math.min(index, boardScreen.positionHistory.length - 1))
+        boardScreen.historyIndex = bounded
+        boardScreen.fen = boardScreen.positionHistory[bounded]
+        boardScreen.selectedSquare = ""
+        boardScreen.pendingPromotion = null
+        boardScreen.pendingMoveConfirmation = null
+        boardScreen.clearAnnotations()
+    }
+
+    function returnToLive() {
+        if (boardScreen.positionHistory.length === 0) return
+        boardScreen.showHistoryPosition(boardScreen.positionHistory.length - 1)
+    }
+
     // Display-order files/ranks, flipped when playing black so the local player's
     // own pieces render at the bottom, matching standard chess-app convention.
     // Written as two plain literals rather than slice().reverse() -- qmllint
@@ -175,9 +259,7 @@ Rectangle {
     // warning (confirmed via that project's issue #785, not invented): 1/8
     // of the side's total time control, clamped to [10s, 60s] -- a 3-minute
     // blitz game's "low time" kicks in a lot sooner than a 2-hour classical
-    // game's does. Visual only, no sound and no local ticking Timer (see the
-    // no-Timer comment below) -- this just runs inside a redraw a real
-    // BoardState update was already causing, zero extra cost. Returns false
+    // game's does. Returns false
     // (not low) for an untimed/correspondence game, where totalMs is null.
     function isLowTime(ms, totalMs) {
         if (totalMs === null || totalMs === undefined) return false
@@ -192,10 +274,12 @@ Rectangle {
         return {files: ["a","b","c","d","e","f","g","h"], ranks: ["8","7","6","5","4","3","2","1"]}
     }
 
-    // Destination square only -- highlighting the origin square too read as an
-    // unwanted "afterglow" trailing every piece that moved, not a useful cue.
     function isLastMoveSquare(sq) {
-        return boardScreen.lastMove !== null && sq === boardScreen.lastMove[1]
+        if (boardScreen.viewingHistory) {
+            return boardScreen.historicalLastMoveSquares.indexOf(sq) !== -1
+        }
+        return boardScreen.lastMove !== null &&
+            (sq === boardScreen.lastMove[0] || sq === boardScreen.lastMove[1])
     }
 
     // Finds the square of whichever king is currently in check (always the side
@@ -203,7 +287,7 @@ Rectangle {
     // fixed absolute a1..h8 sweep rather than the display-order filesRanks(), since
     // square *names* don't depend on board orientation, only where they're drawn.
     function checkedKingSquare() {
-        if (!boardScreen.inCheck) return ""
+        if (!boardScreen.inCheck || boardScreen.viewingHistory) return ""
         var kingChar = boardScreen.turn === "white" ? "K" : "k"
         var files = ["a","b","c","d","e","f","g","h"]
         var ranks = ["1","2","3","4","5","6","7","8"]
@@ -251,6 +335,17 @@ Rectangle {
     function clockFor(color) {
         return color === "white" ? boardScreen.whiteTimeMs : boardScreen.blackTimeMs
     }
+
+    function displayClockFor(color) {
+        var now = Date.now() + boardScreen.clockPulse * 0
+        var base = boardScreen.clockFor(color)
+        if (!boardScreen.liveClockEnabled || color !== boardScreen.turn ||
+                boardScreen.lastClockSyncMs <= 0 || boardScreen.gameOver) {
+            return base
+        }
+        var elapsed = Math.floor(Math.max(0, now - boardScreen.lastClockSyncMs) / 1000) * 1000
+        return Math.max(0, base - elapsed)
+    }
     // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
     // rank/file labels every redraw, each call allocating two fresh arrays --
     // same "compute once, index many" reasoning as selectedDestinations above.
@@ -260,6 +355,8 @@ Rectangle {
     // whole placement field on every single call -- checkedKingSquare() alone
     // was already calling it 64 times by itself).
     property var pieceMap: boardScreen.buildPieceMap(boardScreen.fen)
+    property var historicalLastMoveSquares: boardScreen.changedSquaresForHistory()
+    property int materialBalance: boardScreen.calculateMaterialBalance(boardScreen.pieceMap)
 
     function buildPieceMap(fen) {
         var map = {}
@@ -282,6 +379,22 @@ Rectangle {
         return map
     }
 
+    function changedSquaresForHistory() {
+        if (!boardScreen.viewingHistory || boardScreen.historyIndex <= 0) return []
+        var previous = boardScreen.buildPieceMap(boardScreen.positionHistory[boardScreen.historyIndex - 1])
+        var current = boardScreen.pieceMap
+        var files = ["a","b","c","d","e","f","g","h"]
+        var ranks = ["1","2","3","4","5","6","7","8"]
+        var out = []
+        for (var r = 0; r < ranks.length; r++) {
+            for (var f = 0; f < files.length; f++) {
+                var square = files[f] + ranks[r]
+                if ((previous[square] || "") !== (current[square] || "")) out.push(square)
+            }
+        }
+        return out
+    }
+
     // Deliberately keyed by the square name's own characters against
     // pieceMap (itself keyed the same way in buildPieceMap), not by indexing
     // into filesRanks()'s display-order arrays: FEN rows/columns are always
@@ -293,6 +406,32 @@ Rectangle {
     // swapped on the back rank).
     function pieceAt(squareName) {
         return boardScreen.pieceMap[squareName] || ""
+    }
+
+    function isOwnPiece(piece) {
+        if (piece === "") return false
+        return boardScreen.yourColor === "white"
+            ? piece === piece.toUpperCase()
+            : piece === piece.toLowerCase()
+    }
+
+    function calculateMaterialBalance(map) {
+        var values = {p: 1, n: 3, b: 3, r: 5, q: 9, k: 0}
+        var balance = 0
+        for (var squareName in map) {
+            var piece = map[squareName]
+            var value = values[piece.toLowerCase()] || 0
+            balance += piece === piece.toUpperCase() ? value : -value
+        }
+        return balance
+    }
+
+    function materialAdvantageFor(color) {
+        return Math.max(0, color === "white" ? boardScreen.materialBalance : -boardScreen.materialBalance)
+    }
+
+    function capturedPiecesFor(color) {
+        return color === "white" ? boardScreen.capturedByWhite : boardScreen.capturedByBlack
     }
 
     // FEN piece char -> cburnett filename code (e.g. "K" -> "wK", "q" -> "bQ"),
@@ -308,7 +447,13 @@ Rectangle {
     // regardless of side -- color comes from whose turn it is, same as the
     // popup's own logic before this change.
     function promotionPieceCode(letter) {
-        return (boardScreen.turn === "white" ? "w" : "b") + letter.toUpperCase()
+        var sourcePiece = boardScreen.pendingPromotion
+            ? boardScreen.pieceAt(boardScreen.pendingPromotion.from)
+            : ""
+        var isWhite = sourcePiece !== ""
+            ? sourcePiece === sourcePiece.toUpperCase()
+            : boardScreen.turn === "white"
+        return (isWhite ? "w" : "b") + letter.toUpperCase()
     }
 
     function destinationsFrom(square) {
@@ -332,42 +477,150 @@ Rectangle {
         return opts
     }
 
+    function beginMove(from, to) {
+        if (boardScreen.destinationsFrom(from).indexOf(to) === -1) return false
+        var promoOptions = boardScreen.promotionOptionsFor(from, to)
+        if (promoOptions.length > 0 && boardScreen.autoQueenPromotion && promoOptions.indexOf("q") !== -1) {
+            boardScreen.requestMove(from, to, "q")
+        } else if (promoOptions.length > 0) {
+            boardScreen.pendingPromotion = {from: from, to: to, options: promoOptions}
+        } else {
+            boardScreen.requestMove(from, to, null)
+        }
+        return true
+    }
+
+    function isPromotionPremove(from, to) {
+        var piece = boardScreen.pieceAt(from)
+        return (piece === "P" && to.charAt(1) === "8") ||
+            (piece === "p" && to.charAt(1) === "1")
+    }
+
+    function queuePremove(from, to, promotion) {
+        boardScreen.pendingPremove = {
+            gameId: boardScreen.gameId,
+            from: from,
+            to: to,
+            promotion: promotion
+        }
+        boardScreen.selectedSquare = ""
+    }
+
+    function beginPremove(from, to) {
+        if (!boardScreen.isOwnPiece(boardScreen.pieceAt(from)) ||
+                boardScreen.isOwnPiece(boardScreen.pieceAt(to)) || from === to) {
+            return false
+        }
+        boardScreen.pendingPremove = null
+        if (boardScreen.isPromotionPremove(from, to)) {
+            if (boardScreen.autoQueenPromotion) {
+                boardScreen.queuePremove(from, to, "q")
+            } else {
+                boardScreen.pendingPromotion = {
+                    from: from,
+                    to: to,
+                    options: ["q", "r", "b", "n"],
+                    premove: true
+                }
+            }
+        } else {
+            boardScreen.queuePremove(from, to, null)
+        }
+        return true
+    }
+
+    function cancelPremove() {
+        boardScreen.pendingPremove = null
+        boardScreen.selectedSquare = ""
+    }
+
+    function executePendingPremove() {
+        if (boardScreen.pendingPremove === null ||
+                boardScreen.turn !== boardScreen.yourColor) return
+        var queued = boardScreen.pendingPremove
+        boardScreen.pendingPremove = null
+        boardScreen.selectedSquare = ""
+        for (var i = 0; i < boardScreen.legalMoves.length; i++) {
+            var move = boardScreen.legalMoves[i]
+            if (move.from === queued.from && move.to === queued.to &&
+                    (move.promotion || null) === queued.promotion) {
+                boardScreen.requestMove(queued.from, queued.to, queued.promotion)
+                return
+            }
+        }
+        boardScreen.statusText = "Premove canceled: " + queued.from + "-" +
+            queued.to + " is no longer legal."
+    }
+
     function onSquareTapped(squareName) {
+        if (boardScreen.gameOver || boardScreen.viewingHistory) return
         // Not a correctness fix (legalMoves is always keyed to whoever's turn it
         // actually is, per the current FEN, so a tap during the opponent's turn
         // could never produce an illegal MakeMove) -- this is the UX gap flagged
         // in docs/chess-ux-gaps-vs-reference-apps.md #5: every reference client
         // disables input and shows whose turn it is rather than letting a player
         // tap around pointlessly waiting for a reply that never comes.
-        if (boardScreen.turn !== boardScreen.yourColor) return
+        if (boardScreen.turn !== boardScreen.yourColor) {
+            if (!boardScreen.premovesEnabled) return
+            if (boardScreen.selectedSquare === "") {
+                if (boardScreen.isOwnPiece(boardScreen.pieceAt(squareName))) {
+                    boardScreen.selectedSquare = squareName
+                }
+                return
+            }
+            if (boardScreen.selectedSquare === squareName) {
+                boardScreen.selectedSquare = ""
+                return
+            }
+            if (!boardScreen.beginPremove(boardScreen.selectedSquare, squareName)) {
+                boardScreen.selectedSquare =
+                    boardScreen.isOwnPiece(boardScreen.pieceAt(squareName)) ? squareName : ""
+            }
+            return
+        }
         // A tap on the board can't do anything useful while a move is
         // already awaiting explicit Confirm/Cancel -- those buttons (or the
         // popup below) are the only way forward from here.
         if (boardScreen.pendingMoveConfirmation !== null) return
         if (boardScreen.selectedSquare === "") {
-            if (boardScreen.pieceAt(squareName) !== "") boardScreen.selectedSquare = squareName
+            if (boardScreen.isOwnPiece(boardScreen.pieceAt(squareName))) boardScreen.selectedSquare = squareName
             return
         }
         if (boardScreen.selectedSquare === squareName) {
             boardScreen.selectedSquare = ""
             return
         }
-        var dests = boardScreen.destinationsFrom(boardScreen.selectedSquare)
-        if (dests.indexOf(squareName) !== -1) {
-            var promoOptions = boardScreen.promotionOptionsFor(boardScreen.selectedSquare, squareName)
-            if (promoOptions.length > 0 && boardScreen.autoQueenPromotion && promoOptions.indexOf("q") !== -1) {
-                boardScreen.requestMove(boardScreen.selectedSquare, squareName, "q")
-            } else if (promoOptions.length > 0) {
-                // Don't clear selectedSquare yet -- the promotion popup needs
-                // from/to; requestMove (which itself may just park this in
-                // pendingMoveConfirmation rather than send it) runs once the
-                // user picks a piece below.
-                boardScreen.pendingPromotion = {from: boardScreen.selectedSquare, to: squareName, options: promoOptions}
-            } else {
-                boardScreen.requestMove(boardScreen.selectedSquare, squareName, null)
-            }
+        if (boardScreen.beginMove(boardScreen.selectedSquare, squareName)) {
+            return
         } else {
-            boardScreen.selectedSquare = boardScreen.pieceAt(squareName) !== "" ? squareName : ""
+            boardScreen.selectedSquare = boardScreen.isOwnPiece(boardScreen.pieceAt(squareName)) ? squareName : ""
+        }
+    }
+
+    function squareAtBoardPoint(x, y) {
+        if (x < 0 || y < 0 || x >= grid.width || y >= grid.height) return ""
+        var fileIndex = Math.floor(x / (grid.width / 8))
+        var rankIndex = Math.floor(y / (grid.height / 8))
+        return boardScreen.fr.files[fileIndex] + boardScreen.fr.ranks[rankIndex]
+    }
+
+    function onBoardGesture(from, to) {
+        if (from === "" || to === "") return
+        if (from === to) {
+            boardScreen.onSquareTapped(to)
+            return
+        }
+        if (boardScreen.gameOver || boardScreen.pendingMoveConfirmation !== null ||
+                !boardScreen.isOwnPiece(boardScreen.pieceAt(from))) {
+            return
+        }
+        boardScreen.selectedSquare = from
+        if (boardScreen.turn === boardScreen.yourColor) {
+            if (!boardScreen.beginMove(from, to)) boardScreen.selectedSquare = ""
+        } else if (boardScreen.premovesEnabled) {
+            if (!boardScreen.beginPremove(from, to)) boardScreen.selectedSquare = ""
+        } else {
+            boardScreen.selectedSquare = ""
         }
     }
 
@@ -390,10 +643,12 @@ Rectangle {
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.topColor)
             rating: boardScreen.ratingFor(boardScreen.topColor)
-            clockMs: boardScreen.clockFor(boardScreen.topColor)
+            clockMs: boardScreen.displayClockFor(boardScreen.topColor)
             showClock: boardScreen.initialClockMs !== null
             active: boardScreen.turn === boardScreen.topColor
-            lowTime: boardScreen.isLowTime(boardScreen.clockFor(boardScreen.topColor), boardScreen.initialClockMs)
+            lowTime: boardScreen.isLowTime(boardScreen.displayClockFor(boardScreen.topColor), boardScreen.initialClockMs)
+            materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.topColor)
+            capturedPieces: boardScreen.capturedPiecesFor(boardScreen.topColor)
         }
 
         Row {
@@ -416,11 +671,7 @@ Rectangle {
                 }
             }
 
-            // Wraps the Grid (DisplayMethodArea must be a parent/sibling, not
-            // anchored from elsewhere). Content, not Fast: Fast left visible
-            // ghosting after a move.
-            DisplayMethodArea {
-                displayMethod: DisplayMethodArea.Content
+            Item {
                 width: grid.width
                 height: grid.height
 
@@ -448,9 +699,132 @@ Rectangle {
                             pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
                             isHighlighted: boardScreen.selectedSquare === squareName ||
                                 (!boardScreen.minimalHighlights && boardScreen.selectedDestinations.indexOf(squareName) !== -1)
+                            isSelected: boardScreen.selectedSquare === squareName
+                            isLegalDestination: !boardScreen.minimalHighlights &&
+                                boardScreen.selectedDestinations.indexOf(squareName) !== -1
                             isLastMove: boardScreen.isLastMoveSquare(squareName)
                             isCheckSquare: squareName === boardScreen.checkedSquare
-                            onTapped: boardScreen.onSquareTapped(squareName)
+                            isPremoveSource: boardScreen.pendingPremove !== null &&
+                                boardScreen.pendingPremove.from === squareName
+                            isPremoveDestination: boardScreen.pendingPremove !== null &&
+                                boardScreen.pendingPremove.to === squareName
+                        }
+                    }
+                }
+
+                MouseArea {
+                    id: boardInput
+                    anchors.fill: grid
+                    property string pressSquare: ""
+                    property real pressX: 0
+                    property real pressY: 0
+                    preventStealing: true
+                    onPressed: (mouse) => {
+                        pressSquare = boardScreen.squareAtBoardPoint(mouse.x, mouse.y)
+                        pressX = mouse.x
+                        pressY = mouse.y
+                    }
+                    onReleased: (mouse) => {
+                        var releaseSquare = boardScreen.squareAtBoardPoint(mouse.x, mouse.y)
+                        var dx = mouse.x - pressX
+                        var dy = mouse.y - pressY
+                        if (dx * dx + dy * dy < theme.boardDragThreshold * theme.boardDragThreshold) {
+                            releaseSquare = pressSquare
+                        }
+                        if (boardScreen.annotationMode) {
+                            boardScreen.toggleAnnotation(pressSquare, releaseSquare)
+                        } else {
+                            boardScreen.onBoardGesture(pressSquare, releaseSquare)
+                        }
+                        pressSquare = ""
+                    }
+                    onCanceled: pressSquare = ""
+                }
+
+                Canvas {
+                    id: annotationCanvas
+                    anchors.fill: parent
+                    property var annotations: boardScreen.boardAnnotations
+                    property var displayOrder: boardScreen.fr
+                    property color outerInk: theme.background
+                    property color innerInk: theme.text
+
+                    onAnnotationsChanged: requestPaint()
+                    onDisplayOrderChanged: requestPaint()
+                    onOuterInkChanged: requestPaint()
+                    onInnerInkChanged: requestPaint()
+
+                    function squareCenter(squareName) {
+                        var fileIndex = displayOrder.files.indexOf(squareName.charAt(0))
+                        var rankIndex = displayOrder.ranks.indexOf(squareName.charAt(1))
+                        if (fileIndex < 0 || rankIndex < 0) return null
+                        return {
+                            x: (fileIndex + 0.5) * width / 8,
+                            y: (rankIndex + 0.5) * height / 8
+                        }
+                    }
+
+                    function strokeLine(context, start, end, color, lineWidth) {
+                        context.beginPath()
+                        context.moveTo(start.x, start.y)
+                        context.lineTo(end.x, end.y)
+                        context.strokeStyle = color
+                        context.lineWidth = lineWidth
+                        context.lineCap = "round"
+                        context.lineJoin = "round"
+                        context.stroke()
+                    }
+
+                    function drawArrow(context, start, end, color, lineWidth) {
+                        var angle = Math.atan2(end.y - start.y, end.x - start.x)
+                        var squareSize = width / 8
+                        var tip = {
+                            x: end.x - Math.cos(angle) * squareSize * 0.18,
+                            y: end.y - Math.sin(angle) * squareSize * 0.18
+                        }
+                        var lineEnd = {
+                            x: tip.x - Math.cos(angle) * squareSize * 0.14,
+                            y: tip.y - Math.sin(angle) * squareSize * 0.14
+                        }
+                        strokeLine(context, start, lineEnd, color, lineWidth)
+                        context.beginPath()
+                        context.moveTo(tip.x, tip.y)
+                        context.lineTo(
+                            tip.x - Math.cos(angle - Math.PI / 5) * squareSize * 0.32,
+                            tip.y - Math.sin(angle - Math.PI / 5) * squareSize * 0.32
+                        )
+                        context.lineTo(
+                            tip.x - Math.cos(angle + Math.PI / 5) * squareSize * 0.32,
+                            tip.y - Math.sin(angle + Math.PI / 5) * squareSize * 0.32
+                        )
+                        context.closePath()
+                        context.fillStyle = color
+                        context.fill()
+                    }
+
+                    function drawRing(context, center, color, lineWidth) {
+                        context.beginPath()
+                        context.arc(center.x, center.y, width / 8 * 0.34, 0, Math.PI * 2)
+                        context.strokeStyle = color
+                        context.lineWidth = lineWidth
+                        context.stroke()
+                    }
+
+                    onPaint: {
+                        var context = getContext("2d")
+                        context.clearRect(0, 0, width, height)
+                        for (var i = 0; i < annotations.length; i++) {
+                            var annotation = annotations[i]
+                            var start = squareCenter(annotation.from)
+                            var end = squareCenter(annotation.to)
+                            if (start === null || end === null) continue
+                            if (annotation.from === annotation.to) {
+                                drawRing(context, start, outerInk, Math.max(14, width * 0.018))
+                                drawRing(context, start, innerInk, Math.max(7, width * 0.009))
+                            } else {
+                                drawArrow(context, start, end, outerInk, Math.max(18, width * 0.022))
+                                drawArrow(context, start, end, innerInk, Math.max(9, width * 0.011))
+                            }
                         }
                     }
                 }
@@ -489,10 +863,12 @@ Rectangle {
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.bottomColor)
             rating: boardScreen.ratingFor(boardScreen.bottomColor)
-            clockMs: boardScreen.clockFor(boardScreen.bottomColor)
+            clockMs: boardScreen.displayClockFor(boardScreen.bottomColor)
             showClock: boardScreen.initialClockMs !== null
             active: boardScreen.turn === boardScreen.bottomColor
-            lowTime: boardScreen.isLowTime(boardScreen.clockFor(boardScreen.bottomColor), boardScreen.initialClockMs)
+            lowTime: boardScreen.isLowTime(boardScreen.displayClockFor(boardScreen.bottomColor), boardScreen.initialClockMs)
+            materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.bottomColor)
+            capturedPieces: boardScreen.capturedPiecesFor(boardScreen.bottomColor)
         }
     }
 
@@ -528,10 +904,6 @@ Rectangle {
             width: parent.width
             color: theme.text
 
-            DisplayMethodArea {
-                anchors.fill: parent
-                displayMethod: DisplayMethodArea.Content
-            }
         }
 
         Text {
@@ -539,35 +911,78 @@ Rectangle {
             // default to "white" before the first BoardState) -- statusText
             // (game-over/reject/reconnect messages) takes visual precedence
             // above, this is just a steady turn indicator underneath it.
-            text: boardScreen.turn === boardScreen.yourColor ? "Your move" : "Waiting for opponent..."
+            text: boardScreen.viewingHistory
+                ? "Viewing move " + boardScreen.historyIndex + " of " + boardScreen.moveHistory.length
+                : boardScreen.pendingPremove !== null
+                ? "Premove queued: " + boardScreen.pendingPremove.from + "-" + boardScreen.pendingPremove.to
+                : boardScreen.annotationMode
+                ? "Annotation mode — tap for a ring, drag for an arrow"
+                : boardScreen.inCheck
+                ? (boardScreen.turn === boardScreen.yourColor ? "Check — your move" : "Opponent is in check")
+                : (boardScreen.turn === boardScreen.yourColor ? "Your move" : "Waiting for opponent...")
+            visible: !boardScreen.gameOver
             font.pixelSize: theme.fontBody
             color: theme.text
 
-            DisplayMethodArea {
-                anchors.fill: parent
-                displayMethod: DisplayMethodArea.Content
-            }
         }
 
-        Text {
-            text: boardScreen.formattedMoveHistory()
-            font.pixelSize: theme.fontSmall
-            wrapMode: Text.WordWrap
+        AppButton {
+            text: "Return to live position"
+            highlighted: true
+            visible: boardScreen.viewingHistory
+            onClicked: boardScreen.returnToLive()
+        }
+
+        Flow {
             width: parent.width
-            color: theme.text
+            spacing: theme.spacingXs
+
+            Repeater {
+                model: boardScreen.moveTokens()
+                Rectangle {
+                    required property var modelData
+                    width: moveText.implicitWidth + theme.spacingSmall * 2
+                    height: theme.touchTarget
+                    radius: theme.cardRadius
+                    color: modelData.fenIndex === boardScreen.historyIndex
+                        ? theme.accentBackground
+                        : theme.cardBackground
+                    border.width: modelData.fenIndex === boardScreen.historyIndex ? 3 : 1
+                    border.color: modelData.fenIndex === boardScreen.historyIndex
+                        ? theme.accentBackground
+                        : theme.cardBorder
+
+                    Text {
+                        id: moveText
+                        anchors.centerIn: parent
+                        text: modelData.label
+                        font.pixelSize: theme.fontSmall
+                        font.bold: modelData.fenIndex === boardScreen.historyIndex
+                        color: modelData.fenIndex === boardScreen.historyIndex
+                            ? theme.accentText
+                            : theme.text
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: boardScreen.showHistoryPosition(modelData.fenIndex)
+                    }
+                }
+            }
         }
 
         Flow {
             width: parent.width
             spacing: theme.spacingSmall
 
-            Button {
+            AppButton {
                 text: boardScreen.drawOfferedByOpponent ? "Accept draw" : "Offer draw"
+                visible: !boardScreen.gameOver
                 onClicked: boardScreen.backendSender({type: "DrawAction", accept: true})
             }
-            Button {
+            AppButton {
                 text: "Decline draw"
-                visible: boardScreen.drawOfferedByOpponent
+                visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
                 onClicked: boardScreen.backendSender({type: "DrawAction", accept: false})
             }
         }
@@ -576,13 +991,14 @@ Rectangle {
             width: parent.width
             spacing: theme.spacingSmall
 
-            Button {
+            AppButton {
                 text: boardScreen.takebackOfferedByOpponent ? "Accept takeback" : "Offer takeback"
+                visible: !boardScreen.gameOver
                 onClicked: boardScreen.backendSender({type: "TakebackAction", accept: true})
             }
-            Button {
+            AppButton {
                 text: "Decline takeback"
-                visible: boardScreen.takebackOfferedByOpponent
+                visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
                 onClicked: boardScreen.backendSender({type: "TakebackAction", accept: false})
             }
         }
@@ -595,30 +1011,50 @@ Rectangle {
             // (before either side's first move) -- lastMove is just a cheap,
             // already-available client-side hint to hide the button once it
             // clearly no longer applies, not a full replication of that rule.
-            Button {
+            AppButton {
                 text: "Abort"
-                visible: boardScreen.lastMove === null
+                visible: !boardScreen.gameOver && boardScreen.lastMove === null
                 onClicked: boardScreen.backendSender({type: "Abort"})
             }
 
-            Button {
+            AppButton {
                 text: "Claim victory" + (boardScreen.claimWinInSeconds > 0 ? " (~" + boardScreen.claimWinInSeconds + "s)" : "")
-                visible: boardScreen.opponentGone
+                visible: !boardScreen.gameOver && boardScreen.opponentGone
                 onClicked: boardScreen.backendSender({type: "ClaimVictory"})
             }
 
-            Button {
+            AppButton {
                 text: "Claim draw"
+                visible: !boardScreen.gameOver
                 onClicked: boardScreen.backendSender({type: "ClaimDraw"})
             }
 
-            Button {
+            AppButton {
                 text: "Flip board"
                 onClicked: boardScreen.manualFlip = !boardScreen.manualFlip
             }
 
-            Button {
-                text: boardScreen.resignArmed ? "Tap again to resign" : "Resign"
+            AppButton {
+                text: boardScreen.annotationMode ? "Annotating" : "Annotate board"
+                highlighted: boardScreen.annotationMode
+                onClicked: boardScreen.setAnnotationMode(!boardScreen.annotationMode)
+            }
+
+            AppButton {
+                text: "Clear marks"
+                visible: boardScreen.boardAnnotations.length > 0
+                onClicked: boardScreen.clearAnnotations()
+            }
+
+            AppButton {
+                text: "Cancel premove"
+                visible: !boardScreen.gameOver && boardScreen.pendingPremove !== null
+                onClicked: boardScreen.cancelPremove()
+            }
+
+            AppButton {
+                text: boardScreen.resignArmed ? "Confirm resignation" : "Resign"
+                visible: !boardScreen.gameOver
                 onClicked: {
                     if (boardScreen.resignArmed) {
                         boardScreen.backendSender({type: "Resign"})
@@ -628,6 +1064,34 @@ Rectangle {
                     }
                 }
             }
+
+            AppButton {
+                text: "Cancel"
+                visible: !boardScreen.gameOver && boardScreen.resignArmed
+                onClicked: boardScreen.resignArmed = false
+            }
+        }
+
+        AppButton {
+            width: parent.width
+            text: "Review this game"
+            highlighted: true
+            visible: boardScreen.gameOver && boardScreen.gameId.length > 0
+            onClicked: boardScreen.openGameReview(boardScreen.gameId, {
+                game_id: boardScreen.gameId,
+                opponent_name: boardScreen.opponentName,
+                opponent_rating: boardScreen.opponentRating,
+                result: boardScreen.gameResult,
+                termination: boardScreen.gameReason,
+                your_color: boardScreen.yourColor
+            })
+        }
+
+        AppButton {
+            width: parent.width
+            text: "New game"
+            visible: boardScreen.gameOver
+            onClicked: boardScreen.navigateTo("SeekScreen.qml")
         }
 
         Text {
@@ -640,12 +1104,12 @@ Rectangle {
 
         Row {
             spacing: theme.spacingSmall
-            TextField {
+            AppTextField {
                 id: chatInputField
                 width: theme.textFieldWidthMedium
                 placeholderText: "Message opponent"
             }
-            Button {
+            AppButton {
                 text: "Send"
                 onClicked: {
                     if (chatInputField.text.length > 0) {
@@ -659,7 +1123,7 @@ Rectangle {
         }
     }
 
-    Button {
+    AppButton {
         id: backButton
         // Fixed, full-width bottom "nav bar" treatment, same as every other
         // screen in this pass -- was just the last item inside the Column
@@ -730,8 +1194,13 @@ Rectangle {
                         onClicked: {
                             var from = boardScreen.pendingPromotion.from
                             var to = boardScreen.pendingPromotion.to
+                            var isPremove = boardScreen.pendingPromotion.premove || false
                             boardScreen.pendingPromotion = null
-                            boardScreen.requestMove(from, to, modelData)
+                            if (isPremove) {
+                                boardScreen.queuePremove(from, to, modelData)
+                            } else {
+                                boardScreen.requestMove(from, to, modelData)
+                            }
                         }
                     }
                 }
@@ -778,11 +1247,11 @@ Rectangle {
 
                 Row {
                     spacing: theme.spacingSmall
-                    Button {
+                    AppButton {
                         text: "Confirm"
                         onClicked: boardScreen.confirmPendingMove()
                     }
-                    Button {
+                    AppButton {
                         text: "Cancel"
                         onClicked: boardScreen.cancelPendingMove()
                     }
@@ -791,27 +1260,25 @@ Rectangle {
         }
     }
 
-    // Deliberately no local per-second Timer here. A live-ticking clock means one
-    // e-ink partial refresh every second for the whole game (600-900+ for a single
-    // rapid game) just to redraw a number nobody's action-gated on -- Qt Quick's own
-    // dirty-rect tracking keeps that redraw's *work* cheap, but each one is still a
-    // real waveform update with its own latency/ghosting cost we don't control yet
-    // (see docs/remarkable-appload-platform-notes.md). Instead the clock only shows
-    // time exactly as of the last authoritative BoardState -- it visibly freezes
-    // while a player thinks and only moves when a move actually happens, trading
-    // a live countdown for zero idle redraws. Revisit if on-device testing shows
-    // players actually need the live countdown badly enough to be worth the cost.
-
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
-            if (boardScreen.fen !== "" && boardScreen.fen !== msg.fen) {
+            var positionChanged = boardScreen.liveFen !== msg.fen ||
+                (boardScreen.gameId.length > 0 && boardScreen.gameId !== (msg.game_id || ""))
+            if (boardScreen.liveFen !== "" && positionChanged) {
                 boardScreen.flashBoard = true
                 boardFlashTimer.restart()
             }
+            if (positionChanged) boardScreen.clearAnnotations()
+            boardScreen.gameId = msg.game_id || ""
+            boardScreen.liveFen = msg.fen
             boardScreen.fen = msg.fen
+            boardScreen.positionHistory = msg.position_history || [msg.fen]
+            boardScreen.historyIndex = boardScreen.positionHistory.length - 1
             boardScreen.turn = msg.turn
             boardScreen.whiteTimeMs = msg.white_time_ms
             boardScreen.blackTimeMs = msg.black_time_ms
+            boardScreen.lastClockSyncMs = Date.now()
+            boardScreen.clockPulse += 1
             boardScreen.initialClockMs = msg.initial_clock_ms !== undefined ? msg.initial_clock_ms : null
             boardScreen.legalMoves = msg.legal_moves
             boardScreen.lastMove = msg.last_move || null
@@ -820,6 +1287,8 @@ Rectangle {
             boardScreen.drawOfferedByOpponent = msg.draw_offered_by_opponent || false
             boardScreen.takebackOfferedByOpponent = msg.takeback_offered_by_opponent || false
             boardScreen.moveHistory = msg.move_history || []
+            boardScreen.capturedByWhite = msg.captured_by_white || []
+            boardScreen.capturedByBlack = msg.captured_by_black || []
             boardScreen.opponentName = msg.opponent_name || ""
             boardScreen.opponentRating = msg.opponent_rating !== undefined ? msg.opponent_rating : null
             boardScreen.resignArmed = false
@@ -829,7 +1298,19 @@ Rectangle {
             // new game's eventual GameOver text.
             boardScreen.pendingRatingDiffText = ""
             boardScreen.statusText = ""
+            boardScreen.gameOver = false
+            boardScreen.gameResult = ""
+            boardScreen.gameReason = ""
+            if (boardScreen.pendingPremove !== null &&
+                    boardScreen.pendingPremove.gameId !== boardScreen.gameId) {
+                boardScreen.cancelPremove()
+            }
+            boardScreen.executePendingPremove()
         } else if (msg.type === "GameOver") {
+            boardScreen.returnToLive()
+            boardScreen.whiteTimeMs = boardScreen.displayClockFor("white")
+            boardScreen.blackTimeMs = boardScreen.displayClockFor("black")
+            boardScreen.lastClockSyncMs = 0
             // msg.result is "draw", the winning color, or -- for a no-winner
             // ending that wasn't actually a draw either (aborted, noStart,
             // cheat, ...) -- the raw status itself (see backend_app.rs's
@@ -841,12 +1322,24 @@ Rectangle {
             var outcome
             if (msg.result === "draw") {
                 outcome = "Draw"
+                boardScreen.gameResult = "draw"
             } else if (msg.result === "white" || msg.result === "black") {
                 outcome = msg.result === boardScreen.yourColor ? "You won" : "You lost"
+                boardScreen.gameResult = msg.result === boardScreen.yourColor ? "win" : "loss"
             } else {
                 outcome = msg.result.charAt(0).toUpperCase() + msg.result.slice(1)
+                boardScreen.gameResult = msg.result
             }
-            boardScreen.statusText = "Game over: " + outcome + " (" + msg.reason + ")"
+            boardScreen.gameOver = true
+            boardScreen.gameReason = msg.reason
+            boardScreen.selectedSquare = ""
+            boardScreen.legalMoves = []
+            boardScreen.pendingPromotion = null
+            boardScreen.pendingMoveConfirmation = null
+            boardScreen.pendingPremove = null
+            boardScreen.resignArmed = false
+            boardScreen.statusText = "Game over: " + outcome +
+                (msg.reason && msg.reason.length > 0 ? " (" + msg.reason + ")" : "")
             if (boardScreen.pendingRatingDiffText.length > 0) {
                 boardScreen.statusText += boardScreen.pendingRatingDiffText
                 boardScreen.pendingRatingDiffText = ""

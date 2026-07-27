@@ -25,7 +25,7 @@ Rectangle {
     // there's deliberately no "Cancel" for it, just Back to Home.
     property var openChallengeUrls: null
 
-    Button {
+    AppButton {
         id: backButton
         // Same fixed, full-width bottom "nav bar" treatment as every other
         // screen's back action (see GameHistoryScreen/SettingsScreen) --
@@ -70,13 +70,24 @@ Rectangle {
 
         Text { text: "New rapid game"; font.pixelSize: theme.fontHeading; color: theme.text }
 
-        Row {
-            spacing: theme.spacingMedium
+        Column {
+            width: parent.width
+            spacing: theme.spacingSmall
             visible: !seekScreen.waiting
-            Text { text: "Minutes:"; font.pixelSize: theme.fontLarge; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
-            TextField { id: minutesField; text: "10"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
-            Text { text: "Increment:"; font.pixelSize: theme.fontLarge; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
-            TextField { id: incrementField; text: "0"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+
+            Row {
+                width: parent.width
+                spacing: theme.spacingSmall
+                Text { text: "Minutes"; font.pixelSize: theme.fontLarge; width: parent.width - minutesField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                AppTextField { id: minutesField; text: "10"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+            }
+
+            Row {
+                width: parent.width
+                spacing: theme.spacingSmall
+                Text { text: "Increment"; font.pixelSize: theme.fontLarge; width: parent.width - incrementField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                AppTextField { id: incrementField; text: "0"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+            }
         }
 
         // Casual/Rated as a highlighted toggle pair, same pattern as the
@@ -89,8 +100,8 @@ Rectangle {
             spacing: theme.spacingSmall
             visible: !seekScreen.waiting
             Text { text: "Game:"; font.pixelSize: theme.fontLarge; color: theme.text }
-            Button { text: "Casual"; highlighted: !seekScreen.rated; onClicked: seekScreen.rated = false }
-            Button { text: "Rated"; highlighted: seekScreen.rated; onClicked: seekScreen.rated = true }
+            AppButton { text: "Casual"; highlighted: !seekScreen.rated; onClicked: seekScreen.rated = false }
+            AppButton { text: "Rated"; highlighted: seekScreen.rated; onClicked: seekScreen.rated = true }
         }
 
         Flow {
@@ -98,12 +109,12 @@ Rectangle {
             spacing: theme.spacingSmall
             visible: !seekScreen.waiting
             Text { text: "Color:"; font.pixelSize: theme.fontLarge; color: theme.text }
-            Button { text: "White"; highlighted: seekScreen.selectedColor === "white"; onClicked: seekScreen.selectedColor = "white" }
-            Button { text: "Black"; highlighted: seekScreen.selectedColor === "black"; onClicked: seekScreen.selectedColor = "black" }
-            Button { text: "Random"; highlighted: seekScreen.selectedColor === "random"; onClicked: seekScreen.selectedColor = "random" }
+            AppButton { text: "White"; highlighted: seekScreen.selectedColor === "white"; onClicked: seekScreen.selectedColor = "white" }
+            AppButton { text: "Black"; highlighted: seekScreen.selectedColor === "black"; onClicked: seekScreen.selectedColor = "black" }
+            AppButton { text: "Random"; highlighted: seekScreen.selectedColor === "random"; onClicked: seekScreen.selectedColor = "random" }
         }
 
-        Button {
+        AppButton {
             width: parent.width
             text: "Open seek (auto-pair)"
             highlighted: true
@@ -117,11 +128,13 @@ Rectangle {
             })
         }
 
-        Row {
-            spacing: theme.spacingMedium
+        Column {
+            width: parent.width
+            spacing: theme.spacingSmall
             visible: !seekScreen.waiting
-            TextField { id: usernameField; font.pixelSize: theme.fontLarge; placeholderText: "opponent username"; width: theme.textFieldWidthWide }
-            Button {
+            AppTextField { id: usernameField; font.pixelSize: theme.fontLarge; placeholderText: "opponent username"; width: parent.width }
+            AppButton {
+                width: parent.width
                 text: "Challenge"
                 onClicked: seekScreen.backendSender({
                     type: "CreateChallenge",
@@ -134,7 +147,7 @@ Rectangle {
             }
         }
 
-        Button {
+        AppButton {
             width: parent.width
             text: "Create open challenge link"
             visible: !seekScreen.waiting && seekScreen.openChallengeUrls === null
@@ -178,12 +191,18 @@ Rectangle {
             }
         }
 
-        Row {
-            spacing: theme.spacingMedium
+        Column {
+            width: parent.width
+            spacing: theme.spacingSmall
             visible: !seekScreen.waiting
-            Text { text: "Level (1-8):"; font.pixelSize: theme.fontLarge; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
-            TextField { id: aiLevelField; text: "3"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
-            Button {
+            Row {
+                width: parent.width
+                spacing: theme.spacingSmall
+                Text { text: "Computer level (1-8)"; font.pixelSize: theme.fontLarge; width: parent.width - aiLevelField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                AppTextField { id: aiLevelField; text: "3"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+            }
+            AppButton {
+                width: parent.width
                 text: "Play vs Computer"
                 // Starts immediately -- no accept/decline step, so unlike the
                 // seek/challenge buttons above there's no "waiting" state to enter;
@@ -206,7 +225,7 @@ Rectangle {
             color: theme.text
         }
 
-        Button {
+        AppButton {
             width: parent.width
             text: "Cancel"
             visible: seekScreen.waiting
