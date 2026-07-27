@@ -187,6 +187,9 @@ Minimum emulator smoke test:
   exact move appears in the authoritative game stream. This prevents duplicate
   submissions without adding an extra e-ink redraw between HTTP acceptance and
   the resulting `BoardState`.
+- One-shot Lichess requests have a 20-second total deadline so move and action
+  gates cannot remain pending forever after a dropped response. Held-open event,
+  game, seek, and challenge streams use the separate unbounded stream path.
 - Move notation is directly tappable and automatically reveals the current move.
 - Clock chips use a fixed shared width so both player bars remain aligned when
   a clock changes from two-digit to one-digit minutes.

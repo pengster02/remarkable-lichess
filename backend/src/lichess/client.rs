@@ -12,7 +12,10 @@ pub struct LichessClient {
     http: reqwest::Client,
     base_url: String,
     token: String,
+    request_timeout: std::time::Duration,
 }
+
+const ONE_SHOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Lichess error responses carry an actionable `{"error": "..."}` JSON body (confirmed
 /// against the real API: a scope-missing 403 came back as `{"error":"Missing scope:
@@ -65,7 +68,12 @@ impl LichessClient {
             .connect_timeout(std::time::Duration::from_secs(15))
             .build()
             .expect("reqwest client with a timeout always builds");
-        Self { http, base_url, token }
+        Self {
+            http,
+            base_url,
+            token,
+            request_timeout: ONE_SHOT_REQUEST_TIMEOUT,
+        }
     }
 
     fn bearer(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -78,6 +86,22 @@ impl LichessClient {
     /// `error_from_response`), instead of only showing up as a bare `anyhow`
     /// message with no indication of which endpoint failed.
     async fn send_logged(&self, context: &str, builder: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        self.send_with_logging(context, builder.timeout(self.request_timeout)).await
+    }
+
+    async fn send_stream_logged(
+        &self,
+        context: &str,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        self.send_with_logging(context, builder).await
+    }
+
+    async fn send_with_logging(
+        &self,
+        context: &str,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
         log::debug!("{context}: sending request");
         match builder.send().await {
             Ok(resp) => {
@@ -433,7 +457,7 @@ impl LichessClient {
             form.push(("color", color.to_string()));
         }
         let resp = self
-            .send_logged("create_seek", self.bearer(self.http.post(format!("{}/api/board/seek", self.base_url)))
+            .send_stream_logged("create_seek", self.bearer(self.http.post(format!("{}/api/board/seek", self.base_url)))
                 .form(&form))
             .await?;
         if !resp.status().is_success() {
@@ -457,7 +481,7 @@ impl LichessClient {
         color: &str,
     ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
         let resp = self
-            .send_logged("create_challenge", self.bearer(self.http.post(format!("{}/api/challenge/{}", self.base_url, username)))
+            .send_stream_logged("create_challenge", self.bearer(self.http.post(format!("{}/api/challenge/{}", self.base_url, username)))
                 .form(&[
                     ("rated", rated.to_string()),
                     ("clock.limit", (minutes * 60).to_string()),
@@ -526,7 +550,7 @@ impl LichessClient {
         url_path: &str,
     ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
         let resp = self
-            .send_logged(&format!("stream {url_path}"), self.bearer(self.http.get(format!("{}{}", self.base_url, url_path))))
+            .send_stream_logged(&format!("stream {url_path}"), self.bearer(self.http.get(format!("{}{}", self.base_url, url_path))))
             .await?;
         if !resp.status().is_success() {
             return Err(error_from_response(&format!("stream {}", url_path), resp).await);
@@ -895,6 +919,26 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         client.make_move("g1", "e2e4").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn make_move_times_out_when_server_never_answers_promptly() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/move/d7d5"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(200)),
+            )
+            .mount(&server)
+            .await;
+
+        let mut client = LichessClient::with_base_url("test-token".into(), server.uri());
+        client.request_timeout = std::time::Duration::from_millis(20);
+        let error = client.make_move("g1", "d7d5").await.unwrap_err();
+        assert!(error
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout));
     }
 
     #[tokio::test]
