@@ -24,13 +24,28 @@ pub fn legal_moves(pos: &Chess) -> Vec<LegalMove> {
     pos.legal_moves()
         .iter()
         .map(|m| {
-            let uci = UciMove::from_standard(*m);
-            let s = uci.to_string();
-            // UCI squares are always the first four characters, e.g. "e2e4" or "e7e8q"
-            let from = s[0..2].to_string();
-            let to = s[2..4].to_string();
-            let promotion = if s.len() > 4 { Some(s[4..5].to_string()) } else { None };
-            LegalMove { from, to, promotion }
+            // from_standard (not m.from()/m.to() directly) so castling stays in
+            // standard UCI form -- e1g1, not the Chess960 king-takes-rook e1h1 the
+            // raw Move carries. Reading the squares straight off the UciMove::Normal
+            // fields skips the old to_string()-then-slice, which allocated a UCI
+            // String plus three more for from/to/promotion on every legal move.
+            match UciMove::from_standard(*m) {
+                UciMove::Normal { from, to, promotion } => LegalMove {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    promotion: promotion.map(|role| role.char().to_string()),
+                },
+                // Board API standard play never yields drops/null; keep the old
+                // string form as a defensive fallback rather than dropping the move.
+                other => {
+                    let s = other.to_string();
+                    LegalMove {
+                        from: s.get(0..2).unwrap_or_default().to_string(),
+                        to: s.get(2..4).unwrap_or_default().to_string(),
+                        promotion: s.get(4..5).map(str::to_string),
+                    }
+                }
+            }
         })
         .collect()
 }
@@ -183,6 +198,36 @@ mod tests {
         let pos = replay_uci_moves("startpos", "e2e4 e7e5").unwrap();
         // After 1. e4 e5, it's White to move again with 29 legal replies (known good position).
         assert_eq!(legal_moves(&pos).len(), 29);
+    }
+
+    #[test]
+    fn castling_is_reported_in_standard_king_two_squares_form() {
+        // White to move with kingside castling available. The move must surface as
+        // e1g1 (standard UCI), NOT the Chess960 king-takes-rook e1h1 -- the frontend
+        // taps the destination square, so h1 would both mis-highlight and fail to
+        // re-validate as a castle.
+        let pos = starting_position("r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1")
+            .unwrap();
+        let moves = legal_moves(&pos);
+        assert!(
+            moves.iter().any(|m| m.from == "e1" && m.to == "g1"),
+            "kingside castle should be e1g1, got: {:?}",
+            moves.iter().filter(|m| m.from == "e1").collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn promotions_carry_the_lowercase_piece_letter() {
+        // White pawn on e7 with a clear e8: the four promotions must each carry a
+        // lowercase promotion letter (q/r/b/n), matching the frontend's expectation.
+        let pos = starting_position("8/4P3/8/8/8/8/8/4K2k w - - 0 1").unwrap();
+        let mut promotions: Vec<String> = legal_moves(&pos)
+            .into_iter()
+            .filter(|m| m.from == "e7" && m.to == "e8")
+            .filter_map(|m| m.promotion)
+            .collect();
+        promotions.sort();
+        assert_eq!(promotions, ["b", "n", "q", "r"]);
     }
 
     #[test]
