@@ -13,6 +13,9 @@ cd "$(dirname "$0")/../backend"
 # doesn't silently pick up a stale/empty binary if that's still set in the
 # calling shell.
 unset CARGO_TARGET_DIR
+# cross-rs publishes amd64-only images; on Apple Silicon, pin the platform so
+# `docker run` does not look for a missing linux/arm64 manifest.
+export CROSS_CONTAINER_OPTS="${CROSS_CONTAINER_OPTS:---platform linux/amd64}"
 # --features transport is required here: the bin target (and backend_app.rs)
 # are gated behind it since they depend on appload-client (see Global Constraints
 # and Task 1) — this is the first point in the whole plan where that feature is
@@ -51,13 +54,19 @@ cp manifest.json ../dist/remarkable-lichess/manifest.json
 # extra network dependency, and no risk of a stale prebuilt binary drifting
 # from its own source.
 CROSS_IMAGE="ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+# cross-rs images are linux/amd64-only; on Apple Silicon we must request that
+# platform explicitly. The aarch64-* cross gcc inside still emits an aarch64
+# stub .so, which matches native arm64 `python:3-slim` on this machine.
 STUB_DIR="$(mktemp -d)"
 trap 'rm -rf "$STUB_DIR"' EXIT
 cp ../scripts/glib_stub.c "$STUB_DIR/"
-docker run --rm -v "$STUB_DIR:/stub" "$CROSS_IMAGE" \
+docker run --rm --platform linux/amd64 -v "$STUB_DIR:/stub" "$CROSS_IMAGE" \
   aarch64-linux-gnu-gcc-13 -shared -fPIC -Wl,-soname,libglib-2.0.so.0 -o /stub/libglib-2.0.so.0 /stub/glib_stub.c
 
-docker run --rm \
+# Do NOT inherit DOCKER_DEFAULT_PLATFORM=linux/amd64 here: PySide6's rcc must
+# run as the host's native arch (arm64 on Apple Silicon) so the aarch64 glib
+# stub above can load. Force clearing the platform for this one container.
+docker run --rm --platform linux/arm64 \
   -v "$(pwd):/frontend" \
   -v "$STUB_DIR:/stublib" \
   python:3-slim bash -c '
