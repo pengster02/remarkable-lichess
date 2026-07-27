@@ -877,7 +877,15 @@ fn spawn_game_stream(
                                         if is_over {
                                             game_over = true;
                                         }
-                                        let result = s.apply_state_update(&state).ok();
+                                        let result = match s.apply_state_update(&state) {
+                                            Ok(msg) => Some(msg),
+                                            Err(error) => {
+                                                log::warn!(
+                                                    "couldn't apply gameState for {game_id}: {error}"
+                                                );
+                                                None
+                                            }
+                                        };
                                         if is_over {
                                             let msg = Some(game_over_message(
                                                 &state.status,

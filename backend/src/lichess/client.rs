@@ -531,7 +531,17 @@ fn response_to_lines(
 ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>> {
     lines_from_chunks(Box::pin(
         resp.bytes_stream()
-            .filter_map(|chunk| async move { chunk.ok() })
+            .filter_map(|chunk| async move {
+                match chunk {
+                    Ok(bytes) => Some(bytes),
+                    // A mid-stream transport error otherwise looked identical to a
+                    // clean close; log it so a dropped stream is at least diagnosable.
+                    Err(error) => {
+                        log::warn!("stream chunk read error: {error}");
+                        None
+                    }
+                }
+            })
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
     ))
 }
