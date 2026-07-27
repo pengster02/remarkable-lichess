@@ -87,6 +87,15 @@ pub struct GameState {
     pub wtakeback: bool,
     #[serde(default)]
     pub btakeback: bool,
+    pub expiration: Option<GameExpiration>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GameExpiration {
+    #[serde(rename = "idleMillis")]
+    pub idle_millis: u64,
+    #[serde(rename = "millisToMove")]
+    pub millis_to_move: u64,
 }
 
 // Confirmed against lichess-org/api's OpponentGoneEvent.yaml schema. Sent as its own
@@ -111,14 +120,28 @@ pub struct Player {
     pub id: Option<String>,
     pub name: Option<String>,
     pub rating: Option<u32>,
+    #[serde(rename = "aiLevel")]
+    pub ai_level: Option<u8>,
+    pub title: Option<String>,
+    pub provisional: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Variant {
+    pub key: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GameFull {
     pub id: String,
+    pub variant: Variant,
+    pub speed: Option<String>,
     pub rated: bool,
     #[serde(rename = "tournamentId")]
     pub tournament_id: Option<String>,
+    #[serde(rename = "daysPerTurn")]
+    pub days_per_turn: Option<u32>,
     #[serde(rename = "initialFen")]
     pub initial_fen: String,
     pub clock: Option<Clock>,
@@ -404,7 +427,7 @@ mod tests {
 
     #[test]
     fn parses_game_full_then_game_state() {
-        let full_json = r#"{"type":"gameFull","id":"abcd1234","rated":false,"initialFen":"startpos","clock":{"initial":600000,"increment":0},"white":{"id":"myid"},"black":{"id":"oppid"},"state":{"type":"gameState","moves":"","wtime":600000,"btime":600000,"winc":0,"binc":0,"status":"started","winner":null}}"#;
+        let full_json = r#"{"type":"gameFull","id":"abcd1234","variant":{"key":"standard","name":"Standard"},"speed":"rapid","rated":false,"initialFen":"startpos","clock":{"initial":600000,"increment":0},"white":{"id":"myid"},"black":{"id":"oppid"},"state":{"type":"gameState","moves":"","wtime":600000,"btime":600000,"winc":0,"binc":0,"status":"started","winner":null}}"#;
         let msg: GameStreamMessage = serde_json::from_str(full_json).unwrap();
         match msg {
             GameStreamMessage::Full(full) => {

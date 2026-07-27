@@ -24,9 +24,10 @@ expensive analysis or data panels explicitly user-triggered.
   Board options instead of crowding the board edge.
 - Marked the changing clock text as an AppLoad `Fast` display region. AppLoad's
   own example uses that method for frequently changing text.
-- Verified that all buttons use the shared controls. Page actions have a 144 px
-  minimum height, while the compact board strip uses 96 px touch targets. No
-  screen falls back to Qt's short default button.
+- Verified that all actions use shared controls. Page actions have a 144 px
+  minimum height, while the compact board strip and move tokens use 96 px touch
+  targets. Dialogs, promotion choices, and live/review move tokens now share
+  dedicated components instead of maintaining screen-local variants.
 - Verified Home → History → Review, previous/next navigation, direct move-token
   selection, first/last, board flip, Explore, candidate drag, Undo, Exit, and
   return navigation in the live AppLoad emulator.
@@ -47,6 +48,22 @@ expensive analysis or data panels explicitly user-triggered.
 - Made Resume immediately replay the cached board state when its game stream is
   already attached, and restore existing player-room chat through the Board
   chat GET endpoint.
+- Kept cached clocks authoritative across Home → Resume by advancing only the
+  side to move from the last stream snapshot. Returning to the board no longer
+  restores stale time.
+- Replaced the narrow live-action cluster with a fixed Actions/Moves/Chat strip
+  and in-canvas, scrollable sheets. Incoming draw/takeback offers and opponent
+  disconnects replace the Actions label and use the dark highlighted state;
+  Chat is server-disabled for computer games.
+- Parsed first-move expiration, AI level, player title, variant, speed, and
+  correspondence cadence from `gameFull`/`gameState`. The board now names
+  Stockfish levels, shows the time-control summary in the action sheet, and
+  surfaces an approximate first-move deadline using the existing clock tick.
+- Gave both player clocks the same fixed chip width, keeping names and clock
+  edges aligned when the time changes from `10:00` to `9:59`.
+- Explicitly accepts Standard and From Position live games. Other variant
+  streams now produce a named unsupported-variant error instead of attempting
+  to replay them with Standard chess rules.
 
 ## Live action contract
 
@@ -56,7 +73,7 @@ expensive analysis or data panels explicitly user-triggered.
 | Resign | Replaces Abort after the opening full move | Two-tap confirmation |
 | Offer draw | After one full move, against a human, with no active offer | `draw/true`; incoming offers expose Accept/Decline |
 | Takeback | Casual non-tournament human games after one full move | `takeback/true`; outgoing offers can be cancelled |
-| Give time | Casual non-tournament human clock games | Challenge endpoint, fixed at 15 seconds in the UI |
+| Give time | Casual non-tournament human clock games | Round add-time endpoint, fixed at 15 seconds in the UI |
 | Claim victory/draw | Only while the opponent is reported gone | Server validates whether the claim is mature/legal |
 | Berserk | Not exposed | Arena-only and Board clients cannot join tournament pools |
 | Rematch | Not exposed | No public rematch path exists in the OpenAPI contract |
@@ -81,7 +98,9 @@ can change between the latest stream event and the tap.
 | Large, consistent touch targets | Supported |
 | Reduced animation for e-ink | Supported |
 | Contract-gated game actions | Supported |
+| Fixed, urgency-labeled action sheet | Supported |
 | Localized changed-square clearing | Supported |
+| Accurate cached clock resume | Supported |
 
 ## Highest-value features still missing
 
@@ -118,6 +137,9 @@ can change between the latest stream event and the tap.
 - [Lichess add-time endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/challenges/api-round-gameId-add-time-seconds.yaml)
 - [Lichess Board chat endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-chat.yaml)
 - [Lichess game-state event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameStateEvent.yaml)
+- [Lichess game-full event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameFullEvent.yaml)
+- [Lichess game player](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/GameEventPlayer.yaml)
+- [Lichess variant keys](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/VariantKey.yaml)
 - [Lichess opponent-gone event](https://github.com/lichess-org/api/blob/master/doc/specs/schemas/OpponentGoneEvent.yaml)
 - [Chess.com mobile analysis help](https://support.chess.com/en/articles/10473022-how-do-i-use-game-analysis-on-the-app)
 - [AppLoad](https://github.com/asivery/rm-appload)

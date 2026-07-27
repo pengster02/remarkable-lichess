@@ -34,7 +34,7 @@ The current UI supports:
 | Live board | `frontend/ui/BoardScreen.qml` | Game interaction and live-game actions |
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
 | Visual system | `frontend/ui/Theme.qml` | E-ink colors, typography, spacing, and touch sizes |
-| Shared controls | `frontend/ui/AppButton.qml`, `BoardToolButton.qml`, `AppTextField.qml` | Consistent large page controls and compact board controls |
+| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, overlays, move tokens, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
 | Backend router | `backend/src/backend_app.rs` | Dispatches frontend requests and backend events |
 | Live chess state | `backend/src/game/session.rs` | Lichess game stream and authoritative board state |
@@ -127,26 +127,42 @@ Minimum emulator smoke test:
 3. Request Cloud evaluation from Menu and verify the eval and best line.
 4. Enter Explore, make one tap move and one drag move, Undo, Reset, and Exit.
 5. Start or resume a game and verify orientation, legal targets, promotion,
-   premove behavior, clocks, and Back to Home.
+   premove behavior, fixed-width clock alignment, and Back to Home.
 6. Verify abort is shown only through the first ply; after both players move,
    verify draw/takeback availability and that resign replaces abort.
 7. In a casual human clock game, verify Give opponent 15s; confirm it is absent
    for rated, AI, tournament, and untimed games.
 8. Verify incoming draw/takeback accept and decline, outgoing takeback cancel,
    and opponent-left claim actions.
-9. Check both light and dark modes.
+9. Open Actions, Moves, Chat (human games), move confirmation, and review Menu;
+   verify each shared in-canvas dialog fits and scrolls.
+10. Check both light and dark modes.
 
 ## UI rules that matter
 
 - The board is the primary surface. Frequent review actions stay in one compact
   line directly below it: Menu, Explore, previous, next.
+- Live play keeps a fixed three-control strip below the board: Actions, Moves,
+  and Chat. Chat is disabled for computer games. Draw/takeback offers and
+  disconnect claims change and highlight the Actions label.
 - Page actions use the 144 px `AppButton`; the board strip uses the visually
   smaller 96 px `BoardToolButton`, still about a 9 mm touch target.
+- Overlays use `AppDialog`, promotion uses `PromotionDialog`, and live/review
+  notation uses `MoveTokenButton`. Extend these components instead of creating
+  screen-local popup or button styles.
 - Move notation is directly tappable and automatically reveals the current move.
+- Clock chips use a fixed shared width so both player bars remain aligned when
+  a clock changes from two-digit to one-digit minutes.
 - Use tap and drag. `Theme.boardDragThreshold` prevents pen jitter from becoming
   an accidental drag.
 - Action visibility comes from backend-derived `BoardState` flags. Do not infer
   abort, draw, takeback, or time-gift eligibility independently in QML.
+- Cached `GameSession::board_state` advances the active clock from the last
+  stream snapshot. Keep that correction when changing Resume behavior; stream
+  clocks update on game events, not once per second.
+- Live rules currently support the Standard and From Position variant keys.
+  Adding another variant requires matching `shakmaty` rules and castling/UCI
+  handling before loosening the explicit guard.
 - Keep cosmetic animation out. Explicitly trigger network-heavy analysis panels.
 - Use `DisplayMethodArea.Fast` only for frequently changing regions such as
   clocks; the PC emulator does not reproduce real e-ink waveform behavior.

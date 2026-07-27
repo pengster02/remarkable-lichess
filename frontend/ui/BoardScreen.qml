@@ -1,5 +1,4 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5
 
 Rectangle {
     id: boardScreen
@@ -54,6 +53,7 @@ Rectangle {
     property bool canOfferDraw: false
     property bool canOfferTakeback: false
     property bool canGiveTime: false
+    property bool canChat: false
     // Set from the backend's OpponentGone message. Lichess's claim-victory
     // endpoint remains authoritative and rejects an early claim.
     property bool opponentGone: false
@@ -69,6 +69,9 @@ Rectangle {
     // Two-tap confirm so a single mistaken tap can't resign the game outright.
     property bool resignArmed: false
     property bool drawArmed: false
+    property bool showGameActions: false
+    property bool showMoves: false
+    property bool showChat: false
     // Set when RatingDiff arrives before GameOver does -- the per-game
     // stream's terminal GameState (driving GameOver) and the account
     // stream's gameFinish (driving RatingDiff) are two independent signals
@@ -95,6 +98,8 @@ Rectangle {
     // backend and the "" / null fallback here.
     property string opponentName: ""
     property var opponentRating: null
+    property string gameDescription: ""
+    property var firstMoveTimeMs: null
     // Pushed from main.qml's root state (see settings.rs / SettingsScreen.qml) --
     // when on, a queen promotion is sent immediately instead of opening the
     // picker popup below. Only skips the popup when "q" is actually one of the
@@ -138,8 +143,10 @@ Rectangle {
     Timer {
         interval: 1000
         repeat: true
-        running: boardScreen.liveClockEnabled &&
-            boardScreen.initialClockMs !== null &&
+        running: boardScreen.visible &&
+            boardScreen.liveClockEnabled &&
+            (boardScreen.initialClockMs !== null ||
+                boardScreen.firstMoveTimeMs !== null) &&
             !boardScreen.gameOver &&
             boardScreen.fen.length > 0
         onTriggered: boardScreen.clockPulse += 1
@@ -355,6 +362,27 @@ Rectangle {
         }
         var elapsed = Math.floor(Math.max(0, now - boardScreen.lastClockSyncMs) / 1000) * 1000
         return Math.max(0, base - elapsed)
+    }
+
+    function displayFirstMoveTimeMs() {
+        if (boardScreen.firstMoveTimeMs === null ||
+                boardScreen.firstMoveTimeMs === undefined) {
+            return null
+        }
+        var now = Date.now() + boardScreen.clockPulse * 0
+        if (boardScreen.lastClockSyncMs <= 0) return boardScreen.firstMoveTimeMs
+        var elapsed = Math.floor(Math.max(0, now - boardScreen.lastClockSyncMs) / 1000) * 1000
+        return Math.max(0, boardScreen.firstMoveTimeMs - elapsed)
+    }
+
+    function gameActionsLabel() {
+        if (boardScreen.gameOver) return "Game over"
+        if (boardScreen.drawOfferedByOpponent) return "Draw offer"
+        if (boardScreen.takebackOfferedByOpponent) return "Takeback offer"
+        if (boardScreen.opponentGone) return "Opponent left"
+        if (boardScreen.drawOfferedByYou) return "Draw pending"
+        if (boardScreen.takebackOfferedByYou) return "Takeback pending"
+        return "Actions"
     }
     // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
     // rank/file labels every redraw, each call allocating two fresh arrays --
@@ -909,18 +937,45 @@ Rectangle {
         }
     }
 
-    Flickable {
-        // Everything below the chess frame scrolls -- so the draw/takeback/
-        // resign controls, move list, and chat are all always reachable no
-        // matter how many of the conditional rows (offers, claim victory,
-        // confirm) happen to be visible at once. The board and player bars
-        // above never move.
+    Row {
+        id: boardToolbar
         anchors.top: boardColumn.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: theme.pageSideMargin
+        anchors.topMargin: theme.spacingXs
+        spacing: theme.spacingXs
+
+        BoardToolButton {
+            width: (parent.width - parent.spacing * 2) / 3
+            text: boardScreen.gameActionsLabel()
+            highlighted: boardScreen.gameOver ||
+                boardScreen.drawOfferedByOpponent ||
+                boardScreen.takebackOfferedByOpponent ||
+                boardScreen.opponentGone
+            onClicked: boardScreen.showGameActions = true
+        }
+        BoardToolButton {
+            width: (parent.width - parent.spacing * 2) / 3
+            text: "Moves"
+            highlighted: boardScreen.viewingHistory
+            onClicked: boardScreen.showMoves = true
+        }
+        BoardToolButton {
+            width: (parent.width - parent.spacing * 2) / 3
+            text: "Chat"
+            enabled: boardScreen.canChat
+            onClicked: boardScreen.showChat = true
+        }
+    }
+
+    Flickable {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: backButton.top
         anchors.margins: theme.pageSideMargin
-        anchors.topMargin: theme.spacingSmall
+        anchors.top: boardToolbar.bottom
+        anchors.topMargin: theme.spacingXs
         anchors.bottomMargin: theme.spacingSmall
         contentWidth: width
         contentHeight: actionsColumn.height
@@ -928,214 +983,57 @@ Rectangle {
         clip: true
 
         Column {
-        id: actionsColumn
-        width: parent.width
-        spacing: theme.spacingXs
-
-        Text {
-            visible: boardScreen.statusText.length > 0
-            text: boardScreen.statusText
-            font.pixelSize: theme.fontLarge
-            font.bold: true
-            wrapMode: Text.WordWrap
-            width: parent.width
-            color: theme.text
-
-        }
-
-        Text {
-            // Only meaningful once a real game is loaded (turn/yourColor both
-            // default to "white" before the first BoardState) -- statusText
-            // (game-over/reject/reconnect messages) takes visual precedence
-            // above, this is just a steady turn indicator underneath it.
-            text: boardScreen.viewingHistory
-                ? "Viewing move " + boardScreen.historyIndex + " of " + boardScreen.moveHistory.length
-                : boardScreen.pendingPremove !== null
-                ? "Premove queued: " + boardScreen.pendingPremove.from + "-" + boardScreen.pendingPremove.to
-                : boardScreen.annotationMode
-                ? "Annotation mode — tap for a ring, drag for an arrow"
-                : boardScreen.inCheck
-                ? (boardScreen.turn === boardScreen.yourColor ? "Check — your move" : "Opponent is in check")
-                : (boardScreen.turn === boardScreen.yourColor ? "Your move" : "Waiting for opponent...")
-            visible: !boardScreen.gameOver
-            font.pixelSize: theme.fontBody
-            color: theme.text
-
-        }
-
-        AppButton {
-            text: "Return to live position"
-            highlighted: true
-            visible: boardScreen.viewingHistory
-            onClicked: boardScreen.returnToLive()
-        }
-
-        Flow {
+            id: actionsColumn
             width: parent.width
             spacing: theme.spacingXs
 
-            Repeater {
-                model: boardScreen.moveTokens()
-                Rectangle {
-                    required property var modelData
-                    width: moveText.implicitWidth + theme.spacingSmall * 2
-                    height: theme.touchTarget
-                    radius: theme.cardRadius
-                    color: modelData.fenIndex === boardScreen.historyIndex
-                        ? theme.accentBackground
-                        : theme.cardBackground
-                    border.width: modelData.fenIndex === boardScreen.historyIndex ? 3 : 1
-                    border.color: modelData.fenIndex === boardScreen.historyIndex
-                        ? theme.accentBackground
-                        : theme.cardBorder
-
-                    Text {
-                        id: moveText
-                        anchors.centerIn: parent
-                        text: modelData.label
-                        font.pixelSize: theme.fontSmall
-                        font.bold: modelData.fenIndex === boardScreen.historyIndex
-                        color: modelData.fenIndex === boardScreen.historyIndex
-                            ? theme.accentText
-                            : theme.text
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: boardScreen.showHistoryPosition(modelData.fenIndex)
-                    }
-                }
-            }
-        }
-
-        Flow {
-            width: parent.width
-            spacing: theme.spacingSmall
-
-            AppButton {
-                text: boardScreen.drawOfferedByOpponent
-                    ? "Accept draw"
-                    : (boardScreen.drawArmed ? "Confirm draw offer" : "Offer draw")
-                visible: !boardScreen.gameOver &&
-                    (boardScreen.drawOfferedByOpponent || boardScreen.canOfferDraw)
-                onClicked: {
-                    if (boardScreen.drawOfferedByOpponent || boardScreen.drawArmed) {
-                        boardScreen.backendSender({type: "DrawAction", accept: true})
-                        boardScreen.drawArmed = false
-                    } else {
-                        boardScreen.drawArmed = true
-                    }
-                }
-            }
-            AppButton {
-                text: "Decline draw"
-                visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
-                onClicked: boardScreen.backendSender({type: "DrawAction", accept: false})
-            }
-            AppButton {
-                text: "Cancel"
-                visible: !boardScreen.gameOver && boardScreen.drawArmed
-                onClicked: boardScreen.drawArmed = false
-            }
             Text {
-                text: "Draw offer sent"
-                visible: !boardScreen.gameOver && boardScreen.drawOfferedByYou
-                font.pixelSize: theme.fontSmall
-                color: theme.textMuted
+                visible: boardScreen.statusText.length > 0
+                text: boardScreen.statusText
+                font.pixelSize: theme.fontLarge
+                font.bold: true
+                wrapMode: Text.WordWrap
+                width: parent.width
+                color: theme.text
+            }
+
+            Text {
+                text: boardScreen.viewingHistory
+                    ? "Viewing move " + boardScreen.historyIndex + " of " + boardScreen.moveHistory.length
+                    : boardScreen.pendingPremove !== null
+                    ? "Premove queued: " + boardScreen.pendingPremove.from + "-" + boardScreen.pendingPremove.to
+                    : boardScreen.annotationMode
+                    ? "Annotate: tap for ring, drag for arrow"
+                    : boardScreen.inCheck
+                    ? (boardScreen.turn === boardScreen.yourColor ? "Check — your move" : "Opponent is in check")
+                    : boardScreen.turn === boardScreen.yourColor &&
+                        boardScreen.displayFirstMoveTimeMs() !== null
+                    ? "First move due in about " +
+                        Math.ceil(boardScreen.displayFirstMoveTimeMs() / 1000) + "s"
+                    : (boardScreen.turn === boardScreen.yourColor ? "Your move" : "Waiting for opponent...")
+                visible: !boardScreen.gameOver
+                font.pixelSize: theme.fontBody
+                width: parent.width
+                wrapMode: Text.WordWrap
+                color: theme.text
             }
         }
+    }
 
-        Flow {
+    AppDialog {
+        anchors.fill: parent
+        visible: boardScreen.showGameActions
+        darkMode: boardScreen.darkMode
+        title: "Game actions"
+        onDismissed: boardScreen.showGameActions = false
+
+        Text {
             width: parent.width
-            spacing: theme.spacingSmall
-
-            AppButton {
-                text: boardScreen.takebackOfferedByOpponent ? "Accept takeback" : "Offer takeback"
-                visible: !boardScreen.gameOver &&
-                    (boardScreen.takebackOfferedByOpponent || boardScreen.canOfferTakeback)
-                onClicked: boardScreen.backendSender({type: "TakebackAction", accept: true})
-            }
-            AppButton {
-                text: "Decline takeback"
-                visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
-                onClicked: boardScreen.backendSender({type: "TakebackAction", accept: false})
-            }
-            AppButton {
-                text: "Cancel takeback offer"
-                visible: !boardScreen.gameOver && boardScreen.takebackOfferedByYou
-                onClicked: boardScreen.backendSender({type: "TakebackAction", accept: false})
-            }
-        }
-
-        Flow {
-            width: parent.width
-            spacing: theme.spacingSmall
-
-            AppButton {
-                text: "Abort"
-                visible: !boardScreen.gameOver && boardScreen.canAbort
-                onClicked: boardScreen.backendSender({type: "Abort"})
-            }
-
-            AppButton {
-                text: "Give opponent 15s"
-                visible: !boardScreen.gameOver && boardScreen.canGiveTime
-                onClicked: boardScreen.backendSender({type: "AddTime", seconds: 15})
-            }
-
-            AppButton {
-                text: "Claim victory" + (boardScreen.claimWinInSeconds > 0 ? " (~" + boardScreen.claimWinInSeconds + "s)" : "")
-                visible: !boardScreen.gameOver && boardScreen.opponentGone
-                onClicked: boardScreen.backendSender({type: "ClaimVictory"})
-            }
-
-            AppButton {
-                text: "Claim draw"
-                visible: !boardScreen.gameOver && boardScreen.opponentGone
-                onClicked: boardScreen.backendSender({type: "ClaimDraw"})
-            }
-
-            AppButton {
-                text: "Flip board"
-                onClicked: boardScreen.manualFlip = !boardScreen.manualFlip
-            }
-
-            AppButton {
-                text: boardScreen.annotationMode ? "Annotating" : "Annotate board"
-                highlighted: boardScreen.annotationMode
-                onClicked: boardScreen.setAnnotationMode(!boardScreen.annotationMode)
-            }
-
-            AppButton {
-                text: "Clear marks"
-                visible: boardScreen.boardAnnotations.length > 0
-                onClicked: boardScreen.clearAnnotations()
-            }
-
-            AppButton {
-                text: "Cancel premove"
-                visible: !boardScreen.gameOver && boardScreen.pendingPremove !== null
-                onClicked: boardScreen.cancelPremove()
-            }
-
-            AppButton {
-                text: boardScreen.resignArmed ? "Confirm resignation" : "Resign"
-                visible: !boardScreen.gameOver && !boardScreen.canAbort
-                onClicked: {
-                    if (boardScreen.resignArmed) {
-                        boardScreen.backendSender({type: "Resign"})
-                        boardScreen.resignArmed = false
-                    } else {
-                        boardScreen.resignArmed = true
-                    }
-                }
-            }
-
-            AppButton {
-                text: "Cancel"
-                visible: !boardScreen.gameOver && boardScreen.resignArmed
-                onClicked: boardScreen.resignArmed = false
-            }
+            text: boardScreen.gameDescription
+            visible: text.length > 0
+            font.pixelSize: theme.fontSmall
+            horizontalAlignment: Text.AlignHCenter
+            color: theme.textMuted
         }
 
         AppButton {
@@ -1152,7 +1050,6 @@ Rectangle {
                 your_color: boardScreen.yourColor
             })
         }
-
         AppButton {
             width: parent.width
             text: "New game"
@@ -1160,32 +1057,288 @@ Rectangle {
             onClicked: boardScreen.navigateTo("SeekScreen.qml")
         }
 
-        Text {
-            text: boardScreen.chatMessages.join("\n")
-            font.pixelSize: theme.fontSmall
-            wrapMode: Text.WordWrap
+        AppButton {
             width: parent.width
+            text: "Accept draw"
+            highlighted: true
+            visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
+            onClicked: {
+                boardScreen.backendSender({type: "DrawAction", accept: true})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Decline draw"
+            visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
+            onClicked: {
+                boardScreen.backendSender({type: "DrawAction", accept: false})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: boardScreen.drawArmed ? "Confirm draw offer" : "Offer draw"
+            visible: !boardScreen.gameOver && boardScreen.canOfferDraw &&
+                !boardScreen.drawOfferedByOpponent
+            onClicked: {
+                if (boardScreen.drawArmed) {
+                    boardScreen.backendSender({type: "DrawAction", accept: true})
+                    boardScreen.drawArmed = false
+                    boardScreen.showGameActions = false
+                } else {
+                    boardScreen.drawArmed = true
+                }
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Cancel draw confirmation"
+            visible: !boardScreen.gameOver && boardScreen.drawArmed
+            onClicked: boardScreen.drawArmed = false
+        }
+        Text {
+            width: parent.width
+            text: "Draw offer sent"
+            visible: !boardScreen.gameOver && boardScreen.drawOfferedByYou
+            font.pixelSize: theme.fontBody
+            horizontalAlignment: Text.AlignHCenter
             color: theme.text
         }
 
-        Row {
-            spacing: theme.spacingSmall
-            AppTextField {
-                id: chatInputField
-                width: theme.textFieldWidthMedium
-                placeholderText: "Message opponent"
+        AppButton {
+            width: parent.width
+            text: "Accept takeback"
+            highlighted: true
+            visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
+            onClicked: {
+                boardScreen.backendSender({type: "TakebackAction", accept: true})
+                boardScreen.showGameActions = false
             }
-            AppButton {
-                text: "Send"
-                onClicked: {
-                    if (chatInputField.text.length > 0) {
-                        boardScreen.backendSender({type: "SendChat", text: chatInputField.text})
-                        chatInputField.text = ""
+        }
+        AppButton {
+            width: parent.width
+            text: "Decline takeback"
+            visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
+            onClicked: {
+                boardScreen.backendSender({type: "TakebackAction", accept: false})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Offer takeback"
+            visible: !boardScreen.gameOver && boardScreen.canOfferTakeback &&
+                !boardScreen.takebackOfferedByOpponent
+            onClicked: {
+                boardScreen.backendSender({type: "TakebackAction", accept: true})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Cancel takeback offer"
+            visible: !boardScreen.gameOver && boardScreen.takebackOfferedByYou
+            onClicked: {
+                boardScreen.backendSender({type: "TakebackAction", accept: false})
+                boardScreen.showGameActions = false
+            }
+        }
+
+        AppButton {
+            width: parent.width
+            text: "Abort"
+            visible: !boardScreen.gameOver && boardScreen.canAbort
+            onClicked: {
+                boardScreen.backendSender({type: "Abort"})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Give opponent 15s"
+            visible: !boardScreen.gameOver && boardScreen.canGiveTime
+            onClicked: {
+                boardScreen.backendSender({type: "AddTime", seconds: 15})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Claim victory" +
+                (boardScreen.claimWinInSeconds > 0
+                    ? " (~" + boardScreen.claimWinInSeconds + "s)"
+                    : "")
+            highlighted: true
+            visible: !boardScreen.gameOver && boardScreen.opponentGone
+            onClicked: {
+                boardScreen.backendSender({type: "ClaimVictory"})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Claim draw"
+            visible: !boardScreen.gameOver && boardScreen.opponentGone
+            onClicked: {
+                boardScreen.backendSender({type: "ClaimDraw"})
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Cancel premove"
+            visible: !boardScreen.gameOver && boardScreen.pendingPremove !== null
+            onClicked: {
+                boardScreen.cancelPremove()
+                boardScreen.showGameActions = false
+            }
+        }
+
+        AppButton {
+            width: parent.width
+            text: "Flip board"
+            onClicked: {
+                boardScreen.manualFlip = !boardScreen.manualFlip
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: boardScreen.annotationMode ? "Stop annotating" : "Annotate board"
+            highlighted: boardScreen.annotationMode
+            onClicked: {
+                boardScreen.setAnnotationMode(!boardScreen.annotationMode)
+                boardScreen.showGameActions = false
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Clear marks"
+            visible: boardScreen.boardAnnotations.length > 0
+            onClicked: {
+                boardScreen.clearAnnotations()
+                boardScreen.showGameActions = false
+            }
+        }
+
+        AppButton {
+            width: parent.width
+            text: boardScreen.resignArmed ? "Confirm resignation" : "Resign"
+            visible: !boardScreen.gameOver && !boardScreen.canAbort
+            onClicked: {
+                if (boardScreen.resignArmed) {
+                    boardScreen.backendSender({type: "Resign"})
+                    boardScreen.resignArmed = false
+                    boardScreen.showGameActions = false
+                } else {
+                    boardScreen.resignArmed = true
+                }
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Cancel resignation"
+            visible: !boardScreen.gameOver && boardScreen.resignArmed
+            onClicked: boardScreen.resignArmed = false
+        }
+        AppButton {
+            width: parent.width
+            text: "Close"
+            onClicked: boardScreen.showGameActions = false
+        }
+    }
+
+    AppDialog {
+        anchors.fill: parent
+        visible: boardScreen.showMoves
+        darkMode: boardScreen.darkMode
+        title: "Moves"
+        onDismissed: boardScreen.showMoves = false
+
+        Text {
+            width: parent.width
+            text: "No moves yet"
+            visible: boardScreen.moveHistory.length === 0
+            font.pixelSize: theme.fontBody
+            horizontalAlignment: Text.AlignHCenter
+            color: theme.textMuted
+        }
+        AppButton {
+            width: parent.width
+            text: "Return to live position"
+            highlighted: true
+            visible: boardScreen.viewingHistory
+            onClicked: {
+                boardScreen.returnToLive()
+                boardScreen.showMoves = false
+            }
+        }
+        Flow {
+            width: parent.width
+            spacing: theme.spacingXs
+
+            Repeater {
+                model: boardScreen.moveTokens()
+
+                MoveTokenButton {
+                    required property var modelData
+                    darkMode: boardScreen.darkMode
+                    text: modelData.label
+                    selected: modelData.fenIndex === boardScreen.historyIndex
+                    onClicked: {
+                        boardScreen.showHistoryPosition(modelData.fenIndex)
+                        boardScreen.showMoves = false
                     }
                 }
             }
         }
+        AppButton {
+            width: parent.width
+            text: "Close"
+            onClicked: boardScreen.showMoves = false
+        }
+    }
 
+    AppDialog {
+        anchors.fill: parent
+        visible: boardScreen.showChat
+        darkMode: boardScreen.darkMode
+        title: "Player chat"
+        onDismissed: boardScreen.showChat = false
+
+        Text {
+            width: parent.width
+            text: boardScreen.chatMessages.length > 0
+                ? boardScreen.chatMessages.join("\n")
+                : "No messages yet"
+            font.pixelSize: theme.fontSmall
+            wrapMode: Text.WordWrap
+            color: boardScreen.chatMessages.length > 0 ? theme.text : theme.textMuted
+        }
+        Row {
+            width: parent.width
+            spacing: theme.spacingXs
+
+            AppTextField {
+                id: chatInputField
+                width: parent.width - sendChatButton.width - parent.spacing
+                placeholderText: "Message opponent"
+            }
+            AppButton {
+                id: sendChatButton
+                text: "Send"
+                enabled: chatInputField.text.length > 0
+                onClicked: {
+                    boardScreen.backendSender({type: "SendChat", text: chatInputField.text})
+                    chatInputField.text = ""
+                }
+            }
+        }
+        AppButton {
+            width: parent.width
+            text: "Close"
+            onClicked: boardScreen.showChat = false
         }
     }
 
@@ -1210,118 +1363,54 @@ Rectangle {
         onClicked: boardScreen.navigateTo("HomeScreen.qml")
     }
 
-    // Modal piece picker for promotion -- see promotionOptionsFor()/onSquareTapped.
-    // Blocks board taps underneath while open (modal: true) so a second tap can't
-    // land on the board mid-choice.
-    Popup {
-        id: promotionPopup
+    PromotionDialog {
+        anchors.fill: parent
         visible: boardScreen.pendingPromotion !== null
-        modal: true
-        // `modal: true` alone draws a translucent full-screen dim overlay
-        // (Overlay.modal) on open *and* close, and the Basic style's default
-        // enter/exit transitions fade that dim's opacity across several
-        // frames -- each is real full-screen e-ink damage for what should
-        // just be a small centered popup. `dim: false` drops the overlay
-        // (modal input-blocking itself is unaffected -- that's a separate
-        // mechanism from the dim visual); `enter: null`/`exit: null` drop the
-        // fade so the popup itself appears/disappears in one step instead of
-        // animating across frames.
-        dim: false
-        enter: null
-        exit: null
-        closePolicy: Popup.NoAutoClose
-        anchors.centerIn: parent
-
-        Row {
-            spacing: theme.spacingSmall
-            Repeater {
-                model: boardScreen.pendingPromotion ? boardScreen.pendingPromotion.options : []
-                Rectangle {
-                    required property string modelData
-                    width: 128
-                    height: 128
-                    color: theme.cardBackground
-                    border.width: 1
-                    border.color: theme.text
-
-                    Image {
-                        anchors.centerIn: parent
-                        width: parent.width * 0.82
-                        height: parent.height * 0.82
-                        fillMode: Image.PreserveAspectFit
-                        smooth: true
-                        source: "../assets/pieces/" + boardScreen.promotionPieceCode(modelData) + ".png"
-                        sourceSize.width: width
-                        sourceSize.height: height
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: {
-                            var from = boardScreen.pendingPromotion.from
-                            var to = boardScreen.pendingPromotion.to
-                            var isPremove = boardScreen.pendingPromotion.premove || false
-                            boardScreen.pendingPromotion = null
-                            if (isPremove) {
-                                boardScreen.queuePremove(from, to, modelData)
-                            } else {
-                                boardScreen.requestMove(from, to, modelData)
-                            }
-                        }
-                    }
-                }
+        darkMode: boardScreen.darkMode
+        options: boardScreen.pendingPromotion ? boardScreen.pendingPromotion.options : []
+        pieceCodeFor: function(piece) {
+            return boardScreen.promotionPieceCode(piece)
+        }
+        onChosen: (piece) => {
+            var from = boardScreen.pendingPromotion.from
+            var to = boardScreen.pendingPromotion.to
+            var isPremove = boardScreen.pendingPromotion.premove || false
+            boardScreen.pendingPromotion = null
+            if (isPremove) {
+                boardScreen.queuePremove(from, to, piece)
+            } else {
+                boardScreen.requestMove(from, to, piece)
             }
         }
     }
 
-    // Confirm/Cancel gate for moveConfirmation (see requestMove) -- same
-    // modal styling/blocking posture as the promotion popup above, shown
-    // *instead* of sending MakeMove once a legal destination (and promotion
-    // piece, if any) has already been resolved.
-    Popup {
-        id: moveConfirmPopup
+    AppDialog {
+        anchors.fill: parent
         visible: boardScreen.pendingMoveConfirmation !== null
-        modal: true
-        // Same dim-overlay/fade-transition e-ink cost as the promotion popup
-        // above, same fix.
-        dim: false
-        enter: null
-        exit: null
-        closePolicy: Popup.NoAutoClose
-        anchors.centerIn: parent
+        darkMode: boardScreen.darkMode
+        dismissOnBackground: false
+        title: boardScreen.pendingMoveConfirmation
+            ? "Confirm " + boardScreen.pendingMoveConfirmation.from + "–" +
+                boardScreen.pendingMoveConfirmation.to +
+                (boardScreen.pendingMoveConfirmation.promotion
+                    ? "=" + boardScreen.pendingMoveConfirmation.promotion.toUpperCase()
+                    : "")
+            : ""
 
-        Rectangle {
-            width: confirmColumn.width + theme.spacingLarge
-            height: confirmColumn.height + theme.spacingLarge
-            color: theme.cardBackground
-            border.width: 1
-            border.color: theme.text
+        Row {
+            width: parent.width
+            spacing: theme.spacingXs
 
-            Column {
-                id: confirmColumn
-                anchors.centerIn: parent
-                spacing: theme.spacingMedium
-
-                Text {
-                    text: boardScreen.pendingMoveConfirmation
-                        ? "Confirm move " + boardScreen.pendingMoveConfirmation.from + " " + boardScreen.pendingMoveConfirmation.to +
-                          (boardScreen.pendingMoveConfirmation.promotion ? "=" + boardScreen.pendingMoveConfirmation.promotion.toUpperCase() : "") + "?"
-                        : ""
-                    font.pixelSize: theme.fontBody
-                    color: theme.text
-                }
-
-                Row {
-                    spacing: theme.spacingSmall
-                    AppButton {
-                        text: "Confirm"
-                        onClicked: boardScreen.confirmPendingMove()
-                    }
-                    AppButton {
-                        text: "Cancel"
-                        onClicked: boardScreen.cancelPendingMove()
-                    }
-                }
+            AppButton {
+                width: (parent.width - parent.spacing) / 2
+                text: "Confirm"
+                highlighted: true
+                onClicked: boardScreen.confirmPendingMove()
+            }
+            AppButton {
+                width: (parent.width - parent.spacing) / 2
+                text: "Cancel"
+                onClicked: boardScreen.cancelPendingMove()
             }
         }
     }
@@ -1373,12 +1462,17 @@ Rectangle {
             boardScreen.canOfferDraw = msg.can_offer_draw || false
             boardScreen.canOfferTakeback = msg.can_offer_takeback || false
             boardScreen.canGiveTime = msg.can_give_time || false
+            boardScreen.canChat = msg.can_chat || false
             if (!boardScreen.canOfferDraw) boardScreen.drawArmed = false
             boardScreen.moveHistory = msg.move_history || []
             boardScreen.capturedByWhite = msg.captured_by_white || []
             boardScreen.capturedByBlack = msg.captured_by_black || []
             boardScreen.opponentName = msg.opponent_name || ""
             boardScreen.opponentRating = msg.opponent_rating !== undefined ? msg.opponent_rating : null
+            boardScreen.gameDescription = msg.game_description || ""
+            boardScreen.firstMoveTimeMs = msg.first_move_time_ms !== undefined
+                ? msg.first_move_time_ms
+                : null
             boardScreen.resignArmed = false
             // A RatingDiff for a previous game that never got consumed (its
             // own GameOver never arrived on this screen, e.g. after a

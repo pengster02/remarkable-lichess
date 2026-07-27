@@ -3,8 +3,11 @@
         <file>ui/main.qml</file>
         <file>ui/Theme.qml</file>
         <file>ui/AppButton.qml</file>
+        <file>ui/AppDialog.qml</file>
         <file>ui/BoardToolButton.qml</file>
+        <file>ui/MoveTokenButton.qml</file>
         <file>ui/AppTextField.qml</file>
+        <file>ui/PromotionDialog.qml</file>
         <file>ui/SectionCard.qml</file>
         <file>ui/SetupScreen.qml</file>
         <file>ui/HomeScreen.qml</file>

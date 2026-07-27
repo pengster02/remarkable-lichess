@@ -2,6 +2,7 @@ use crate::game::rules::{apply_uci_move, legal_moves, replay_uci_game};
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{BackendMessage, LegalMove};
 use shakmaty::Chess;
+use std::time::Instant;
 
 pub struct GameSession {
     pub game_id: String,
@@ -22,6 +23,7 @@ pub struct GameSession {
     // from gameFull, not re-derived on every gameState update.
     pub opponent_name: Option<String>,
     pub opponent_rating: Option<u32>,
+    pub game_description: String,
     pub rated: bool,
     pub is_tournament: bool,
     pub opponent_is_human: bool,
@@ -35,6 +37,7 @@ pub struct GameSession {
     // 10s-left-out-of-30s one. None for the rare case a game has no clock at
     // all (correspondence/untimed) rather than assumed.
     pub initial_clock_ms: Option<u64>,
+    state_received_at: Instant,
 }
 
 fn turn_name(pos: &Chess) -> String {
@@ -83,7 +86,51 @@ fn takeback_offered_by_you(state: &GameState, your_color: &str) -> bool {
     if your_color == "black" { state.btakeback } else { state.wtakeback }
 }
 
-fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
+fn player_display_name(player: &crate::lichess::models::Player) -> Option<String> {
+    if let Some(level) = player.ai_level {
+        return Some(format!("Stockfish level {level}"));
+    }
+    player.name.as_ref().map(|name| match player.title.as_deref() {
+        Some(title) => format!("{title} {name}"),
+        None => name.clone(),
+    })
+}
+
+fn elapsed_whole_millis(since: Instant, now: Instant) -> u64 {
+    let elapsed = now.saturating_duration_since(since).as_millis();
+    u64::try_from(elapsed / 1000 * 1000).unwrap_or(u64::MAX)
+}
+
+fn game_description(full: &GameFull) -> String {
+    let rating = if full.rated { "Rated" } else { "Casual" };
+    let speed = match full.speed.as_deref() {
+        Some("ultraBullet") => "UltraBullet",
+        Some("bullet") => "Bullet",
+        Some("blitz") => "Blitz",
+        Some("rapid") => "Rapid",
+        Some("classical") => "Classical",
+        Some("correspondence") => "Correspondence",
+        _ => "Game",
+    };
+    let mut parts = vec![format!("{rating} {speed}")];
+    if full.variant.key != "standard" {
+        parts.push(full.variant.name.clone());
+    }
+    if let Some(clock) = &full.clock {
+        let seconds = clock.initial / 1_000;
+        let initial = if seconds >= 60 && seconds % 60 == 0 {
+            (seconds / 60).to_string()
+        } else {
+            format!("{seconds}s")
+        };
+        parts.push(format!("{initial}+{}", clock.increment / 1_000));
+    } else if let Some(days) = full.days_per_turn {
+        parts.push(format!("{days} days/move"));
+    }
+    parts.join(" • ")
+}
+
+fn to_board_state(session: &GameSession, state: &GameState, now: Instant) -> BackendMessage {
     use shakmaty::Position;
     let move_count = state.moves.split_whitespace().count();
     let draw_by_opponent = draw_offered_by_opponent(state, &session.your_color);
@@ -91,15 +138,30 @@ fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
     let draw_by_you = draw_offered_by_you(state, &session.your_color);
     let takeback_by_you = takeback_offered_by_you(state, &session.your_color);
     let has_played_full_move = move_count >= 2;
+    let elapsed_ms = elapsed_whole_millis(session.state_received_at, now);
+    let mut white_time_ms = state.wtime;
+    let mut black_time_ms = state.btime;
+    if state.status == "started" && session.initial_clock_ms.is_some() {
+        match session.position.turn() {
+            shakmaty::Color::White => white_time_ms = white_time_ms.saturating_sub(elapsed_ms),
+            shakmaty::Color::Black => black_time_ms = black_time_ms.saturating_sub(elapsed_ms),
+        }
+    }
+    let first_move_time_ms = state.expiration.as_ref().map(|expiration| {
+        expiration
+            .millis_to_move
+            .saturating_sub(expiration.idle_millis)
+            .saturating_sub(elapsed_ms)
+    });
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
         fen: shakmaty::fen::Fen::from_position(&session.position, shakmaty::EnPassantMode::Legal)
             .to_string(),
         turn: turn_name(&session.position),
-        white_time_ms: state.wtime,
-        black_time_ms: state.btime,
+        white_time_ms,
+        black_time_ms,
         legal_moves: session.legal.clone().into_boxed_slice(),
-        last_move: session.last_move.clone(),
+        last_move: session.last_move.clone().map(Box::new),
         your_color: session.your_color.clone(),
         in_check: session.position.is_check(),
         draw_offered_by_opponent: draw_by_opponent,
@@ -121,13 +183,16 @@ fn to_board_state(session: &GameSession, state: &GameState) -> BackendMessage {
             && !session.is_tournament
             && session.opponent_is_human
             && session.initial_clock_ms.is_some(),
+        can_chat: session.opponent_is_human,
         move_history: session.move_history.clone().into_boxed_slice(),
         position_history: session.position_history.clone().into_boxed_slice(),
         captured_by_white: session.captured_by_white.clone().into_boxed_slice(),
         captured_by_black: session.captured_by_black.clone().into_boxed_slice(),
         opponent_name: session.opponent_name.clone(),
         opponent_rating: session.opponent_rating,
-        initial_clock_ms: session.initial_clock_ms,
+        game_description: session.game_description.clone().into_boxed_str(),
+        first_move_time_ms: first_move_time_ms.map(Box::new),
+        initial_clock_ms: session.initial_clock_ms.map(Box::new),
     }
 }
 
@@ -141,6 +206,11 @@ fn last_move_from_uci_list(moves: &str) -> Option<(String, String)> {
 
 impl GameSession {
     pub fn from_game_full(full: &GameFull, my_id: &str) -> anyhow::Result<(Self, BackendMessage)> {
+        anyhow::ensure!(
+            matches!(full.variant.key.as_str(), "standard" | "fromPosition"),
+            "{} games are not supported yet",
+            full.variant.name
+        );
         let replay = replay_uci_game(&full.initial_fen, &full.state.moves)?;
         let position = replay.position;
         let legal = legal_moves(&position);
@@ -158,20 +228,26 @@ impl GameSession {
             position_history: replay.position_history,
             captured_by_white: replay.captured_by_white,
             captured_by_black: replay.captured_by_black,
-            opponent_name: opp.name.clone(),
+            opponent_name: player_display_name(opp),
             opponent_rating: opp.rating,
+            game_description: game_description(full),
             rated: full.rated,
             is_tournament: full.tournament_id.is_some(),
-            opponent_is_human: opp.id.is_some(),
+            opponent_is_human: opp.ai_level.is_none() && opp.id.is_some(),
             state: full.state.clone(),
             initial_clock_ms: full.clock.as_ref().map(|c| c.initial),
+            state_received_at: Instant::now(),
         };
         let msg = session.board_state();
         Ok((session, msg))
     }
 
     pub fn board_state(&self) -> BackendMessage {
-        to_board_state(self, &self.state)
+        self.board_state_at(Instant::now())
+    }
+
+    fn board_state_at(&self, now: Instant) -> BackendMessage {
+        to_board_state(self, &self.state, now)
     }
 
     pub fn apply_state_update(&mut self, state: &GameState) -> anyhow::Result<BackendMessage> {
@@ -184,6 +260,7 @@ impl GameSession {
         self.legal = legal_moves(&self.position);
         self.last_move = last_move_from_uci_list(&state.moves);
         self.state = state.clone();
+        self.state_received_at = Instant::now();
         Ok(self.board_state())
     }
 
@@ -230,6 +307,8 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "type": "gameFull",
             "id": "g1",
+            "variant": {"key": "standard", "name": "Standard"},
+            "speed": "rapid",
             "rated": false,
             "initialFen": "startpos",
             "clock": {"initial": 600000, "increment": 0},
@@ -322,7 +401,7 @@ mod tests {
         let msg = session.apply_state_update(&state).unwrap();
         match msg {
             BackendMessage::BoardState { last_move, turn, .. } => {
-                assert_eq!(last_move, Some(("e2".to_string(), "e4".to_string())));
+                assert_eq!(*last_move.unwrap(), ("e2".to_string(), "e4".to_string()));
                 assert_eq!(turn, "black");
             }
             _ => panic!("expected BoardState"),
@@ -400,6 +479,8 @@ mod tests {
         let full: GameFull = serde_json::from_value(serde_json::json!({
             "type": "gameFull",
             "id": "g1",
+            "variant": {"key": "standard", "name": "Standard"},
+            "speed": "rapid",
             "rated": false,
             "initialFen": "startpos",
             "clock": {"initial": 600000, "increment": 0},
@@ -426,7 +507,9 @@ mod tests {
         let full = sample_full("");
         let (mut session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
-            BackendMessage::BoardState { initial_clock_ms, .. } => assert_eq!(initial_clock_ms, Some(600_000)),
+            BackendMessage::BoardState { initial_clock_ms, .. } => {
+                assert_eq!(initial_clock_ms.as_deref(), Some(&600_000));
+            }
             _ => panic!("expected BoardState"),
         }
         let state: GameState = serde_json::from_value(serde_json::json!({
@@ -438,7 +521,36 @@ mod tests {
         match msg {
             // Doesn't drift down with the live clock -- it's the fixed starting
             // allotment, not a re-read of the current remaining time.
-            BackendMessage::BoardState { initial_clock_ms, .. } => assert_eq!(initial_clock_ms, Some(600_000)),
+            BackendMessage::BoardState { initial_clock_ms, .. } => {
+                assert_eq!(initial_clock_ms.as_deref(), Some(&600_000));
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn game_description_uses_stream_speed_and_time_control() {
+        let full = sample_full("");
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { game_description, .. } => {
+                assert_eq!(game_description.as_ref(), "Casual Rapid • 10+0");
+            }
+            _ => panic!("expected BoardState"),
+        }
+
+        let mut full = sample_full("");
+        full.speed = Some("correspondence".into());
+        full.clock = None;
+        full.days_per_turn = Some(3);
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { game_description, .. } => {
+                assert_eq!(
+                    game_description.as_ref(),
+                    "Casual Correspondence • 3 days/move"
+                );
+            }
             _ => panic!("expected BoardState"),
         }
     }
@@ -456,6 +568,77 @@ mod tests {
             }
             _ => panic!("expected BoardState"),
         }
+    }
+
+    #[test]
+    fn ai_level_and_player_title_produce_useful_opponent_names() {
+        let mut full = sample_full("");
+        full.black.ai_level = Some(3);
+        full.black.id = None;
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { opponent_name, .. } => {
+                assert_eq!(opponent_name.as_deref(), Some("Stockfish level 3"));
+            }
+            _ => panic!("expected BoardState"),
+        }
+
+        let mut full = sample_full("");
+        full.black.name = Some("OpponentName".into());
+        full.black.title = Some("GM".into());
+        let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        match msg {
+            BackendMessage::BoardState { opponent_name, .. } => {
+                assert_eq!(opponent_name.as_deref(), Some("GM OpponentName"));
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn cached_board_state_advances_only_the_active_clock() {
+        let full = sample_full("");
+        let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let msg = session.board_state_at(
+            session.state_received_at + std::time::Duration::from_millis(3_900),
+        );
+        match msg {
+            BackendMessage::BoardState { white_time_ms, black_time_ms, .. } => {
+                assert_eq!(white_time_ms, 597_000);
+                assert_eq!(black_time_ms, 600_000);
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn first_move_expiration_accounts_for_cached_elapsed_time() {
+        let mut full = sample_full("");
+        full.state.expiration = Some(crate::lichess::models::GameExpiration {
+            idle_millis: 4_000,
+            millis_to_move: 15_000,
+        });
+        let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let msg = session.board_state_at(
+            session.state_received_at + std::time::Duration::from_millis(2_400),
+        );
+        match msg {
+            BackendMessage::BoardState { first_move_time_ms, .. } => {
+                assert_eq!(first_move_time_ms.as_deref(), Some(&9_000));
+            }
+            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn unsupported_variants_fail_with_the_variant_name() {
+        let mut full = sample_full("");
+        full.variant = crate::lichess::models::Variant {
+            key: "atomic".into(),
+            name: "Atomic".into(),
+        };
+        let error = GameSession::from_game_full(&full, "my-id").err().unwrap();
+        assert_eq!(error.to_string(), "Atomic games are not supported yet");
     }
 
     #[test]
@@ -533,12 +716,14 @@ mod tests {
                 can_offer_draw,
                 can_offer_takeback,
                 can_give_time,
+                can_chat,
                 ..
             } => {
                 assert!(can_abort);
                 assert!(!can_offer_draw);
                 assert!(!can_offer_takeback);
                 assert!(can_give_time);
+                assert!(can_chat);
             }
             _ => panic!("expected BoardState"),
         }
@@ -572,7 +757,7 @@ mod tests {
         session.apply_state_update(&state).unwrap();
         match session.board_state() {
             BackendMessage::BoardState { last_move, white_time_ms, turn, .. } => {
-                assert_eq!(last_move, Some(("e2".into(), "e4".into())));
+                assert_eq!(*last_move.unwrap(), ("e2".into(), "e4".into()));
                 assert_eq!(white_time_ms, 598_000);
                 assert_eq!(turn, "black");
             }
@@ -605,11 +790,13 @@ mod tests {
                 can_offer_draw,
                 can_offer_takeback,
                 can_give_time,
+                can_chat,
                 ..
             } => {
                 assert!(!can_offer_draw);
                 assert!(!can_offer_takeback);
                 assert!(!can_give_time);
+                assert!(!can_chat);
             }
             _ => panic!("expected BoardState"),
         }
