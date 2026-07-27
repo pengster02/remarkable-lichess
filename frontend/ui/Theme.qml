@@ -58,6 +58,10 @@ QtObject {
     readonly property int exitButtonSize: touchTarget
     readonly property int exitButtonMargin: spacingSmall
 
+    // Persistent top bar (main.qml): always-on connection status + Exit, spanning
+    // the full width above every screen -- replaces the old corner "X" square.
+    readonly property int topBarHeight: touchTarget
+
     readonly property int fontButton: 44
     readonly property int buttonPaddingV: 24
     readonly property int buttonPaddingH: 36
@@ -65,10 +69,10 @@ QtObject {
 
     readonly property int pageSideMargin: spacingMedium
     readonly property int pageTopMargin: exitButtonMargin
-    readonly property int pageTopRightInset: Math.max(
-        0,
-        exitButtonMargin + exitButtonSize + spacingXs - pageSideMargin
-    )
+    // Was a right-edge inset so screen content dodged the old corner "X". The X is
+    // gone (the persistent top bar spans the full width instead), so nothing needs
+    // dodging -- kept as 0 so the screens that still subtract it stay full-width.
+    readonly property int pageTopRightInset: 0
     readonly property int pageBottomMargin: spacingMedium
 
     // narrow: short numeric entry. medium: compact action. wide: a username.

@@ -107,15 +107,8 @@ Rectangle {
                     font.pixelSize: theme.fontBody
                     color: theme.textMuted
                 }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: homeScreen.connectivityLabel()
-                    font.pixelSize: theme.fontSmall
-                    font.bold: !homeScreen.online && homeScreen.connectivityKnown
-                    color: !homeScreen.connectivityKnown || homeScreen.online
-                        ? theme.textMuted
-                        : theme.errorText
-                }
+                // Connection status now lives in the persistent top bar (main.qml),
+                // so it's no longer repeated here.
             }
 
             Text {
