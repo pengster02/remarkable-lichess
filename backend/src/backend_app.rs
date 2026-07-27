@@ -12,7 +12,7 @@ use crate::protocol::{
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +20,35 @@ use tokio::sync::Mutex;
 
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn wifi_link_state_at(network_root: &Path) -> Option<bool> {
+    let mut found = false;
+    let mut connected = false;
+    for entry in std::fs::read_dir(network_root).ok()?.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !path.join("wireless").exists()
+            && !name.starts_with("wlan")
+            && !name.starts_with("wlp")
+        {
+            continue;
+        }
+        found = true;
+        let operstate = std::fs::read_to_string(path.join("operstate"))
+            .unwrap_or_default();
+        let carrier = std::fs::read_to_string(path.join("carrier"))
+            .unwrap_or_else(|_| "1".to_string());
+        if operstate.trim() == "up" && carrier.trim() != "0" {
+            connected = true;
+        }
+    }
+    found.then_some(connected)
+}
+
+fn wifi_link_state() -> Option<bool> {
+    wifi_link_state_at(Path::new("/sys/class/net"))
+}
 
 pub struct LichessBackend {
     token_path: PathBuf,
@@ -143,7 +172,27 @@ impl LichessBackend {
                 })
                 .collect(),
             Err(e) => {
-                self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                let wifi_connected = wifi_link_state();
+                let message = if wifi_connected == Some(false) {
+                    "Wi-Fi is disconnected"
+                } else {
+                    "Can't reach Lichess"
+                };
+                self.send(
+                    replier,
+                    &BackendMessage::ConnectivityState {
+                        online: false,
+                        wifi_connected,
+                        message: Some(message.to_string()),
+                    },
+                );
+                log::warn!("couldn't load Home: {e}");
+                self.send(
+                    replier,
+                    &BackendMessage::HomeLoadFailed {
+                        message: format!("{message}. Check your connection and retry."),
+                    },
+                );
                 return;
             }
         };
@@ -155,6 +204,14 @@ impl LichessBackend {
             Ok(account) => ratings_from_perfs(account.perfs),
             Err(_) => Vec::new(),
         };
+        self.send(
+            replier,
+            &BackendMessage::ConnectivityState {
+                online: true,
+                wifi_connected: wifi_link_state(),
+                message: None,
+            },
+        );
         self.send(replier, &BackendMessage::HomeState { ongoing_games, ratings });
     }
 
@@ -675,7 +732,12 @@ async fn send_pending_challenges(
                 })
                 .collect(),
         },
-        Err(e) => BackendMessage::ErrorMsg { message: e.to_string() },
+        Err(e) => {
+            log::warn!("couldn't load challenges: {e}");
+            BackendMessage::ChallengesLoadFailed {
+                message: "Couldn't load challenges. Retry when connected.".to_string(),
+            }
+        }
     };
     send_locked(replier, write_lock, &msg);
 }
@@ -1275,6 +1337,40 @@ mod game_over_result_tests {
         assert_eq!(game_over_result("aborted", &None), "aborted");
         assert_eq!(game_over_result("noStart", &None), "noStart");
         assert_eq!(game_over_result("cheat", &None), "cheat");
+    }
+}
+
+#[cfg(test)]
+mod connectivity_tests {
+    use super::wifi_link_state_at;
+
+    #[test]
+    fn wifi_link_state_distinguishes_connected_and_disconnected_interfaces() {
+        let root = std::env::temp_dir().join(format!(
+            "remarkable-lichess-network-test-{}",
+            std::process::id()
+        ));
+        let interface = root.join("wlan0");
+        std::fs::create_dir_all(interface.join("wireless")).unwrap();
+        std::fs::write(interface.join("operstate"), "down\n").unwrap();
+        std::fs::write(interface.join("carrier"), "0\n").unwrap();
+        assert_eq!(wifi_link_state_at(&root), Some(false));
+
+        std::fs::write(interface.join("operstate"), "up\n").unwrap();
+        std::fs::write(interface.join("carrier"), "1\n").unwrap();
+        assert_eq!(wifi_link_state_at(&root), Some(true));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wifi_link_state_is_unknown_without_a_wireless_interface() {
+        let root = std::env::temp_dir().join(format!(
+            "remarkable-lichess-network-empty-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("eth0")).unwrap();
+        assert_eq!(wifi_link_state_at(&root), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

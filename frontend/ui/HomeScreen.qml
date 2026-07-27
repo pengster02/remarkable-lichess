@@ -9,7 +9,6 @@ Rectangle {
     property var backendSender
     property var navigateTo
     property bool darkMode: false
-    property var toggleDarkMode: function() {}
     // Every now-playing game, not just one -- replaces the old singular
     // resumableGameId, which silently dropped every game past the first for
     // anyone with more than one correspondence game going (see protocol.rs's
@@ -30,12 +29,38 @@ Rectangle {
     // the user anything is even happening) indistinguishable from "you have
     // nothing going on", which isn't true, it just hasn't loaded yet.
     property bool loadedOnce: false
+    property bool connectivityKnown: false
+    property bool online: false
+    property var wifiConnected: null
+    property string connectionMessage: ""
+    property string loadError: ""
+    property string challengesError: ""
+    property string actionError: ""
 
     onBackendSenderChanged: {
-        if (homeScreen.backendSender) {
-            homeScreen.backendSender({type: "RequestHome"})
-            homeScreen.backendSender({type: "RequestChallenges"})
-        }
+        if (homeScreen.backendSender) homeScreen.refresh()
+    }
+
+    function refresh() {
+        homeScreen.loadedOnce = false
+        homeScreen.connectivityKnown = false
+        homeScreen.loadError = ""
+        homeScreen.challengesError = ""
+        homeScreen.actionError = ""
+        homeScreen.backendSender({type: "RequestHome"})
+        homeScreen.backendSender({type: "RequestChallenges"})
+    }
+
+    function refreshChallenges() {
+        homeScreen.challengesError = ""
+        homeScreen.backendSender({type: "RequestChallenges"})
+    }
+
+    function connectivityLabel() {
+        if (!homeScreen.connectivityKnown) return "Checking connection..."
+        if (homeScreen.online) return "Online"
+        if (homeScreen.wifiConnected === false) return "Offline — Wi-Fi disconnected"
+        return "Offline — Lichess unreachable"
     }
 
     EinkPagedFlickable {
@@ -82,6 +107,15 @@ Rectangle {
                     font.pixelSize: theme.fontBody
                     color: theme.textMuted
                 }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: homeScreen.connectivityLabel()
+                    font.pixelSize: theme.fontSmall
+                    font.bold: !homeScreen.online && homeScreen.connectivityKnown
+                    color: !homeScreen.connectivityKnown || homeScreen.online
+                        ? theme.textMuted
+                        : theme.errorText
+                }
             }
 
             Text {
@@ -90,6 +124,64 @@ Rectangle {
                 font.pixelSize: theme.fontLabel
                 font.italic: true
                 color: theme.textMuted
+            }
+
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Connection problem"
+                visible: homeScreen.loadError.length > 0
+
+                Text {
+                    width: parent.width
+                    text: homeScreen.loadError
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.errorText
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Retry"
+                    highlighted: true
+                    onClicked: homeScreen.refresh()
+                }
+            }
+
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Challenges unavailable"
+                visible: homeScreen.challengesError.length > 0
+
+                Text {
+                    width: parent.width
+                    text: homeScreen.challengesError
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.errorText
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Retry challenges"
+                    onClicked: homeScreen.refreshChallenges()
+                }
+            }
+
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Action failed"
+                visible: homeScreen.actionError.length > 0
+
+                Text {
+                    width: parent.width
+                    text: homeScreen.actionError
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.errorText
+                }
+                AppButton {
+                    width: parent.width
+                    text: "Dismiss"
+                    onClicked: homeScreen.actionError = ""
+                }
             }
 
             SectionCard {
@@ -227,22 +319,15 @@ Rectangle {
                 }
 
                 AppButton {
-                    // Not a hardware light/warmth control -- reMarkable's frontlight
-                    // is brightness-only, no adjustable color temperature (see
-                    // docs/remarkable-appload-platform-notes.md). This just swaps
-                    // this app's own palette to a darker, e-ink-friendly (not pure
-                    // black) scheme. Unverified on real e-ink until an on-device
-                    // pass; dark fills are a plausible ghosting risk worth watching
-                    // for.
                     width: parent.width
-                    text: homeScreen.darkMode ? "Dark mode: On" : "Dark mode: Off"
-                    onClicked: homeScreen.toggleDarkMode()
+                    text: "Settings"
+                    onClicked: homeScreen.navigateTo("SettingsScreen.qml")
                 }
 
                 AppButton {
                     width: parent.width
-                    text: "Settings"
-                    onClicked: homeScreen.navigateTo("SettingsScreen.qml")
+                    text: "Refresh"
+                    onClicked: homeScreen.refresh()
                 }
             }
         }
@@ -251,10 +336,28 @@ Rectangle {
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
             homeScreen.loadedOnce = true
+            homeScreen.loadError = ""
             homeScreen.ongoingGames = msg.ongoing_games || []
             homeScreen.ratings = msg.ratings || []
         } else if (msg.type === "PendingChallenges") {
+            homeScreen.challengesError = ""
             homeScreen.pendingChallenges = msg.challenges || []
+        } else if (msg.type === "ConnectivityState") {
+            homeScreen.connectivityKnown = true
+            homeScreen.online = msg.online || false
+            homeScreen.wifiConnected = msg.wifi_connected !== undefined
+                ? msg.wifi_connected
+                : null
+            homeScreen.connectionMessage = msg.message || ""
+        } else if (msg.type === "HomeLoadFailed") {
+            homeScreen.loadedOnce = true
+            homeScreen.loadError = msg.message ||
+                "Couldn't load your games. Check Wi-Fi and retry."
+        } else if (msg.type === "ChallengesLoadFailed") {
+            homeScreen.challengesError = msg.message ||
+                "Couldn't load challenges."
+        } else if (msg.type === "ErrorMsg") {
+            homeScreen.actionError = msg.message || "The action failed."
         }
     }
 }

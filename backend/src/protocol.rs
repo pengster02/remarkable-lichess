@@ -239,6 +239,13 @@ pub enum BackendMessage {
     TokenVerified { username: String },
     TokenInvalid { reason: String },
     HomeState { ongoing_games: Vec<OngoingGameSummary>, ratings: Vec<RatingSummary> },
+    ConnectivityState {
+        online: bool,
+        wifi_connected: Option<bool>,
+        message: Option<String>,
+    },
+    HomeLoadFailed { message: String },
+    ChallengesLoadFailed { message: String },
     SeekCreated,
     ChallengeCreated,
     BoardState {
@@ -653,6 +660,18 @@ mod tests {
     fn reconnect_signal_is_scoped_to_the_game_stream() {
         let json = serde_json::to_string(&BackendMessage::GameStreamReconnecting).unwrap();
         assert_eq!(json, r#"{"type":"GameStreamReconnecting"}"#);
+    }
+
+    #[test]
+    fn connectivity_state_preserves_unknown_wifi_link_state() {
+        let json = serde_json::to_string(&BackendMessage::ConnectivityState {
+            online: false,
+            wifi_connected: None,
+            message: Some("Can't reach Lichess".into()),
+        })
+        .unwrap();
+        assert!(json.contains(r#""online":false"#));
+        assert!(json.contains(r#""wifi_connected":null"#));
     }
 
     #[test]
