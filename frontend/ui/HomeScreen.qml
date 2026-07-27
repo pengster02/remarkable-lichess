@@ -6,6 +6,7 @@ Rectangle {
     anchors.fill: parent
     color: theme.background
     Theme { id: theme; darkMode: homeScreen.darkMode }
+    ChessDisplay { id: chessDisplay }
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -106,7 +107,7 @@ Rectangle {
                             // Rating number bold and a size class up from its
                             // label -- the number is what someone actually
                             // opens Home to check.
-                            text: modelData.speed.charAt(0).toUpperCase() + modelData.speed.slice(1) + "  <b>" + modelData.rating + "</b>"
+                            text: chessDisplay.speedLabel(modelData.speed) + "  <b>" + modelData.rating + "</b>"
                             textFormat: Text.StyledText
                             font.pixelSize: theme.fontBody
                             color: theme.text

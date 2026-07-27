@@ -10,6 +10,7 @@ Rectangle {
     anchors.fill: parent
     color: theme.background
     Theme { id: theme; darkMode: gameReviewScreen.darkMode }
+    ChessDisplay { id: chessDisplay }
     property var backendSender
     property var navigateTo
     property bool darkMode: false
@@ -395,36 +396,9 @@ Rectangle {
         })
     }
 
-    // Safe, bounds-checked lookup into `analysis`/`clockMs` -- both may be
-    // shorter than `moves` or empty (see their own property comments above),
-    // so every read goes through here rather than direct indexing.
+    // `analysis` may be shorter than `moves` or empty.
     function analysisAt(plyIndex) {
         return plyIndex >= 0 && plyIndex < gameReviewScreen.analysis.length ? gameReviewScreen.analysis[plyIndex] : null
-    }
-
-    function clockAt(plyIndex) {
-        return plyIndex >= 0 && plyIndex < gameReviewScreen.clockMs.length ? gameReviewScreen.clockMs[plyIndex] : null
-    }
-
-    // Same mm:ss format as BoardScreen's own formatClock -- this is the
-    // remaining time *after* that ply, not a live countdown, so there's no
-    // seconds-vs-centiseconds subtlety to handle beyond the ms conversion
-    // backend_app.rs already did.
-    function formatClock(ms) {
-        var totalSeconds = Math.floor(ms / 1000)
-        var minutes = Math.floor(totalSeconds / 60)
-        var seconds = totalSeconds % 60
-        return minutes + ":" + (seconds < 10 ? "0" : "") + seconds
-    }
-
-    // Classic PGN annotation glyphs -- the exact suffix Lichess's own move
-    // list and every PGN viewer appends to a flagged move, so "Qh5??" reads
-    // the same way here as everywhere else in chess.
-    function judgmentSuffix(judgment) {
-        if (judgment === "Blunder") return "??"
-        if (judgment === "Mistake") return "?"
-        if (judgment === "Inaccuracy") return "?!"
-        return ""
     }
 
     function judgmentColor(judgment) {
@@ -495,40 +469,12 @@ Rectangle {
         gameReviewScreen.backendSender({type: "RequestCloudEvaluation", fen: fen})
     }
 
-    // "1. e4 e5  2. Nf3 Nc6" tokens, one per ply, each carrying its own fens
-    // index so a tap can jump straight there -- unlike BoardScreen's own
-    // formattedMoveHistory (one joined, unclickable string), every ply here
-    // needs to be an individually tappable target. Also folds in this ply's
-    // own clock/judgment when available, both purely additive to the SAN
-    // itself (e.g. "5. Qh5?? (3:12)") rather than separate columns, since a
-    // Flow-of-tokens layout has no fixed columns to align to.
-    function moveTokens() {
-        var out = []
-        for (var i = 0; i < gameReviewScreen.moves.length; i++) {
-            var entry = gameReviewScreen.analysisAt(i)
-            var judgment = entry && entry.judgment ? entry.judgment : null
-            var clock = gameReviewScreen.clockAt(i)
-            var label = (i % 2 === 0 ? (i / 2 + 1) + ". " : "") + gameReviewScreen.moves[i] + gameReviewScreen.judgmentSuffix(judgment)
-            if (clock !== null) label += " (" + gameReviewScreen.formatClock(clock) + ")"
-            out.push({
-                label: label,
-                fenIndex: i + 1,
-                judgment: judgment,
-                judgmentComment: entry ? entry.judgment_comment : null
-            })
-        }
-        return out
-    }
-
-    // Same labeling/coloring as GameHistoryScreen's own resultLabel/resultColor
-    // -- duplicated rather than shared since there's no common QML module for
-    // cross-screen helpers here (every screen already inlines its own small
-    // formatting functions, e.g. BoardScreen's formatClock).
-    function resultLabel(result) {
-        if (result === "win") return "Win"
-        if (result === "loss") return "Loss"
-        if (result === "draw") return "Draw"
-        return result.charAt(0).toUpperCase() + result.slice(1)
+    function moveRows() {
+        return chessDisplay.moveRows(
+            gameReviewScreen.moves,
+            gameReviewScreen.clockMs,
+            gameReviewScreen.analysis
+        )
     }
 
     function resultColor(result) {
@@ -542,8 +488,12 @@ Rectangle {
         var parts = []
         if (gameReviewScreen.game.rated === true) parts.push("Rated")
         else if (gameReviewScreen.game.rated === false) parts.push("Casual")
-        if (gameReviewScreen.game.speed) parts.push(gameReviewScreen.game.speed)
-        if (gameReviewScreen.game.termination) parts.push(gameReviewScreen.game.termination)
+        if (gameReviewScreen.game.speed) {
+            parts.push(chessDisplay.speedLabel(gameReviewScreen.game.speed))
+        }
+        if (gameReviewScreen.game.termination) {
+            parts.push(chessDisplay.terminationLabel(gameReviewScreen.game.termination))
+        }
         if (gameReviewScreen.game.opening_name) parts.push(gameReviewScreen.game.opening_name)
         if (gameReviewScreen.game.created_at_ms) {
             parts.push(new Date(gameReviewScreen.game.created_at_ms).toLocaleDateString())
@@ -569,7 +519,7 @@ Rectangle {
             spacing: theme.spacingSmall
             visible: gameReviewScreen.game !== null
             Text {
-                text: gameReviewScreen.game ? gameReviewScreen.resultLabel(gameReviewScreen.game.result) : ""
+                text: gameReviewScreen.game ? chessDisplay.resultLabel(gameReviewScreen.game.result) : ""
                 font.pixelSize: theme.fontBody
                 font.bold: true
                 color: gameReviewScreen.game ? gameReviewScreen.resultColor(gameReviewScreen.game.result) : theme.text
@@ -953,14 +903,15 @@ Rectangle {
         boundsBehavior: Flickable.StopAtBounds
         clip: true
         contentWidth: width
-        contentHeight: moveFlow.height
+        contentHeight: moveRowsColumn.height
 
         function revealCurrentMove() {
             if (gameReviewScreen.currentIndex <= 0) {
                 moveList.contentY = 0
                 return
             }
-            var item = moveRepeater.itemAt(gameReviewScreen.currentIndex - 1)
+            var rowIndex = Math.floor((gameReviewScreen.currentIndex - 1) / 2)
+            var item = moveRowRepeater.itemAt(rowIndex)
             if (!item) return
             if (item.y < moveList.contentY) {
                 moveList.contentY = item.y
@@ -969,20 +920,22 @@ Rectangle {
             }
         }
 
-        Flow {
-            id: moveFlow
+        Column {
+            id: moveRowsColumn
             width: parent.width
-            spacing: theme.spacingSmall
+            spacing: 0
             Repeater {
-                id: moveRepeater
-                model: gameReviewScreen.moveTokens()
-                MoveTokenButton {
+                id: moveRowRepeater
+                model: gameReviewScreen.moveRows()
+                MoveListRow {
                     required property var modelData
+                    width: parent.width
                     darkMode: gameReviewScreen.darkMode
-                    text: modelData.label
-                    selected: modelData.fenIndex === gameReviewScreen.currentIndex
-                    textColor: gameReviewScreen.judgmentColor(modelData.judgment)
-                    onClicked: gameReviewScreen.currentIndex = modelData.fenIndex
+                    moveNumber: modelData.number
+                    whiteMove: modelData.white
+                    blackMove: modelData.black
+                    currentIndex: gameReviewScreen.currentIndex
+                    onMoveSelected: (fenIndex) => gameReviewScreen.currentIndex = fenIndex
                 }
             }
         }
