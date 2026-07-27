@@ -190,6 +190,8 @@ Minimum emulator smoke test:
 - One-shot Lichess requests have a 20-second total deadline so move and action
   gates cannot remain pending forever after a dropped response. Held-open event,
   game, seek, and challenge streams use the separate unbounded stream path.
+  Event and game consumers reconnect after 30 seconds without a line or
+  keepalive so a half-open TCP connection cannot freeze authoritative updates.
 - Move notation is directly tappable and automatically reveals the current move.
 - Clock chips use a fixed shared width so both player bars remain aligned when
   a clock changes from two-digit to one-digit minutes.
