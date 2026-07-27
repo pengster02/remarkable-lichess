@@ -19,7 +19,7 @@ Rectangle {
     // loaded screen that declares it, same pattern as darkMode below.
     property bool autoQueenPromotion: false
     property bool moveConfirmation: false
-    property bool minimalHighlights: false
+    property bool minimalHighlights: true
     property bool premovesEnabled: false
     property bool liveClockEnabled: true
     property string boardTheme: "brown"
@@ -40,7 +40,6 @@ Rectangle {
     // way GameReviewScreen's header gets to show who was played and how it
     // ended, not just a bare, contextless board.
     property var reviewGame: null
-    property bool showExitConfirmation: false
 
     // Connectivity lives at the root (not per-screen) so the persistent top bar
     // can show it on every screen -- fed by the backend's ConnectivityState (see
@@ -205,7 +204,9 @@ Rectangle {
                 // onAutoQueenPromotionChanged above re-syncs whatever's loaded.
                 root.autoQueenPromotion = msg.auto_queen_promotion || false
                 root.moveConfirmation = msg.move_confirmation || false
-                root.minimalHighlights = msg.minimal_highlights || false
+                root.minimalHighlights = msg.minimal_highlights !== undefined
+                    ? msg.minimal_highlights
+                    : true
                 root.premovesEnabled = msg.premoves_enabled || false
                 root.liveClockEnabled = msg.live_clock_enabled !== undefined ? msg.live_clock_enabled : true
                 root.boardTheme = msg.board_theme || "brown"
@@ -400,12 +401,12 @@ Rectangle {
         }
     }
 
-    // Persistent top bar on every screen (one instance here at the root, above
-    // the Loader): always-on connection status on the left, the app's exit
-    // affordance on the right. Replaces the old corner "X" square -- the host's
-    // swipe-down-from-top-edge close still exists too (see
-    // docs/remarkable-appload-platform-notes.md), this keeps one always-visible,
-    // discoverable way out. The whole bar is tappable, not just the Exit pill.
+    // Persistent status bar on every screen (one instance here at the root, above
+    // the Loader): always-on connection status, nothing tappable. There is no
+    // in-app exit button by design -- the host closes any fullscreen AppLoad app
+    // via its own swipe-down-from-top-edge gesture (see
+    // docs/remarkable-appload-platform-notes.md); `close`/`unloading` above stay
+    // because the host still looks them up on the root.
     Rectangle {
         id: topBar
         anchors.top: parent.top
@@ -420,8 +421,8 @@ Rectangle {
         Text {
             anchors.left: parent.left
             anchors.leftMargin: theme.pageSideMargin
-            anchors.right: exitPill.left
-            anchors.rightMargin: theme.spacingSmall
+            anchors.right: parent.right
+            anchors.rightMargin: theme.pageSideMargin
             anchors.verticalCenter: parent.verticalCenter
             text: root.connectivityLabel()
             elide: Text.ElideRight
@@ -432,78 +433,9 @@ Rectangle {
                 : theme.errorText
         }
 
-        Rectangle {
-            id: exitPill
-            anchors.right: parent.right
-            anchors.rightMargin: theme.pageSideMargin
-            anchors.verticalCenter: parent.verticalCenter
-            width: exitLabel.width + theme.spacingSmall * 2
-            height: theme.topBarHeight * 0.62
-            radius: theme.cardRadius
-            color: "transparent"
-            border.width: 2
-            border.color: theme.cardBorder
-
-            Text {
-                id: exitLabel
-                anchors.centerIn: parent
-                text: "Exit"
-                font.pixelSize: theme.fontLabel
-                font.bold: true
-                color: theme.text
-            }
-        }
-
         EinkRefreshArea {
             anchors.fill: parent
             displayMethod: EinkRefreshArea.UI
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: root.showExitConfirmation = true
-        }
-    }
-
-    Loader {
-        objectName: "exitConfirmationLoader"
-        anchors.fill: parent
-        active: root.showExitConfirmation
-        z: 2000
-        sourceComponent: Component {
-            AppDialog {
-                anchors.fill: parent
-                darkMode: root.darkMode
-                dismissOnBackground: false
-                title: "Exit Lichess?"
-
-                Text {
-                    width: parent.width
-                    text: "Your active game will stay on Lichess, but this app will close."
-                    wrapMode: Text.WordWrap
-                    horizontalAlignment: Text.AlignHCenter
-                    font.pixelSize: theme.fontBody
-                    color: theme.text
-                }
-
-                Row {
-                    width: parent.width
-                    spacing: theme.spacingXs
-
-                    AppButton {
-                        width: (parent.width - parent.spacing) / 2
-                        text: "Keep playing"
-                        highlighted: true
-                        onClicked: root.showExitConfirmation = false
-                    }
-                    AppButton {
-                        width: (parent.width - parent.spacing) / 2
-                        text: "Exit"
-                        critical: true
-                        onClicked: root.close()
-                    }
-                }
-            }
         }
     }
 }
