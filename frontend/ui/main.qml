@@ -42,6 +42,21 @@ Rectangle {
     property var reviewGame: null
     property bool showExitConfirmation: false
 
+    // Connectivity lives at the root (not per-screen) so the persistent top bar
+    // can show it on every screen -- fed by the backend's ConnectivityState (see
+    // the message router below and backend_app.rs's wifi_link_state).
+    property bool connectivityKnown: false
+    property bool online: false
+    property var wifiConnected: null
+    property string connectionMessage: ""
+
+    function connectivityLabel() {
+        if (!root.connectivityKnown) return "Connecting…"
+        if (root.online) return "Online"
+        if (root.wifiConnected === false) return "Offline — Wi-Fi disconnected"
+        return "Offline — Lichess unreachable"
+    }
+
     // Bundles "remember which row was tapped" with "actually ask the backend
     // for its moves" into one call, mirroring setAutoQueenPromotion's own
     // local-state-plus-backend-send pattern -- GameHistoryScreen has no other
@@ -197,12 +212,37 @@ Rectangle {
                 root.pieceSet = msg.piece_set || "cburnett"
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
-                screenLoader.source = "SetupScreen.qml"
+                screenLoader.source = "LoginScreen.qml"
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
+                }
+            } else if (msg.type === "LoginCompleted") {
+                // The backend's sign-in task only got as far as saving the
+                // token; asking for it to be activated has to come from here
+                // because that task can't touch the backend's own state (see
+                // protocol.rs's ActivateSavedToken).
+                root.sendToBackend({type: "ActivateSavedToken"})
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
+                }
+            } else if (msg.type === "LoginChallenge" || msg.type === "LoginFailed") {
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
+                }
+            } else if (msg.type === "ConnectivityState") {
+                // Owned by the root so the persistent top bar shows it everywhere;
+                // still forwarded to the current screen, which uses it for its own
+                // retry/error logic (see HomeScreen.handleMessage).
+                root.connectivityKnown = true
+                root.online = msg.online || false
+                root.wifiConnected = msg.wifi_connected !== undefined
+                    ? msg.wifi_connected
+                    : null
+                root.connectionMessage = msg.message || ""
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "HomeState" || msg.type === "HomeLoadFailed" ||
-                       msg.type === "ConnectivityState" ||
                        msg.type === "SeekCreated" || msg.type === "ChallengeCreated" ||
                        msg.type === "PendingChallenges" ||
                        msg.type === "ChallengesLoadFailed" ||
@@ -272,8 +312,12 @@ Rectangle {
 
     Loader {
         id: screenLoader
-        anchors.fill: parent
-        source: "SetupScreen.qml"
+        // Sits below the persistent top bar so no screen underlaps it.
+        anchors.top: topBar.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        source: "LoginScreen.qml"
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend
@@ -356,40 +400,63 @@ Rectangle {
         }
     }
 
-    // Visible exit affordance on every screen (one instance here in main.qml,
-    // above the Loader, rather than duplicated per-screen -- every screen gets
-    // it "for free" just by being loaded into this same root, which is also
-    // why it's the right place to enforce it being big/consistent instead of
-    // each screen reinventing its own). The host already provides a
-    // swipe-down-from-top-edge -> "X" close mechanism for any fullscreen
-    // AppLoad app (see docs/remarkable-appload-platform-notes.md), but it's
-    // easy to miss -- this just makes the same `close()` signal reachable
-    // with one direct, generously-sized tap instead.
-    //
+    // Persistent top bar on every screen (one instance here at the root, above
+    // the Loader): always-on connection status on the left, the app's exit
+    // affordance on the right. Replaces the old corner "X" square -- the host's
+    // swipe-down-from-top-edge close still exists too (see
+    // docs/remarkable-appload-platform-notes.md), this keeps one always-visible,
+    // discoverable way out. The whole bar is tappable, not just the Exit pill.
     Rectangle {
-        id: exitButton
-        width: theme.exitButtonSize
-        height: theme.exitButtonSize
+        id: topBar
         anchors.top: parent.top
+        anchors.left: parent.left
         anchors.right: parent.right
-        anchors.margins: theme.exitButtonMargin
+        height: theme.topBarHeight
         z: 1000
-        radius: theme.cardRadius
         color: theme.cardBackground
         border.width: 1
         border.color: theme.cardBorder
 
         Text {
-            anchors.centerIn: parent
-            text: "X"
-            // Sized to its own now-smaller button (theme.exitButtonSize ==
-            // theme.touchTarget, was a much bigger dedicated size shared with
-            // nothing else) -- fontLabel, not fontHeading: a corner icon
-            // reads clearly at a size well below any real content button's
-            // own label, on purpose (see exitButtonSize's own comment).
+            anchors.left: parent.left
+            anchors.leftMargin: theme.pageSideMargin
+            anchors.right: exitPill.left
+            anchors.rightMargin: theme.spacingSmall
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.connectivityLabel()
+            elide: Text.ElideRight
             font.pixelSize: theme.fontLabel
-            font.bold: true
-            color: theme.text
+            font.bold: root.connectivityKnown && !root.online
+            color: (!root.connectivityKnown || root.online)
+                ? theme.textMuted
+                : theme.errorText
+        }
+
+        Rectangle {
+            id: exitPill
+            anchors.right: parent.right
+            anchors.rightMargin: theme.pageSideMargin
+            anchors.verticalCenter: parent.verticalCenter
+            width: exitLabel.width + theme.spacingSmall * 2
+            height: theme.topBarHeight * 0.62
+            radius: theme.cardRadius
+            color: "transparent"
+            border.width: 2
+            border.color: theme.cardBorder
+
+            Text {
+                id: exitLabel
+                anchors.centerIn: parent
+                text: "Exit"
+                font.pixelSize: theme.fontLabel
+                font.bold: true
+                color: theme.text
+            }
+        }
+
+        EinkRefreshArea {
+            anchors.fill: parent
+            displayMethod: EinkRefreshArea.UI
         }
 
         MouseArea {
