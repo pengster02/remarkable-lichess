@@ -877,7 +877,7 @@ fn spawn_game_stream(
                                         if is_over {
                                             game_over = true;
                                         }
-                                        let result = match s.apply_state_update(&state) {
+                                        let result = match s.apply_state_update(state) {
                                             Ok(msg) => Some(msg),
                                             Err(error) => {
                                                 log::warn!(

@@ -311,7 +311,7 @@ impl GameSession {
         to_board_state(self, &self.state, now, HistoryDelivery::Full)
     }
 
-    pub fn apply_state_update(&mut self, state: &GameState) -> anyhow::Result<BackendMessage> {
+    pub fn apply_state_update(&mut self, state: GameState) -> anyhow::Result<BackendMessage> {
         enum Change {
             Appended(String),
             Rebuilt,
@@ -348,7 +348,7 @@ impl GameSession {
             self.legal = legal_moves(&self.position);
             self.last_move = last_move_from_uci_list(&state.moves);
         }
-        self.state = state.clone();
+        self.state = state;
         self.state_received_at = Instant::now();
         let history = match &change {
             Change::Appended(san) => HistoryDelivery::Append(san),
@@ -381,7 +381,7 @@ impl GameSession {
         } else {
             format!("{} {}", expected_moves.trim(), uci)
         };
-        self.apply_state_update(&state).map(Some)
+        self.apply_state_update(state).map(Some)
     }
 
     pub fn preview_move(&self, uci: &str) -> anyhow::Result<BackendMessage> {
@@ -513,7 +513,7 @@ mod tests {
             "status": "started", "winner": null
         }))
         .unwrap();
-        let msg = session.apply_state_update(&state).unwrap();
+        let msg = session.apply_state_update(state).unwrap();
         match msg {
             // The common one-move advance sends neither array, just the new SAN.
             BackendMessage::BoardState { move_history, position_history, appended_move, .. } => {
@@ -539,7 +539,7 @@ mod tests {
             "status": "started", "winner": null
         }))
         .unwrap();
-        match session.apply_state_update(&state).unwrap() {
+        match session.apply_state_update(state).unwrap() {
             BackendMessage::BoardState { move_history, position_history, appended_move, .. } => {
                 assert_eq!(&*move_history.unwrap(), ["e4".to_string()]);
                 assert_eq!(position_history.unwrap().len(), 2);
@@ -555,7 +555,7 @@ mod tests {
         let (mut session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         let mut state = session.state.clone();
         state.btime = 599_000;
-        match session.apply_state_update(&state).unwrap() {
+        match session.apply_state_update(state).unwrap() {
             BackendMessage::BoardState { move_history, position_history, appended_move, .. } => {
                 assert_eq!(move_history, None);
                 assert_eq!(position_history, None);
@@ -572,7 +572,7 @@ mod tests {
         let history_ptr = session.position_history.as_ptr();
         let mut state = session.state.clone();
         state.btime = 599_000;
-        session.apply_state_update(&state).unwrap();
+        session.apply_state_update(state).unwrap();
         assert_eq!(session.position_history.as_ptr(), history_ptr);
         assert_eq!(session.position_history.len(), 2);
     }
@@ -594,7 +594,7 @@ mod tests {
 
         let mut authoritative = session.state.clone();
         authoritative.wtime = 598_000;
-        session.apply_state_update(&authoritative).unwrap();
+        session.apply_state_update(authoritative).unwrap();
         assert_eq!(session.move_history, ["e4"]);
         assert_eq!(session.position_history.len(), 2);
     }
@@ -646,7 +646,7 @@ mod tests {
             "winner": null
         }))
         .unwrap();
-        let msg = session.apply_state_update(&state).unwrap();
+        let msg = session.apply_state_update(state).unwrap();
         match msg {
             BackendMessage::BoardState { last_move, turn, .. } => {
                 assert_eq!(*last_move.unwrap(), ("e2".to_string(), "e4".to_string()));
@@ -714,7 +714,7 @@ mod tests {
                 "winner": null
             }))
             .unwrap();
-            msg = Some(session.apply_state_update(&state).unwrap());
+            msg = Some(session.apply_state_update(state).unwrap());
         }
         match msg.unwrap() {
             BackendMessage::BoardState { in_check, .. } => assert!(in_check),
@@ -773,7 +773,7 @@ mod tests {
             "status": "started", "winner": null
         }))
         .unwrap();
-        let msg = session.apply_state_update(&state).unwrap();
+        let msg = session.apply_state_update(state).unwrap();
         match msg {
             // Doesn't drift down with the live clock -- it's the fixed starting
             // allotment, not a re-read of the current remaining time.
@@ -906,7 +906,7 @@ mod tests {
             "status": "started", "winner": null, "bdraw": true
         }))
         .unwrap();
-        let msg = session.apply_state_update(&state).unwrap();
+        let msg = session.apply_state_update(state).unwrap();
         match msg {
             BackendMessage::BoardState { draw_offered_by_opponent, takeback_offered_by_opponent, .. } => {
                 assert!(draw_offered_by_opponent);
@@ -928,7 +928,7 @@ mod tests {
             "status": "started", "winner": null, "wdraw": true
         }))
         .unwrap();
-        let msg = session.apply_state_update(&state).unwrap();
+        let msg = session.apply_state_update(state).unwrap();
         match msg {
             BackendMessage::BoardState {
                 draw_offered_by_opponent,
@@ -955,7 +955,7 @@ mod tests {
             "status": "started", "winner": null, "wtakeback": true
         }))
         .unwrap();
-        let msg = session.apply_state_update(&state).unwrap();
+        let msg = session.apply_state_update(state).unwrap();
         match msg {
             BackendMessage::BoardState { takeback_offered_by_opponent, .. } => assert!(takeback_offered_by_opponent),
             _ => panic!("expected BoardState"),
@@ -1039,7 +1039,7 @@ mod tests {
             "status": "started", "winner": null
         }))
         .unwrap();
-        session.apply_state_update(&state).unwrap();
+        session.apply_state_update(state).unwrap();
         match session.board_state() {
             BackendMessage::BoardState { last_move, white_time_ms, turn, .. } => {
                 assert_eq!(*last_move.unwrap(), ("e2".into(), "e4".into()));
