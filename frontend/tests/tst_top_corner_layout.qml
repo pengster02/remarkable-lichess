@@ -184,6 +184,50 @@ TestCase {
         compare(board.drawOfferedByOpponent, true)
     }
 
+    function test_incrementalMovesAppendToHistoryAndFullSyncReplaces() {
+        var fenA = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        var fenB = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+        var fenC = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2"
+        // Full sync establishes the baseline line.
+        board.handleMessage({
+            type: "BoardState", game_id: "g1", fen: fenA, turn: "white",
+            white_time_ms: 60000, black_time_ms: 60000,
+            legal_moves: [{from: "e2", to: "e4", promotion: null}],
+            position_history: [fenA], move_history: [],
+            captured_by_white: [], captured_by_black: []
+        })
+        // One-move advance: no arrays, just the appended SAN -- frontend grows its copy.
+        board.handleMessage({
+            type: "BoardState", game_id: "g1", fen: fenB, turn: "black",
+            white_time_ms: 59000, black_time_ms: 60000, last_move: ["e2", "e4"],
+            legal_moves: [{from: "e7", to: "e5", promotion: null}],
+            appended_move: "e4", captured_by_white: [], captured_by_black: []
+        })
+        compare(board.positionHistory.length, 2)
+        compare(board.positionHistory[1], fenB)
+        compare(board.moveHistory.length, 1)
+        compare(board.moveHistory[0], "e4")
+        board.handleMessage({
+            type: "BoardState", game_id: "g1", fen: fenC, turn: "white",
+            white_time_ms: 59000, black_time_ms: 59000, last_move: ["e7", "e5"],
+            legal_moves: [], appended_move: "e5",
+            captured_by_white: [], captured_by_black: []
+        })
+        compare(board.positionHistory.length, 3)
+        compare(board.moveHistory.length, 2)
+        compare(board.moveHistory[1], "e5")
+        // A later full sync (e.g. takeback/resume) replaces the whole line again.
+        board.handleMessage({
+            type: "BoardState", game_id: "g1", fen: fenA, turn: "white",
+            white_time_ms: 60000, black_time_ms: 60000,
+            legal_moves: [{from: "e2", to: "e4", promotion: null}],
+            position_history: [fenA], move_history: [],
+            captured_by_white: [], captured_by_black: []
+        })
+        compare(board.positionHistory.length, 1)
+        compare(board.moveHistory.length, 0)
+    }
+
     function test_unacceptedMovePreviewRollsBackCleanly() {
         var liveFen = "8/8/8/8/8/8/4P3/4K2k w - - 0 1"
         var previewFen = "8/8/8/8/4P3/8/8/4K2k b - - 0 1"
