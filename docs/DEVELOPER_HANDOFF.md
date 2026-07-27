@@ -34,7 +34,7 @@ The current UI supports:
 | Live board | `frontend/ui/BoardScreen.qml` | Game interaction and live-game actions |
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
 | Visual system | `frontend/ui/Theme.qml` | E-ink colors, typography, spacing, and touch sizes |
-| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `MoveRequestGate.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, move submission, move tokens, promotion choices, and inputs |
+| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `EinkRefreshArea.qml`, `MoveRequestGate.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, refresh policy, move submission, move tokens, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
 | Backend router | `backend/src/backend_app.rs` | Dispatches frontend requests and backend events |
 | Live chess state | `backend/src/game/session.rs` | Lichess game stream and authoritative board state |
@@ -196,6 +196,10 @@ Minimum emulator smoke test:
 - Keep cosmetic animation out. Explicitly trigger network-heavy analysis panels.
 - Use `DisplayMethodArea.Fast` only for frequently changing regions such as
   clocks; the PC emulator does not reproduce real e-ink waveform behavior.
+- Use `EinkRefreshArea` instead of importing AppLoad's refresh component in
+  individual controls. Board interaction and clearing states use `Fast`, while
+  the settled colored position returns to `Content`. Shared buttons use `Fast`
+  only while pressed and `UI` at rest.
 - Import AppLoad's `DisplayMethodArea` through its embedded
   `qrc:/qt/qml/net/asivery/ApploadUtils` directory. The URI-style module import
   can pass lint yet fail when the PC emulator has not registered that import

@@ -24,7 +24,7 @@ AppDialog {
                     Math.max(0, promotionDialog.options.length - 1)) /
                     Math.max(1, promotionDialog.options.length)
                 height: Math.max(theme.touchTarget, Math.min(width, 160))
-                color: theme.cardBackground
+                color: promotionMouseArea.pressed ? theme.text : theme.cardBackground
                 border.width: 1
                 border.color: theme.text
                 radius: theme.cardRadius
@@ -41,7 +41,15 @@ AppDialog {
                     sourceSize.height: height
                 }
 
+                EinkRefreshArea {
+                    anchors.fill: parent
+                    displayMethod: promotionMouseArea.pressed
+                        ? EinkRefreshArea.Fast
+                        : EinkRefreshArea.UI
+                }
+
                 MouseArea {
+                    id: promotionMouseArea
                     anchors.fill: parent
                     onClicked: promotionDialog.chosen(modelData)
                 }

@@ -39,10 +39,11 @@ extension files' listed supported-OS-versions immediately before any real device
 
 Sources: [rm-appload GitHub](https://github.com/asivery/rm-appload), [Xovi — reMarkable Guide](https://remarkable.guide/guide/software/xovi.html), [remagic](https://github.com/maximerivest/remagic), [xovi-tripletap](https://github.com/rmitchellscott/xovi-tripletap), [About reMarkable Paper Pro Move](https://support.remarkable.com/s/article/About-reMarkable-Paper-Pro-Move), [xovi-qmd-extensions](https://github.com/rmitchellscott/xovi-qmd-extensions).
 
-## 2. E-ink refresh / performance — the real gap
+## 2. E-ink refresh / performance
 
-**Short answer: no, nothing in this project's QML does any refresh optimization yet, and the
-framework has a real, documented mechanism for it that isn't being used at all.**
+The app now uses AppLoad's refresh mechanism through a local adapter. Keep the
+native API distinction below: `EPFrameBuffer` still does not apply to an
+AppLoad-hosted QML frontend.
 
 ### Two different APIs, don't confuse them
 
@@ -74,32 +75,19 @@ framework has a real, documented mechanism for it that isn't being used at all.*
 
 ### What this means concretely for a chess board (or any frequently-redrawing AppLoad UI)
 
-`remarkable-lichess`'s current QML (`BoardScreen.qml`, `BoardSquare.qml`, all four screens) has
-**zero** references to `DisplayMethodArea` or `net.asivery.ApploadUtils` anywhere. Every redraw —
-tap-to-highlight, legal-move highlighting, the opponent's move landing, the once-a-second clock text
-update — goes through whatever the unset default is (`Content`), with no per-region hint at all. That
-is almost certainly going to look and feel bad on real e-ink: full-quality/slower waveform paths used
-for things that should be instant, and no distinction between "this needs to look crisp" (final board
-position after a confirmed move) vs. "this needs to be fast even if lower quality" (tap feedback,
-highlight toggling).
+`EinkRefreshArea.qml` dynamically loads AppLoad's resource-owned
+`DisplayMethodArea.qml`, keeping shared controls testable without the AppLoad
+host. Current policy:
 
-Concrete follow-up worth doing before the on-device pass:
+- board selection, legal targets, premoves, and the short changed-square clearing
+  pulse use `Fast`;
+- the settled colored board returns to `Content`;
+- clock chips and changing live status text use `Fast`;
+- shared buttons use `Fast` while pressed and `UI` at rest.
 
-- Wrap each `BoardSquare`'s highlight-state visuals in a `DisplayMethodArea` with `Fast` or `UFast`,
-  so tap-to-select and legal-destination highlighting redraw quickly instead of flashing the whole
-  board.
-- Keep `Content` (or explicit `UI`) for less-frequent, higher-stakes redraws — the full board
-  repaint after a server-confirmed move, and the promotion picker once it exists — where clarity
-  matters more than speed.
-- The once-a-second clock text (`Math.floor(whiteTimeMs/1000)` etc.) is a likely ghosting/flicker
-  source if it forces a real e-ink waveform update every second — either mark that region `Fast`, or
-  throttle the visible update (e.g. every 5s, or only redraw when the displayed integer actually
-  changes) since e-ink doesn't need 1Hz precision the way an LCD does.
-- None of this is verifiable without either the real tablet, or at minimum the AppLoad **PC emulator**
-  (`_start.qml` + `appload.pro`, built via `qmake6 .` then `make`, documented in `rm-appload`'s
-  README) — that emulator won't show real refresh timing (`DisplayMethodArea` is a stub there) but
-  will at least let the four screens' logic/layout be visually run and clicked through for the first
-  time, which as of this session has never happened even once.
+Do not use `UFast` for the board by default. Its speed is not worth risking
+reduced color/detail on the Paper Pro Move. The PC emulator proves loading and
+layout but cannot reproduce physical waveform timing or ghosting.
 
 Sources: [Writing Qt Quick Applications — developer.remarkable.com](https://developer.remarkable.com/documentation/qt_epaper), [libqsgepaper reference — canselcik/libremarkable](https://github.com/canselcik/libremarkable/blob/master/reference-material/libqsgepaper.md), [epframebuffer.h — Eeems-Org/remarkable-template-qt-app](https://github.com/Eeems-Org/remarkable-template-qt-app/blob/main/src/vendor/epaper/epframebuffer.h), [rm-appload GitHub](https://github.com/asivery/rm-appload) (`resources/ApploadUtils/DisplayMethodArea.qml`, `examples/appload/frontend-only/ui/example.qml`, `xovi/template/appload.qmd`), [Ghosting — reMarkable support](https://support.remarkable.com/s/article/Ghosting), [chessmarkable](https://github.com/LinusCDE/chessmarkable) (a non-Qt reference point — it manages partial e-ink updates manually via direct framebuffer/ioctl calls since it's Rust+SDL, not QML, so its approach doesn't transfer directly, but its release notes confirm per-field partial-update tuning was worth doing for a reMarkable chess board specifically).
 

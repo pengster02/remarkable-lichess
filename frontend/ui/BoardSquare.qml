@@ -16,6 +16,9 @@ Rectangle {
     property bool isPremoveDestination: false
     property bool flashRefresh: false
     property bool darkMode: false
+    readonly property bool fastRefresh: isHighlighted || isSelected ||
+        isLegalDestination || isPremoveSource || isPremoveDestination ||
+        flashRefresh
 
     Theme { id: theme; darkMode: square.darkMode }
 
@@ -125,5 +128,12 @@ Rectangle {
         anchors.fill: parent
         color: "black"
         visible: square.flashRefresh
+    }
+
+    EinkRefreshArea {
+        anchors.fill: parent
+        displayMethod: square.fastRefresh
+            ? EinkRefreshArea.Fast
+            : EinkRefreshArea.Content
     }
 }

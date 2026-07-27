@@ -1015,6 +1015,11 @@ Rectangle {
                 wrapMode: Text.WordWrap
                 width: parent.width
                 color: theme.text
+
+                EinkRefreshArea {
+                    anchors.fill: parent
+                    displayMethod: EinkRefreshArea.Fast
+                }
             }
 
             Text {
@@ -1042,6 +1047,11 @@ Rectangle {
                 width: parent.width
                 wrapMode: Text.WordWrap
                 color: theme.text
+
+                EinkRefreshArea {
+                    anchors.fill: parent
+                    displayMethod: EinkRefreshArea.Fast
+                }
             }
         }
     }
