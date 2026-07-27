@@ -109,6 +109,8 @@ Rectangle {
     // Fixed for the game's lifetime (see game::session::GameSession) -- an AI
     // opponent has no rating, only a name/level, hence the Option on the
     // backend and the "" / null fallback here.
+    property string yourName: ""
+    property var yourRating: null
     property string opponentName: ""
     property var opponentRating: null
     property string gameDescription: ""
@@ -351,17 +353,18 @@ Rectangle {
     property string bottomColor: ((boardScreen.yourColor === "black") !== boardScreen.manualFlip) ? "black" : "white"
     property string topColor: bottomColor === "white" ? "black" : "white"
 
-    // Player-bar lookups by side. Your own bar has no rating to show (the
-    // backend only sends the opponent's) -- null keeps the suffix off.
     function nameFor(color) {
         if (color === boardScreen.yourColor) {
+            if (boardScreen.yourName.length > 0) return boardScreen.yourName
             return boardScreen.username.length > 0 ? boardScreen.username : "You"
         }
         return boardScreen.opponentName.length > 0 ? boardScreen.opponentName : "Opponent"
     }
 
     function ratingFor(color) {
-        return color === boardScreen.yourColor ? null : boardScreen.opponentRating
+        return color === boardScreen.yourColor
+            ? boardScreen.yourRating
+            : boardScreen.opponentRating
     }
 
     function clockFor(color) {
@@ -1496,6 +1499,8 @@ Rectangle {
             boardScreen.moveHistory = msg.move_history || []
             boardScreen.capturedByWhite = msg.captured_by_white || []
             boardScreen.capturedByBlack = msg.captured_by_black || []
+            boardScreen.yourName = msg.your_name || ""
+            boardScreen.yourRating = msg.your_rating !== undefined ? msg.your_rating : null
             boardScreen.opponentName = msg.opponent_name || ""
             boardScreen.opponentRating = msg.opponent_rating !== undefined ? msg.opponent_rating : null
             boardScreen.gameDescription = msg.game_description || ""
@@ -1544,7 +1549,9 @@ Rectangle {
                 outcome = msg.result === boardScreen.yourColor ? "You won" : "You lost"
                 boardScreen.gameResult = msg.result === boardScreen.yourColor ? "win" : "loss"
             } else {
-                outcome = msg.result.charAt(0).toUpperCase() + msg.result.slice(1)
+                outcome = msg.reason && msg.reason.length > 0
+                    ? msg.reason
+                    : msg.result.charAt(0).toUpperCase() + msg.result.slice(1)
                 boardScreen.gameResult = msg.result
             }
             boardScreen.gameOver = true
@@ -1562,8 +1569,10 @@ Rectangle {
             claimDrawAction.reset()
             giveTimeAction.reset()
             boardScreen.pendingGameAction = ""
-            boardScreen.statusText = "Game over: " + outcome +
-                (msg.reason && msg.reason.length > 0 ? " (" + msg.reason + ")" : "")
+            boardScreen.statusText = "Game over: " + outcome
+            if (msg.reason && msg.reason.length > 0 && msg.reason !== outcome) {
+                boardScreen.statusText += " (" + msg.reason + ")"
+            }
             if (boardScreen.pendingRatingDiffText.length > 0) {
                 boardScreen.statusText += boardScreen.pendingRatingDiffText
                 boardScreen.pendingRatingDiffText = ""

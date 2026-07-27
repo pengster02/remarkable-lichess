@@ -21,6 +21,8 @@ pub struct GameSession {
     pub captured_by_black: Vec<String>,
     // Fixed for the life of the game (unlike everything above) -- computed once
     // from gameFull, not re-derived on every gameState update.
+    pub your_name: Option<String>,
+    pub your_rating: Option<u32>,
     pub opponent_name: Option<String>,
     pub opponent_rating: Option<u32>,
     pub game_description: String,
@@ -66,6 +68,10 @@ fn resolve_your_color(full: &GameFull, my_id: &str) -> String {
 /// read off the other side, not re-derived from an id lookup).
 fn opponent<'a>(full: &'a GameFull, your_color: &str) -> &'a crate::lichess::models::Player {
     if your_color == "black" { &full.white } else { &full.black }
+}
+
+fn you<'a>(full: &'a GameFull, your_color: &str) -> &'a crate::lichess::models::Player {
+    if your_color == "black" { &full.black } else { &full.white }
 }
 
 // GameState carries wdraw/bdraw/wtakeback/btakeback for *both* colors; the frontend
@@ -195,6 +201,8 @@ fn to_board_state(session: &GameSession, state: &GameState, now: Instant) -> Bac
         position_history: session.position_history.clone().into_boxed_slice(),
         captured_by_white: session.captured_by_white.clone().into_boxed_slice(),
         captured_by_black: session.captured_by_black.clone().into_boxed_slice(),
+        your_name: session.your_name.clone(),
+        your_rating: session.your_rating,
         opponent_name: session.opponent_name.clone(),
         opponent_rating: session.opponent_rating,
         game_description: session.game_description.clone().into_boxed_str(),
@@ -223,6 +231,7 @@ impl GameSession {
         let legal = legal_moves(&position);
         let last_move = last_move_from_uci_list(&full.state.moves);
         let your_color = resolve_your_color(full, my_id);
+        let local_player = you(full, &your_color);
         let opp = opponent(full, &your_color);
         let session = GameSession {
             game_id: full.id.clone(),
@@ -235,6 +244,8 @@ impl GameSession {
             position_history: replay.position_history,
             captured_by_white: replay.captured_by_white,
             captured_by_black: replay.captured_by_black,
+            your_name: player_display_name(local_player),
+            your_rating: local_player.rating,
             opponent_name: player_display_name(opp),
             opponent_rating: opp.rating,
             game_description: game_description(full),
@@ -487,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn opponent_name_and_rating_are_read_from_the_side_that_isnt_your_color() {
+    fn both_player_names_and_ratings_are_read_from_their_sides() {
         let full: GameFull = serde_json::from_value(serde_json::json!({
             "type": "gameFull",
             "id": "g1",
@@ -506,7 +517,15 @@ mod tests {
         .unwrap();
         let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
-            BackendMessage::BoardState { opponent_name, opponent_rating, .. } => {
+            BackendMessage::BoardState {
+                your_name,
+                your_rating,
+                opponent_name,
+                opponent_rating,
+                ..
+            } => {
+                assert_eq!(your_name, Some("MyName".to_string()));
+                assert_eq!(your_rating, Some(1500));
                 assert_eq!(opponent_name, Some("OpponentName".to_string()));
                 assert_eq!(opponent_rating, Some(1600));
             }

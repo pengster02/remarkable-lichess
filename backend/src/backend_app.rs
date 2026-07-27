@@ -702,6 +702,13 @@ fn game_over_result(status: &str, winner: &Option<String>) -> String {
     }
 }
 
+fn game_over_message(status: &str, winner: &Option<String>) -> BackendMessage {
+    BackendMessage::GameOver {
+        result: game_over_result(status, winner),
+        reason: termination_label(Some(status)),
+    }
+}
+
 async fn next_stream_line(
     lines: &mut LineStream,
     idle_timeout: Duration,
@@ -769,10 +776,10 @@ fn spawn_game_stream(
                                                 // from an earlier finished game (see the
                                                 // clearing below, same reasoning).
                                                 *guard = None;
-                                                Some(BackendMessage::GameOver {
-                                                    result: game_over_result(&full.state.status, &full.state.winner),
-                                                    reason: full.state.status.clone(),
-                                                })
+                                                Some(game_over_message(
+                                                    &full.state.status,
+                                                    &full.state.winner,
+                                                ))
                                             } else {
                                                 *guard = Some(s);
                                                 Some(board_msg)
@@ -797,10 +804,10 @@ fn spawn_game_stream(
                                         }
                                         let result = s.apply_state_update(&state).ok();
                                         if is_over {
-                                            let msg = Some(BackendMessage::GameOver {
-                                                result: game_over_result(&state.status, &state.winner),
-                                                reason: state.status.clone(),
-                                            });
+                                            let msg = Some(game_over_message(
+                                                &state.status,
+                                                &state.winner,
+                                            ));
                                             // Otherwise this finished game's session sits
                                             // here indefinitely: handle_resume_game's
                                             // already_tracking check keys off `session`
@@ -1179,7 +1186,8 @@ fn termination_label(status: Option<&str>) -> String {
 
 #[cfg(test)]
 mod game_over_result_tests {
-    use super::game_over_result;
+    use super::{game_over_message, game_over_result};
+    use crate::protocol::BackendMessage;
 
     #[test]
     fn a_real_winner_is_reported_as_their_color_regardless_of_status() {
@@ -1192,6 +1200,17 @@ mod game_over_result_tests {
     fn a_genuine_no_winner_draw_or_stalemate_is_reported_as_draw() {
         assert_eq!(game_over_result("draw", &None), "draw");
         assert_eq!(game_over_result("stalemate", &None), "draw");
+    }
+
+    #[test]
+    fn game_over_reason_is_human_readable() {
+        assert_eq!(
+            game_over_message("outoftime", &Some("black".to_string())),
+            BackendMessage::GameOver {
+                result: "black".to_string(),
+                reason: "Time forfeit".to_string(),
+            }
+        );
     }
 
     #[test]
