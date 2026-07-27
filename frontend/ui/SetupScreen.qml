@@ -73,6 +73,8 @@ Rectangle {
                 width: parent.width
                 font.pixelSize: theme.fontLarge
                 placeholderText: "lip_..."
+                Keys.onReturnPressed: saveToken()
+                Keys.onEnterPressed: saveToken()
             }
 
             Text {
@@ -88,13 +90,15 @@ Rectangle {
                 width: parent.width
                 text: "Save"
                 highlighted: true
-                onClicked: {
-                    errorText.text = ""
-                    setupScreen.backendSender({type: "SaveToken", token: tokenField.text})
-                }
+                onClicked: saveToken()
             }
         }
     }
+    }
+
+    function saveToken() {
+        errorText.text = ""
+        setupScreen.backendSender({type: "SaveToken", token: tokenField.text})
     }
 
     function handleMessage(msg) {
