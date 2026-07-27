@@ -165,6 +165,9 @@ Minimum emulator smoke test:
 - Turn, submission, check, premove, and connection status share one compact
   Fast-refresh line in the top player bar. Live games cannot navigate Home;
   GameOver enables and reveals the bottom navigation action.
+- Live clocks refresh every 10 seconds above one minute, align one transition
+  refresh with the one-minute boundary, and refresh every second thereafter.
+  First-move deadlines use the same adaptive cadence.
 - Page actions use the 144 px `AppButton`; the board strip uses the visually
   smaller 96 px `BoardToolButton`, still about a 9 mm touch target.
 - Overlays use `AppDialog`, promotion uses `PromotionDialog`, and live/review

@@ -19,6 +19,18 @@ TestCase {
         backendSender: function() {}
     }
 
+    function init() {
+        board.statusText = ""
+        board.gameOver = false
+        board.firstMoveTimeMs = null
+        board.initialClockMs = null
+        board.lastClockSyncMs = 0
+        board.turn = "white"
+        board.yourColor = "white"
+        board.whiteTimeMs = 0
+        board.blackTimeMs = 0
+    }
+
     function test_pageDoesNotReserveAFullExitBar() {
         compare(theme.pageTopMargin, theme.exitButtonMargin)
         verify(theme.pageTopMargin < theme.exitButtonMargin + theme.exitButtonSize)
@@ -52,5 +64,21 @@ TestCase {
         board.gameOver = true
         compare(board.canNavigateHome, true)
         tryCompare(backButton, "enabled", true)
+    }
+
+    function test_clockRefreshCadence() {
+        board.lastClockSyncMs = 0
+        board.firstMoveTimeMs = null
+        board.initialClockMs = 600000
+        board.turn = "white"
+        board.whiteTimeMs = 120000
+        compare(board.clockRefreshIntervalMs(), 10000)
+        board.whiteTimeMs = 65000
+        compare(board.clockRefreshIntervalMs(), 5000)
+        board.whiteTimeMs = 60000
+        compare(board.clockRefreshIntervalMs(), 1000)
+        board.initialClockMs = null
+        board.firstMoveTimeMs = 30000
+        compare(board.clockRefreshIntervalMs(), 1000)
     }
 }
