@@ -2,70 +2,45 @@ import QtQuick 2.5
 import QtQuick.Controls 2.5 as QQC2
 import net.asivery.ApploadUtils
 
-// Overrides every unqualified `Button { ... }` in this directory app-wide
-// (QML resolves a same-directory file before the imported module's type of
-// the same name) -- confirmed real problem, not just a hunch: this app's own
-// manifest.json sets "supportsScaling": false, so QtQuick Controls' desktop-
-// DPI-sized defaults render as small, inconsistently-sized tap targets on
-// this device's actual (much higher) resolution, varying only with each
-// button's own text length before this. It also had zero color styling at
-// all -- QtQuick Controls' bare default "Basic" style chrome, completely
-// disconnected from Theme, regardless of the app's own light/dark colors.
+// Overrides every unqualified `Button { ... }` in this directory (QML
+// resolves same-directory files before an imported module's type of the
+// same name) -- gives every button consistent Theme-driven sizing/styling
+// instead of QtQuick Controls' unscaled desktop-DPI "Basic" style defaults.
 //
-// Known limitation: uses Theme's default (light) instance rather than each
-// screen's own darkMode, since threading darkMode into every one of this
-// app's ~36 Button call sites individually is a separate, larger change --
-// buttons render with consistent theme colors now, just not yet dark-mode-
-// reactive like the rest of the app.
+// Known limitation: uses Theme's default (light) instance, not each
+// screen's own darkMode -- not yet dark-mode-reactive.
 QQC2.Button {
     id: control
     Theme { id: theme }
-    // Bumped again (2026-07-21) alongside Theme's own font/spacing bump --
-    // live feedback was that buttons were still too small even at fontBody
-    // with spacingMedium padding. A button is a tap target first, a label
-    // second, so it now reads a size class *larger* than plain body text
-    // (fontLarge, not fontBody) with generous padding on every side, plus an
-    // explicit minimum footprint so a short label like "X" or "OK" still gets
-    // a real tap target instead of shrink-wrapping to just its own text.
-    font.pixelSize: theme.fontLarge
-    topPadding: theme.spacingLarge
-    bottomPadding: theme.spacingLarge
-    leftPadding: theme.spacingLarge + theme.spacingMedium
-    rightPadding: theme.spacingLarge + theme.spacingMedium
-    implicitHeight: Math.max(contentItem.implicitHeight + topPadding + bottomPadding, theme.exitButtonSize)
-
-    // Never narrower than a real touch target even for one-character labels.
-    implicitWidth: Math.max(contentItem.implicitWidth + leftPadding + rightPadding, theme.touchTarget * 2)
+    font.pixelSize: theme.fontButton
+    topPadding: theme.buttonPaddingV
+    bottomPadding: theme.buttonPaddingV
+    leftPadding: theme.buttonPaddingH
+    rightPadding: theme.buttonPaddingH
+    // Real height/width, not implicitHeight/implicitWidth: Control's C++
+    // side recomputes implicit size from contentItem+padding on its own and
+    // silently clears any QML binding on it, throwing away this floor.
+    height: Math.max(contentItem.implicitHeight + topPadding + bottomPadding, theme.buttonMinHeight)
+    width: Math.max(contentItem.implicitWidth + leftPadding + rightPadding, theme.touchTarget * 2)
 
     background: Rectangle {
         radius: theme.cardRadius
         border.width: control.highlighted ? 3 : 1
         border.color: control.highlighted ? theme.accentBackground : theme.buttonBorder
-        // Pressed = full inversion (bg and text swap), the canonical e-ink
-        // pressed state -- KOReader's shipped button widget flashes exactly
-        // this invert with a fast waveform rather than a grey tint, because a
-        // subtle mid-tone shift is easy to miss at e-ink refresh latency
-        // while a black/white swap is unmissable. The old
-        // buttonPressedBackground tint (a slightly darker beige) is gone.
+        // Pressed = full color inversion, not a tint -- more visible at
+        // e-ink refresh latency than a subtle mid-tone shift.
         color: control.pressed
             ? theme.text
             : (control.highlighted ? theme.accentBackground : theme.buttonBackground)
-        // A disabled nav button (e.g. GameReviewScreen's Prev/Next at either
-        // end) previously looked pixel-identical to an enabled one -- on
-        // e-ink, a dead tap with zero visual feedback reads as "the app
-        // froze," not "that action isn't available right now." Plain
-        // opacity rather than a new dedicated Theme color: this needs real
-        // panel contrast verification before investing in a proper
-        // researched color the way every other Theme entry already has.
+        // Disabled buttons previously looked identical to enabled ones --
+        // a dead tap with no feedback read as "the app froze."
         opacity: control.enabled ? 1.0 : 0.45
 
-        // Every press/release flips the invert on and off -- two
-        // Content-quality (slow, high-fidelity) waveform updates per tap
-        // otherwise, for state that's purely transient tap feedback. See
-        // docs/remarkable-appload-platform-notes.md §2.
+        // Content, not Fast: Fast left visible ghosting (previous
+        // pressed-state color lingering) after taps.
         DisplayMethodArea {
             anchors.fill: parent
-            displayMethod: DisplayMethodArea.Fast
+            displayMethod: DisplayMethodArea.Content
         }
     }
 

@@ -28,6 +28,15 @@ Rectangle {
     property var legalMoves: []
     property string selectedSquare: ""
     property string statusText: ""
+    // Forces a black frame over the board on every move (see the Timer and
+    // the Rectangle over the Grid) -- Content alone still ghosted on
+    // low-contrast transitions (a black piece leaving a dark square).
+    property bool flashBoard: false
+    Timer {
+        id: boardFlashTimer
+        interval: 90
+        onTriggered: boardScreen.flashBoard = false
+    }
     // Which color the local account is playing -- flips board orientation below.
     // Every reference client (lichess's own official board package included)
     // treats this as required, not optional; defaults to "white" until the first
@@ -407,19 +416,11 @@ Rectangle {
                 }
             }
 
-            // Wraps the Grid rather than overlaying it from elsewhere in the
-            // tree: DisplayMethodArea's documented usage is as a wrapper
-            // around the region it hints (see the framework's own example
-            // wrapping a Text), and QML anchors can only target a parent or
-            // sibling anyway -- the previous root-level `anchors.fill: grid`
-            // overlay silently failed to anchor at all for exactly that
-            // reason. Selection/legal-destination/last-move/check
-            // highlighting is all transient state where speed beats fidelity
-            // -- the pieces themselves are flat black/white line art that
-            // survives a fast waveform fine. See
-            // docs/remarkable-appload-platform-notes.md §2.
+            // Wraps the Grid (DisplayMethodArea must be a parent/sibling, not
+            // anchored from elsewhere). Content, not Fast: Fast left visible
+            // ghosting after a move.
             DisplayMethodArea {
-                displayMethod: DisplayMethodArea.Fast
+                displayMethod: DisplayMethodArea.Content
                 width: grid.width
                 height: grid.height
 
@@ -452,6 +453,14 @@ Rectangle {
                             onTapped: boardScreen.onSquareTapped(squareName)
                         }
                     }
+                }
+
+                // Forces the black-flash ghosting fix (see flashBoard's own
+                // comment) -- sits on top of the Grid, briefly opaque black.
+                Rectangle {
+                    anchors.fill: parent
+                    color: "black"
+                    visible: boardScreen.flashBoard
                 }
             }
         }
@@ -521,7 +530,7 @@ Rectangle {
 
             DisplayMethodArea {
                 anchors.fill: parent
-                displayMethod: DisplayMethodArea.Fast
+                displayMethod: DisplayMethodArea.Content
             }
         }
 
@@ -536,7 +545,7 @@ Rectangle {
 
             DisplayMethodArea {
                 anchors.fill: parent
-                displayMethod: DisplayMethodArea.Fast
+                displayMethod: DisplayMethodArea.Content
             }
         }
 
@@ -795,6 +804,10 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
+            if (boardScreen.fen !== "" && boardScreen.fen !== msg.fen) {
+                boardScreen.flashBoard = true
+                boardFlashTimer.restart()
+            }
             boardScreen.fen = msg.fen
             boardScreen.turn = msg.turn
             boardScreen.whiteTimeMs = msg.white_time_ms

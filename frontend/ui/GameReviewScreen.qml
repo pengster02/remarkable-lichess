@@ -34,6 +34,19 @@ Rectangle {
     // the final position. Deliberately independent of `moves`' own indexing
     // (off by one from it) rather than tracking a "current ply" separately.
     property int currentIndex: 0
+    // Same black-flash ghosting fix as BoardScreen's own flashBoard -- a
+    // low-contrast piece transition (e.g. a black piece leaving a dark
+    // square) can leave a ghost behind at Content-quality alone.
+    property bool flashBoard: false
+    onCurrentIndexChanged: {
+        gameReviewScreen.flashBoard = true
+        boardFlashTimer.restart()
+    }
+    Timer {
+        id: boardFlashTimer
+        interval: 90
+        onTriggered: gameReviewScreen.flashBoard = false
+    }
     // Same flip-for-black-at-bottom convenience as BoardScreen's own manualFlip,
     // just with no yourColor to XOR against here -- a finished game has no
     // "your" side baked into GameMoves, so this is the only orientation control.
@@ -368,13 +381,9 @@ Rectangle {
                 }
             }
 
-            // Wraps the Grid -- DisplayMethodArea's documented usage, and the
-            // previous root-level `anchors.fill: grid` overlay could never
-            // anchor (QML anchors only target a parent or sibling). Same
-            // transient-highlight (here: last-move diff) reasoning as
-            // BoardScreen's board -- speed beats fidelity for it.
+            // Content, not Fast -- same ghosting fix as BoardScreen's board.
             DisplayMethodArea {
-                displayMethod: DisplayMethodArea.Fast
+                displayMethod: DisplayMethodArea.Content
                 width: grid.width
                 height: grid.height
 
@@ -407,6 +416,12 @@ Rectangle {
                         // the diff-derived last-move squares above.
                         isLastMove: gameReviewScreen.lastMoveSquaresCached.indexOf(squareName) !== -1
                     }
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: "black"
+                    visible: gameReviewScreen.flashBoard
                 }
             }
             }
