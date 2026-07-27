@@ -355,14 +355,6 @@ Rectangle {
     // easy to miss -- this just makes the same `close()` signal reachable
     // with one direct, generously-sized tap instead.
     //
-    // Right side (2026-07-21, reversed from an earlier left-side move in
-    // commit 9ce618d): that earlier move was specifically to dodge the host's
-    // own top-right swipe-hint affordance overlapping it. Moved back per
-    // direct request -- if that overlap turns out to still be a problem on
-    // real hardware, the fix belongs in *vertical* clearance (this button
-    // already has plenty via theme.pageTopMargin, which every screen's
-    // content also respects) or nudging this specific corner, not reverting
-    // the side outright.
     Rectangle {
         id: exitButton
         width: theme.exitButtonSize

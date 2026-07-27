@@ -725,7 +725,8 @@ Rectangle {
         spacing: theme.spacingXs
 
         PlayerBar {
-            width: parent.width
+            objectName: "topPlayerBar"
+            width: parent.width - theme.pageTopRightInset
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.topColor)
             rating: boardScreen.ratingFor(boardScreen.topColor)

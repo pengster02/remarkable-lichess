@@ -63,9 +63,12 @@ QtObject {
     readonly property int buttonPaddingH: 36
     readonly property int buttonMinHeight: 144
 
-    // Shared page frame every screen anchors its content to.
-    readonly property int pageTopMargin: exitButtonMargin + exitButtonSize + spacingSmall
     readonly property int pageSideMargin: spacingMedium
+    readonly property int pageTopMargin: exitButtonMargin
+    readonly property int pageTopRightInset: Math.max(
+        0,
+        exitButtonMargin + exitButtonSize + spacingXs - pageSideMargin
+    )
     readonly property int pageBottomMargin: spacingMedium
 
     // narrow: short numeric entry. medium: a chat message. wide: a username.
