@@ -5,6 +5,11 @@ Rectangle {
     anchors.fill: parent
     color: theme.background
     Theme { id: theme; darkMode: boardScreen.darkMode }
+    MoveRequestGate {
+        id: moveRequestGate
+        gameId: boardScreen.gameId
+        onSubmitRequested: (message) => boardScreen.backendSender(message)
+    }
     property var backendSender
     property var navigateTo
     property var openGameReview: function() {}
@@ -159,12 +164,18 @@ Rectangle {
     // directly, so the confirmation gate can't accidentally be bypassed by
     // one call site while another respects it.
     function requestMove(from, to, promotion) {
+        if (moveRequestGate.pending !== null) return
         if (boardScreen.moveConfirmation) {
             boardScreen.pendingMoveConfirmation = {from: from, to: to, promotion: promotion}
         } else {
-            boardScreen.backendSender({type: "MakeMove", from: from, to: to, promotion: promotion})
-            boardScreen.selectedSquare = ""
+            boardScreen.submitMove(from, to, promotion)
         }
+    }
+
+    function submitMove(from, to, promotion) {
+        if (!moveRequestGate.submit(from, to, promotion)) return false
+        boardScreen.selectedSquare = ""
+        return true
     }
 
     function toggleAnnotation(from, to) {
@@ -196,14 +207,9 @@ Rectangle {
 
     function confirmPendingMove() {
         if (boardScreen.pendingMoveConfirmation === null) return
-        boardScreen.backendSender({
-            type: "MakeMove",
-            from: boardScreen.pendingMoveConfirmation.from,
-            to: boardScreen.pendingMoveConfirmation.to,
-            promotion: boardScreen.pendingMoveConfirmation.promotion
-        })
+        var move = boardScreen.pendingMoveConfirmation
         boardScreen.pendingMoveConfirmation = null
-        boardScreen.selectedSquare = ""
+        boardScreen.submitMove(move.from, move.to, move.promotion)
     }
 
     function cancelPendingMove() {
@@ -631,7 +637,8 @@ Rectangle {
     }
 
     function onSquareTapped(squareName) {
-        if (boardScreen.gameOver || boardScreen.viewingHistory) return
+        if (boardScreen.gameOver || boardScreen.viewingHistory ||
+                moveRequestGate.pending !== null) return
         // Not a correctness fix (legalMoves is always keyed to whoever's turn it
         // actually is, per the current FEN, so a tap during the opponent's turn
         // could never produce an illegal MakeMove) -- this is the UX gap flagged
@@ -689,6 +696,7 @@ Rectangle {
             return
         }
         if (boardScreen.gameOver || boardScreen.pendingMoveConfirmation !== null ||
+                moveRequestGate.pending !== null ||
                 !boardScreen.isOwnPiece(boardScreen.pieceAt(from))) {
             return
         }
@@ -1012,6 +1020,12 @@ Rectangle {
             Text {
                 text: boardScreen.viewingHistory
                     ? "Viewing move " + boardScreen.historyIndex + " of " + boardScreen.moveHistory.length
+                    : moveRequestGate.pending !== null
+                    ? "Submitting " + moveRequestGate.pending.from + "–" +
+                        moveRequestGate.pending.to +
+                        (moveRequestGate.pending.promotion
+                            ? "=" + moveRequestGate.pending.promotion.toUpperCase()
+                            : "")
                     : boardScreen.pendingPremove !== null
                     ? "Premove queued: " + boardScreen.pendingPremove.from + "-" + boardScreen.pendingPremove.to
                     : boardScreen.annotationMode
@@ -1426,6 +1440,7 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
+            var nextLastMove = msg.last_move || null
             var positionChanged = boardScreen.liveFen !== msg.fen ||
                 (boardScreen.gameId.length > 0 && boardScreen.gameId !== (msg.game_id || ""))
             if (boardScreen.liveFen !== "" && positionChanged) {
@@ -1434,7 +1449,6 @@ Rectangle {
                     boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[0])
                     boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[1])
                 }
-                var nextLastMove = msg.last_move || null
                 if (nextLastMove !== null) {
                     boardScreen.addRefreshSquare(refreshSquares, nextLastMove[0])
                     boardScreen.addRefreshSquare(refreshSquares, nextLastMove[1])
@@ -1498,6 +1512,7 @@ Rectangle {
             boardScreen.gameOver = false
             boardScreen.gameResult = ""
             boardScreen.gameReason = ""
+            moveRequestGate.resolve(boardScreen.gameId, nextLastMove)
             if (boardScreen.pendingPremove !== null &&
                     boardScreen.pendingPremove.gameId !== boardScreen.gameId) {
                 boardScreen.cancelPremove()
@@ -1533,6 +1548,7 @@ Rectangle {
             boardScreen.legalMoves = []
             boardScreen.pendingPromotion = null
             boardScreen.pendingMoveConfirmation = null
+            moveRequestGate.clear()
             boardScreen.pendingPremove = null
             resignAction.reset()
             abortAction.reset()
@@ -1565,9 +1581,13 @@ Rectangle {
             } else if (msg.action === "AddTime") {
                 boardScreen.statusText = "15 seconds added to opponent"
             }
+        } else if (msg.type === "MoveSubmitted") {
+            moveRequestGate.acknowledge(
+                msg.game_id, msg.from, msg.to, msg.promotion || null)
         } else if (msg.type === "MoveRejected") {
             boardScreen.statusText = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""
+            moveRequestGate.clear()
         } else if (msg.type === "Reconnecting") {
             boardScreen.statusText = "Reconnecting..."
         } else if (msg.type === "OpponentGone") {

@@ -290,6 +290,12 @@ pub enum BackendMessage {
     },
     GameOver { result: String, reason: String },
     GameActionCompleted { action: GameAction },
+    MoveSubmitted {
+        game_id: String,
+        from: String,
+        to: String,
+        promotion: Option<String>,
+    },
     MoveRejected { reason: String },
     Reconnecting,
     ErrorMsg { message: String },
@@ -371,6 +377,17 @@ mod tests {
         assert_eq!(
             parsed,
             FrontendMessage::MakeMove { from: "e2".into(), to: "e4".into(), promotion: None }
+        );
+        let json = serde_json::to_string(&BackendMessage::MoveSubmitted {
+            game_id: "g1".into(),
+            from: "e7".into(),
+            to: "e8".into(),
+            promotion: Some("q".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"MoveSubmitted","game_id":"g1","from":"e7","to":"e8","promotion":"q"}"#
         );
     }
 
