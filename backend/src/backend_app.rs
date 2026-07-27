@@ -527,20 +527,32 @@ impl LichessBackend {
     }
 
     async fn handle_make_move(&mut self, replier: &BackendReplier<Self>, from: String, to: String, promotion: Option<String>) {
-        let Some(client) = self.client.clone() else { return };
+        let Some(client) = self.client.clone() else {
+            self.send(replier, &BackendMessage::MoveRejected { reason: "Not connected to Lichess".into() });
+            return;
+        };
         let result = {
             let guard = self.session.lock().await;
-            let Some(session) = guard.as_ref() else { return };
+            let Some(session) = guard.as_ref() else {
+                self.send(replier, &BackendMessage::MoveRejected { reason: "No active game".into() });
+                return;
+            };
             session
                 .try_move(&from, &to, promotion.as_deref())
                 .map(|uci| (uci, session.game_id.clone()))
         };
         match result {
             Ok((uci, game_id)) => {
-                if let Err(e) = client.make_move(&game_id, &uci).await {
-                    self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                match client.make_move(&game_id, &uci).await {
+                    Ok(()) => self.send(
+                        replier,
+                        &BackendMessage::MoveSubmitted { game_id, from, to, promotion },
+                    ),
+                    Err(error) => self.send(
+                        replier,
+                        &BackendMessage::MoveRejected { reason: error.to_string() },
+                    ),
                 }
-                // The authoritative BoardState update arrives via the game stream, not here.
             }
             Err(rejected) => self.send(replier, &rejected),
         }

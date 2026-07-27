@@ -73,6 +73,10 @@ expensive analysis or data panels explicitly user-triggered.
 - Consolidated every server-backed live action behind a typed completion event
   and one frontend request gate. The compact Actions control reads `Working...`
   and rejects duplicate taps until the endpoint returns.
+- Routed tap, drag, premove, promotion, and confirmed moves through one shared
+  move-request gate. Lichess's move endpoint now produces a typed acknowledgement,
+  while only a matching move from the game stream releases input. The compact
+  `Submitting e2–e4` status is the only added interim redraw.
 - Extended confirmation to accepting or claiming a draw and gifting clock
   time. Armed critical actions use one dark full-fill treatment instead of
   relying on a small icon or color alone.
@@ -112,6 +116,7 @@ can change between the latest stream event and the tap.
 | Large, consistent touch targets | Supported |
 | Reduced animation for e-ink | Supported |
 | Contract-gated game actions | Supported |
+| Stream-correlated duplicate-move prevention | Supported |
 | Fixed, urgency-labeled action sheet | Supported |
 | Localized changed-square clearing | Supported |
 | Accurate cached clock resume | Supported |
@@ -148,6 +153,7 @@ can change between the latest stream event and the tap.
 - [Lichess PGN viewer goals](https://github.com/lichess-org/pgn-viewer)
 - [Lichess cloud-eval API](https://github.com/lichess-org/api/blob/master/doc/specs/tags/analysis/api-cloud-eval.yaml)
 - [Lichess Board API paths](https://github.com/lichess-org/api/blob/master/doc/specs/lichess-api.yaml)
+- [Lichess Board move endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-move-move.yaml)
 - [Lichess add-time endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/challenges/api-round-gameId-add-time-seconds.yaml)
 - [Lichess Board draw endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-draw-accept.yaml)
 - [Lichess Board takeback endpoint](https://github.com/lichess-org/api/blob/master/doc/specs/tags/board/api-board-game-gameId-takeback-accept.yaml)

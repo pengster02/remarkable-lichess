@@ -34,7 +34,7 @@ The current UI supports:
 | Live board | `frontend/ui/BoardScreen.qml` | Game interaction and live-game actions |
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
 | Visual system | `frontend/ui/Theme.qml` | E-ink colors, typography, spacing, and touch sizes |
-| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, move tokens, promotion choices, and inputs |
+| Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `MoveRequestGate.qml`, `MoveTokenButton.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, move submission, move tokens, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
 | Backend router | `backend/src/backend_app.rs` | Dispatches frontend requests and backend events |
 | Live chess state | `backend/src/game/session.rs` | Lichess game stream and authoritative board state |
@@ -149,7 +149,10 @@ Minimum emulator smoke test:
     disappears after success or the local player's first move.
 11. Confirm a server-backed action; verify Actions briefly reads `Working...`,
     cannot be tapped twice, and returns to its authoritative state.
-12. Check both light and dark modes.
+12. In a casual computer game, submit a move and immediately tap a second move.
+    Verify `Submitting e2–e4` appears, only the first request reaches Lichess,
+    and input unlocks when that exact move arrives in `BoardState`.
+13. Check both light and dark modes.
 
 ## UI rules that matter
 
@@ -172,6 +175,11 @@ Minimum emulator smoke test:
 - Every server-backed live action returns the typed `GameActionCompleted`
   message. `BoardScreen.requestGameAction` owns pending state and duplicate-tap
   prevention; new action endpoints should use the same path.
+- Every move request passes through `MoveRequestGate`. The move endpoint returns
+  a typed `MoveSubmitted` acknowledgement, but the gate remains closed until the
+  exact move appears in the authoritative game stream. This prevents duplicate
+  submissions without adding an extra e-ink redraw between HTTP acceptance and
+  the resulting `BoardState`.
 - Move notation is directly tappable and automatically reveals the current move.
 - Clock chips use a fixed shared width so both player bars remain aligned when
   a clock changes from two-digit to one-digit minutes.
