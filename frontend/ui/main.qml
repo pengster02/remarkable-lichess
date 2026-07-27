@@ -200,7 +200,12 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "HomeState" || msg.type === "SeekCreated" || msg.type === "ChallengeCreated" || msg.type === "PendingChallenges" || msg.type === "GameHistory") {
+            } else if (msg.type === "HomeState" || msg.type === "HomeLoadFailed" ||
+                       msg.type === "ConnectivityState" ||
+                       msg.type === "SeekCreated" || msg.type === "ChallengeCreated" ||
+                       msg.type === "PendingChallenges" ||
+                       msg.type === "ChallengesLoadFailed" ||
+                       msg.type === "GameHistory") {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
