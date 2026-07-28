@@ -877,6 +877,12 @@ fn spawn_game_stream(
                                         if is_over {
                                             game_over = true;
                                         }
+                                        // Built before `state` is moved into apply_state_update
+                                        // below. This transport-only streaming path isn't compiled
+                                        // by a plain `cargo test`, which is how the move-then-use
+                                        // slipped past local testing.
+                                        let over_msg = is_over
+                                            .then(|| game_over_message(&state.status, &state.winner));
                                         let result = match s.apply_state_update(state) {
                                             Ok(msg) => Some(msg),
                                             Err(error) => {
@@ -887,10 +893,7 @@ fn spawn_game_stream(
                                             }
                                         };
                                         if is_over {
-                                            let msg = Some(game_over_message(
-                                                &state.status,
-                                                &state.winner,
-                                            ));
+                                            let msg = over_msg;
                                             // Otherwise this finished game's session sits
                                             // here indefinitely: handle_resume_game's
                                             // already_tracking check keys off `session`
