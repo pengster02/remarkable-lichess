@@ -25,6 +25,25 @@ pub struct LegalMove {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum FrontendMessage {
+    // Kicks off the QR sign-in (see lichess::oauth): the backend answers with a
+    // LoginChallenge to display, then a LoginCompleted/LoginFailed once the
+    // phone comes back. Sent automatically when the sign-in screen appears, and
+    // again whenever the user retries.
+    StartLogin,
+    CancelLogin,
+    // The sign-in flow finishes on a detached task, which can't reach the
+    // `&mut self` needed to install the client and start the account streams --
+    // so it only writes the token file and reports LoginCompleted, and the
+    // frontend replies with this to have it activated through the same path a
+    // restart already uses. Alternatives: (1) send the token itself back to the
+    // frontend and reuse SaveToken -- no new message, but it puts a live
+    // credential on the IPC channel for no reason; (2) hand the backend an
+    // internal channel to poll -- no round trip, but the AppLoad run loop only
+    // ever calls us on an incoming frontend message, so there's nowhere to poll
+    // it from.
+    ActivateSavedToken,
+    // Still reachable behind "Enter a token instead" on the sign-in screen, for
+    // networks where the phone can't reach this tablet (see LoginScreen.qml).
     SaveToken { token: String },
     RequestHome,
     // Attaches this specific game's stream if it isn't already being tracked --
@@ -71,6 +90,14 @@ pub enum FrontendMessage {
         board_theme: String,
         #[serde(default = "default_piece_set")]
         piece_set: String,
+        #[serde(default = "default_true")]
+        show_coordinates: bool,
+        #[serde(default = "default_true")]
+        show_captured_pieces: bool,
+        #[serde(default = "default_true")]
+        highlight_last_move: bool,
+        #[serde(default)]
+        confirm_resign: bool,
     },
     // Clears the saved token (see backend/src/settings.rs's sibling token file)
     // and resets to the logged-out state -- there was previously no in-app way
@@ -238,6 +265,17 @@ pub struct CloudEvaluationLine {
 pub enum BackendMessage {
     TokenVerified { username: String },
     TokenInvalid { reason: String },
+    // Everything the sign-in screen needs to draw itself. `authorize_url` is
+    // shown as text too, not just encoded in the QR -- it's the only way in for
+    // someone with a laptop and no camera.
+    LoginChallenge {
+        authorize_url: String,
+        qr_size: u32,
+        qr_rows: Vec<String>,
+        expires_in_secs: u64,
+    },
+    LoginCompleted,
+    LoginFailed { reason: String },
     HomeState { ongoing_games: Vec<OngoingGameSummary>, ratings: Vec<RatingSummary> },
     ConnectivityState {
         online: bool,
@@ -350,6 +388,10 @@ pub enum BackendMessage {
         live_clock_enabled: bool,
         board_theme: String,
         piece_set: String,
+        show_coordinates: bool,
+        show_captured_pieces: bool,
+        highlight_last_move: bool,
+        confirm_resign: bool,
     },
     GameHistory { games: Vec<HistoryGameSummary> },
     // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- `url` opens
@@ -542,6 +584,10 @@ mod tests {
                 live_clock_enabled: true,
                 board_theme: "brown".to_owned(),
                 piece_set: "cburnett".to_owned(),
+                show_coordinates: true,
+                show_captured_pieces: true,
+                highlight_last_move: true,
+                confirm_resign: false,
             }
         );
         assert_eq!(
@@ -557,6 +603,10 @@ mod tests {
                 live_clock_enabled: true,
                 board_theme: "brown".to_owned(),
                 piece_set: "cburnett".to_owned(),
+                show_coordinates: true,
+                show_captured_pieces: true,
+                highlight_last_move: true,
+                confirm_resign: false,
             }
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"LogOut"}"#).unwrap(), FrontendMessage::LogOut);
@@ -568,6 +618,10 @@ mod tests {
             live_clock_enabled: false,
             board_theme: "blue".to_owned(),
             piece_set: "merida".to_owned(),
+            show_coordinates: true,
+            show_captured_pieces: false,
+            highlight_last_move: true,
+            confirm_resign: true,
         })
         .unwrap();
         assert!(json.contains(r#""type":"SettingsState""#));

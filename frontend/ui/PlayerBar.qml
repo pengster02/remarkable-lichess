@@ -140,7 +140,11 @@ Rectangle {
 
         EinkRefreshArea {
             anchors.fill: parent
-            displayMethod: EinkRefreshArea.Fast
+            // Only the side to move is ticking locally; keep the idle chip on
+            // Content so turn swaps still look clean without Fast chatter.
+            displayMethod: playerBar.active
+                ? EinkRefreshArea.Fast
+                : EinkRefreshArea.Content
         }
     }
 

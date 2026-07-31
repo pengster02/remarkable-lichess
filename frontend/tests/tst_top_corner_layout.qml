@@ -51,9 +51,12 @@ TestCase {
         board.opponentRating = null
     }
 
-    function test_pageDoesNotReserveAFullExitBar() {
-        compare(theme.pageTopMargin, theme.exitButtonMargin)
-        verify(theme.pageTopMargin < theme.exitButtonMargin + theme.exitButtonSize)
+    // Screens are anchored under the persistent top bar already (see main.qml),
+    // so this margin is only the gap beneath it -- it must never grow into a
+    // second bar's worth of reserved space.
+    function test_pageDoesNotReserveTheTopBarTwice() {
+        verify(theme.pageTopMargin > 0)
+        verify(theme.pageTopMargin < theme.topBarHeight)
     }
 
     function test_closedBoardDialogsStayUnloaded() {
@@ -86,8 +89,7 @@ TestCase {
         verify(bottomPlayerBar !== null)
         verify(boardToolbar !== null)
         compare(topPlayerBar.width, bottomPlayerBar.width)
-        compare(topPlayerBar.width,
-                board.width - theme.pageSideMargin * 2 - theme.pageTopRightInset)
+        compare(topPlayerBar.width, board.width - theme.pageSideMargin * 2)
         compare(boardToolbar.width, topPlayerBar.width)
         compare(topPlayerBar.y, 0)
     }
@@ -141,10 +143,15 @@ TestCase {
         board.whiteTimeMs = 65000
         compare(board.clockRefreshIntervalMs(), 10000)
         board.whiteTimeMs = 60000
-        compare(board.clockRefreshIntervalMs(), 10000)
+        compare(board.clockRefreshIntervalMs(), 5000)
+        board.whiteTimeMs = 15000
+        compare(board.clockRefreshIntervalMs(), 1000)
+        board.whiteTimeMs = 120000
         board.initialClockMs = null
         board.firstMoveTimeMs = 30000
-        compare(board.clockRefreshIntervalMs(), 10000)
+        compare(board.clockRefreshIntervalMs(), 5000)
+        board.firstMoveTimeMs = 10000
+        compare(board.clockRefreshIntervalMs(), 1000)
     }
 
     function test_metadataOnlyUpdateDoesNotWakeBoardCollections() {

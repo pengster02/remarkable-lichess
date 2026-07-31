@@ -350,7 +350,11 @@ Rectangle {
             homeScreen.challengesError = msg.message ||
                 "Couldn't load challenges."
         } else if (msg.type === "ErrorMsg") {
-            homeScreen.actionError = msg.message || "The action failed."
+            // Logged, not shown. Surfacing every backend ErrorMsg as an "Action
+            // failed" card was noise -- including internal ones like a malformed
+            // IPC message. Real user-actionable failures arrive as their own typed
+            // messages (HomeLoadFailed / ChallengesLoadFailed) with their own cards.
+            console.warn("Backend error: " + (msg.message || ""))
         }
     }
 }

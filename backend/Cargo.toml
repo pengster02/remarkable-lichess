@@ -15,13 +15,30 @@ required-features = ["transport"]
 [dependencies]
 appload-client = { git = "https://github.com/asivery/rm-appload", package = "appload-client", optional = true }
 async-trait = "0.1.83"
-tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread", "io-util", "time"] }
+tokio = { version = "1.42.0", features = ["macros", "rt", "rt-multi-thread", "io-util", "net", "time"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 shakmaty = "0.30"
 futures-util = "0.3"
+# OAuth PKCE (see src/lichess/oauth.rs): SHA-256 of the code_verifier, base64url
+# for it and the challenge, and OS entropy for both random secrets.
+# Alternatives for the hash: (1) `ring`, already in the tree via rustls-tls, so
+# it would add zero crates -- rejected because which backend rustls picks isn't
+# ours to control, and a switch to aws-lc-rs would silently take `ring` away;
+# (2) hand-rolled SHA-256, zero deps -- not worth hand-auditing a primitive.
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.4"
+# Pure-Rust QR encoder. default-features = false drops its `image`/`svg`
+# renderers -- we only need the raw module matrix, which we draw ourselves in
+# QML (see frontend/ui/QrCode.qml). Alternatives: (1) `fast_qr`, comparable but
+# a heavier default build; (2) render a PNG on-device and hand QML a file path
+# -- fewer moving parts in QML, but adds an image encoder and makes the
+# sign-in screen depend on a writable scratch path instead of just the existing
+# message channel.
+qrcode = { version = "0.14", default-features = false }
 log = "0.4"
 env_logger = { version = "0.11", optional = true }
 

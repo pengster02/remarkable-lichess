@@ -1,6 +1,7 @@
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
-use crate::lichess::client::LichessClient;
+use crate::lichess::client::{LichessClient, LICHESS_BASE_URL};
+use crate::lichess::oauth;
 use crate::lichess::models::{EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
@@ -81,6 +82,13 @@ pub struct LichessBackend {
     // ever touch it -- unlike a game stream, no detached task needs to
     // replace this one out from under spawn_streams itself.
     account_stream_handle: Option<tokio::task::JoinHandle<()>>,
+    // The detached task waiting on the OAuth callback (see handle_start_login).
+    // Held so CancelLogin -- and any restart of the flow -- can drop it, which
+    // closes the listening port with it. Detached rather than awaited inline
+    // because handle_message is the backend's only entry point: blocking it for
+    // the whole five-minute sign-in window would leave Cancel and the
+    // paste-a-token fallback queued behind it, unable to run.
+    login_handle: Option<tokio::task::JoinHandle<()>>,
     // Shared (not a plain field) because a new game's stream can be spawned
     // either from handle_resume_game (&mut self) or from the account event
     // stream's own detached task on GameStart (see spawn_streams) -- both
@@ -113,6 +121,7 @@ impl LichessBackend {
             session: Arc::new(Mutex::new(None)),
             pending_seek: None,
             account_stream_handle: None,
+            login_handle: None,
             game_stream_handle: Arc::new(Mutex::new(None)),
             write_lock: Arc::new(std::sync::Mutex::new(())),
         }
@@ -128,6 +137,10 @@ impl LichessBackend {
         match client.get_account().await {
             Ok(account) => {
                 log::info!("activate_token: verified, username={}", account.username);
+                // Releases the callback port when a token arrives some other
+                // way (a pasted token, or a restart picking up the saved file)
+                // while a QR sign-in is still waiting on its redirect.
+                self.handle_cancel_login();
                 let _ = std::fs::write(&self.token_path, &token);
                 self.client = Some(client);
                 self.my_id = Some(account.id.clone());
@@ -146,6 +159,102 @@ impl LichessBackend {
     }
 
     async fn handle_save_token(&mut self, replier: &BackendReplier<Self>, token: String) {
+        self.activate_token(replier, token).await;
+    }
+
+    /// The top status bar is on every screen, but every other connectivity
+    /// report comes out of handle_request_home, which returns early without a
+    /// token -- so before sign-in nothing ever set it and it sat on
+    /// "Connecting..." forever. Detached so the sign-in QR isn't held up behind
+    /// a network round trip.
+    fn spawn_connectivity_report(&self, replier: &BackendReplier<Self>) {
+        let replier = replier.clone();
+        let write_lock = Arc::clone(&self.write_lock);
+        tokio::spawn(async move {
+            let wifi_connected = wifi_link_state();
+            // No point probing Lichess when the link itself is down, and the
+            // wait would be a timeout rather than an answer.
+            let online = wifi_connected != Some(false)
+                && crate::lichess::client::is_reachable(LICHESS_BASE_URL).await;
+            let message = if online {
+                None
+            } else if wifi_connected == Some(false) {
+                Some("Wi-Fi is disconnected".to_owned())
+            } else {
+                Some("Can't reach Lichess".to_owned())
+            };
+            send_locked(
+                &replier,
+                &write_lock,
+                &BackendMessage::ConnectivityState { online, wifi_connected, message },
+            );
+        });
+    }
+
+    async fn handle_start_login(&mut self, replier: &BackendReplier<Self>) {
+        self.handle_cancel_login();
+        self.spawn_connectivity_report(replier);
+        let pending = match oauth::begin(LICHESS_BASE_URL).await {
+            Ok(pending) => pending,
+            Err(e) => {
+                log::warn!("start_login: {e}");
+                self.send(replier, &BackendMessage::LoginFailed { reason: e.to_string() });
+                return;
+            }
+        };
+        let (qr_size, qr_rows) = match oauth::qr_rows(&pending.authorize_url) {
+            Ok(qr) => qr,
+            Err(e) => {
+                log::warn!("start_login: {e}");
+                self.send(replier, &BackendMessage::LoginFailed { reason: e.to_string() });
+                return;
+            }
+        };
+        self.send(
+            replier,
+            &BackendMessage::LoginChallenge {
+                authorize_url: pending.authorize_url.clone(),
+                qr_size,
+                qr_rows,
+                expires_in_secs: oauth::LOGIN_TIMEOUT.as_secs(),
+            },
+        );
+
+        let replier = replier.clone();
+        let write_lock = Arc::clone(&self.write_lock);
+        let token_path = self.token_path.clone();
+        self.login_handle = Some(tokio::spawn(async move {
+            let outcome = tokio::time::timeout(oauth::LOGIN_TIMEOUT, pending.complete(LICHESS_BASE_URL)).await;
+            let message = match outcome {
+                Ok(Ok(token)) => match std::fs::write(&token_path, &token) {
+                    Ok(()) => BackendMessage::LoginCompleted,
+                    Err(e) => BackendMessage::LoginFailed {
+                        reason: format!("couldn't save the token on this device: {e}"),
+                    },
+                },
+                Ok(Err(e)) => BackendMessage::LoginFailed { reason: e.to_string() },
+                Err(_) => BackendMessage::LoginFailed {
+                    reason: "the sign-in code expired -- start again".to_owned(),
+                },
+            };
+            send_locked(&replier, &write_lock, &message);
+        }));
+    }
+
+    fn handle_cancel_login(&mut self) {
+        if let Some(handle) = self.login_handle.take() {
+            handle.abort();
+        }
+    }
+
+    async fn handle_activate_saved_token(&mut self, replier: &BackendReplier<Self>) {
+        let token = std::fs::read_to_string(&self.token_path)
+            .map(|t| t.trim().to_owned())
+            .unwrap_or_default();
+        if token.is_empty() {
+            self.send(replier, &BackendMessage::LoginFailed { reason: "no token saved".into() });
+            return;
+        }
         self.activate_token(replier, token).await;
     }
 
@@ -430,6 +539,10 @@ impl LichessBackend {
                 live_clock_enabled: settings.live_clock_enabled,
                 board_theme: settings.board_theme,
                 piece_set: settings.piece_set,
+                show_coordinates: settings.show_coordinates,
+                show_captured_pieces: settings.show_captured_pieces,
+                highlight_last_move: settings.highlight_last_move,
+                confirm_resign: settings.confirm_resign,
             },
         );
     }
@@ -503,6 +616,10 @@ impl LichessBackend {
                 live_clock_enabled: settings.live_clock_enabled,
                 board_theme: settings.board_theme,
                 piece_set: settings.piece_set,
+                show_coordinates: settings.show_coordinates,
+                show_captured_pieces: settings.show_captured_pieces,
+                highlight_last_move: settings.highlight_last_move,
+                confirm_resign: settings.confirm_resign,
             },
         );
     }
@@ -510,7 +627,7 @@ impl LichessBackend {
     /// There was previously no in-app way to do this at all -- switching
     /// accounts or recovering from a revoked token meant editing files on the
     /// device directly. Reuses TokenInvalid to drive the frontend back to
-    /// SetupScreen, same message it already handles for a rejected token.
+    /// LoginScreen, same message it already handles for a rejected token.
     fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
         let _ = std::fs::remove_file(&self.token_path);
         self.client = None;
@@ -877,12 +994,11 @@ fn spawn_game_stream(
                                         if is_over {
                                             game_over = true;
                                         }
-                                        // Built before `state` is moved into apply_state_update
-                                        // below. This transport-only streaming path isn't compiled
-                                        // by a plain `cargo test`, which is how the move-then-use
-                                        // slipped past local testing.
-                                        let over_msg = is_over
-                                            .then(|| game_over_message(&state.status, &state.winner));
+                                        // Taken before apply_state_update consumes `state`,
+                                        // and only when the game actually ended, so the
+                                        // common in-progress update still clones nothing.
+                                        let outcome = is_over
+                                            .then(|| (state.status.clone(), state.winner.clone()));
                                         let result = match s.apply_state_update(state) {
                                             Ok(msg) => Some(msg),
                                             Err(error) => {
@@ -892,8 +1008,8 @@ fn spawn_game_stream(
                                                 None
                                             }
                                         };
-                                        if is_over {
-                                            let msg = over_msg;
+                                        if let Some((status, winner)) = outcome {
+                                            let msg = Some(game_over_message(&status, &winner));
                                             // Otherwise this finished game's session sits
                                             // here indefinitely: handle_resume_game's
                                             // already_tracking check keys off `session`
@@ -989,7 +1105,7 @@ impl AppLoadBackend for LichessBackend {
             } else if let Some(username) = self.username.clone() {
                 // The backend process outlives a frontend reload (see deploy.sh's own
                 // note on backend/entry being a long-lived binary): without this, a
-                // reload while already logged in re-creates SetupScreen fresh with
+                // reload while already logged in re-creates LoginScreen fresh with
                 // nothing to move it past the token prompt, since TokenVerified is the
                 // only message that navigates it to Home (see main.qml).
                 log::info!("NEW_COORDINATOR: already logged in as {username}, resending TokenVerified");
@@ -1004,6 +1120,9 @@ impl AppLoadBackend for LichessBackend {
         };
         log::debug!("frontend message: {frontend_msg:?}");
         match frontend_msg {
+            FrontendMessage::StartLogin => self.handle_start_login(replier).await,
+            FrontendMessage::CancelLogin => self.handle_cancel_login(),
+            FrontendMessage::ActivateSavedToken => self.handle_activate_saved_token(replier).await,
             FrontendMessage::SaveToken { token } => self.handle_save_token(replier, token).await,
             FrontendMessage::RequestHome => self.handle_request_home(replier).await,
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
@@ -1122,6 +1241,10 @@ impl AppLoadBackend for LichessBackend {
                 live_clock_enabled,
                 board_theme,
                 piece_set,
+                show_coordinates,
+                show_captured_pieces,
+                highlight_last_move,
+                confirm_resign,
             } => {
                 self.handle_save_settings(
                     replier,
@@ -1133,6 +1256,10 @@ impl AppLoadBackend for LichessBackend {
                         live_clock_enabled,
                         board_theme,
                         piece_set,
+                        show_coordinates,
+                        show_captured_pieces,
+                        highlight_last_move,
+                        confirm_resign,
                     },
                 )
             }

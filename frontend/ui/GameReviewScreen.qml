@@ -920,7 +920,7 @@ Rectangle {
 
         function revealCurrentMove() {
             if (gameReviewScreen.currentIndex <= 0) {
-                moveList.contentY = 0
+                if (moveList.contentY !== 0) moveList.moveTo(0)
                 return
             }
             var rowIndex = Math.floor((gameReviewScreen.currentIndex - 1) / 2)
