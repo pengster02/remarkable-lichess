@@ -7,9 +7,14 @@ Column {
     property string cancelText: "Cancel"
     property string busyText: ""
     property bool busy: false
-    property bool armed: false
     property bool prominent: false
     property bool critical: false
+    // When true, needs one extra confirmation tap (arm -> confirm -> confirm
+    // again) -- resign/abort opt into this via BoardScreen.confirmResign / the
+    // Settings "Confirm resign / abort" toggle. Off = the normal two-tap.
+    property bool extraConfirm: false
+    property int armLevel: 0
+    readonly property bool armed: confirmControl.armLevel > 0
     signal confirmed()
 
     Theme { id: theme }
@@ -17,7 +22,7 @@ Column {
     spacing: theme.spacingXs
 
     function reset() {
-        confirmControl.armed = false
+        confirmControl.armLevel = 0
     }
 
     onVisibleChanged: {
@@ -36,11 +41,12 @@ Column {
         critical: confirmControl.armed && confirmControl.critical
         enabled: !confirmControl.busy
         onClicked: {
-            if (confirmControl.armed) {
-                confirmControl.armed = false
+            var needed = confirmControl.extraConfirm ? 2 : 1
+            if (confirmControl.armLevel >= needed) {
+                confirmControl.armLevel = 0
                 confirmControl.confirmed()
             } else {
-                confirmControl.armed = true
+                confirmControl.armLevel += 1
             }
         }
     }

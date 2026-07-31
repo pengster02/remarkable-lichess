@@ -16,7 +16,7 @@ Rectangle {
     property var setAutoQueenPromotion: function() {}
     property bool moveConfirmation: false
     property var setMoveConfirmation: function() {}
-    property bool minimalHighlights: false
+    property bool minimalHighlights: true
     property var setMinimalHighlights: function() {}
     property bool premovesEnabled: false
     property var setPremovesEnabled: function() {}
@@ -26,6 +26,14 @@ Rectangle {
     property var setBoardTheme: function() {}
     property string pieceSet: "cburnett"
     property var setPieceSet: function() {}
+    property bool showCoordinates: true
+    property var setShowCoordinates: function() {}
+    property bool showCapturedPieces: true
+    property var setShowCapturedPieces: function() {}
+    property bool highlightLastMove: true
+    property var setHighlightLastMove: function() {}
+    property bool confirmResign: false
+    property var setConfirmResign: function() {}
     // Two-tap confirm, same pattern as BoardScreen's Resign button -- logging out
     // clears the saved token entirely (see backend_app.rs's handle_log_out), not
     // something a single mistaken tap should be able to do.
@@ -187,6 +195,33 @@ Rectangle {
                     value: settingsScreen.minimalHighlights
                     onToggled: settingsScreen.setMinimalHighlights(!settingsScreen.minimalHighlights)
                 }
+
+                SettingsToggle {
+                    objectName: "coordinatesSetting"
+                    width: parent.width
+                    darkMode: settingsScreen.darkMode
+                    label: "Board coordinates"
+                    value: settingsScreen.showCoordinates
+                    onToggled: settingsScreen.setShowCoordinates(!settingsScreen.showCoordinates)
+                }
+
+                SettingsToggle {
+                    objectName: "capturedPiecesSetting"
+                    width: parent.width
+                    darkMode: settingsScreen.darkMode
+                    label: "Captured pieces"
+                    value: settingsScreen.showCapturedPieces
+                    onToggled: settingsScreen.setShowCapturedPieces(!settingsScreen.showCapturedPieces)
+                }
+
+                SettingsToggle {
+                    objectName: "lastMoveSetting"
+                    width: parent.width
+                    darkMode: settingsScreen.darkMode
+                    label: "Highlight last move"
+                    value: settingsScreen.highlightLastMove
+                    onToggled: settingsScreen.setHighlightLastMove(!settingsScreen.highlightLastMove)
+                }
             }
 
             SectionCard {
@@ -229,6 +264,15 @@ Rectangle {
                     label: "Live clock"
                     value: settingsScreen.liveClockEnabled
                     onToggled: settingsScreen.setLiveClockEnabled(!settingsScreen.liveClockEnabled)
+                }
+
+                SettingsToggle {
+                    objectName: "confirmResignSetting"
+                    width: parent.width
+                    darkMode: settingsScreen.darkMode
+                    label: "Confirm resign / abort"
+                    value: settingsScreen.confirmResign
+                    onToggled: settingsScreen.setConfirmResign(!settingsScreen.confirmResign)
                 }
             }
 

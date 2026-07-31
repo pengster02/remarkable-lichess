@@ -17,6 +17,35 @@ pub struct LichessClient {
 
 const ONE_SHOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Shared with the OAuth sign-in flow (see lichess::oauth), which talks to the
+/// same host before any client exists to hold it.
+pub const LICHESS_BASE_URL: &str = "https://lichess.org";
+
+/// Unauthenticated "is Lichess there at all" check, for the sign-in screen --
+/// every other connectivity report comes from a real API call that needs a
+/// token (see backend_app's handle_request_home), which is exactly what a
+/// not-yet-signed-in user doesn't have.
+///
+/// Any HTTP reply counts, including an error status: this is testing the
+/// network path, not the API. Only a transport failure (DNS, refused, timeout)
+/// means unreachable.
+pub async fn is_reachable(base_url: &str) -> bool {
+    let Ok(http) = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return false;
+    };
+    match http.head(base_url).send().await {
+        Ok(_) => true,
+        Err(e) => {
+            log::warn!("lichess reachability check failed: {e}");
+            false
+        }
+    }
+}
+
 /// Lichess error responses carry an actionable `{"error": "..."}` JSON body (confirmed
 /// against the real API: a scope-missing 403 came back as `{"error":"Missing scope:
 /// board:play"}`) that every method here used to throw away, surfacing only the bare
@@ -54,7 +83,7 @@ async fn error_from_response(context: &str, resp: reqwest::Response) -> anyhow::
 
 impl LichessClient {
     pub fn new(token: String) -> Self {
-        Self::with_base_url(token, "https://lichess.org".to_string())
+        Self::with_base_url(token, LICHESS_BASE_URL.to_string())
     }
 
     pub fn with_base_url(token: String, base_url: String) -> Self {
@@ -650,6 +679,22 @@ mod tests {
             collected.push(line);
         }
         assert_eq!(collected, vec!["complete".to_string(), "incomplete-tail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn is_reachable_accepts_any_reply_including_an_error_status() {
+        let server = MockServer::start().await;
+        // 404 on HEAD / is still proof the host answered.
+        assert!(is_reachable(&server.uri()).await);
+    }
+
+    #[tokio::test]
+    async fn is_reachable_reports_false_when_nothing_is_listening() {
+        // Bind a port, learn its number, then drop it so the connect refuses.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = format!("http://{}", taken.local_addr().unwrap());
+        drop(taken);
+        assert!(!is_reachable(&dead).await);
     }
 
     #[tokio::test]

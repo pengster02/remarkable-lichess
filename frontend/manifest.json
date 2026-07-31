@@ -4,5 +4,6 @@
     "entry": "/ui/main.qml",
     "id": "remarkable-lichess",
     "supportsScaling": false,
-    "canHaveMultipleFrontends": false
+    "canHaveMultipleFrontends": false,
+    "disablesWindowedMode": true
 }

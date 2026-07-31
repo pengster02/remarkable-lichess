@@ -143,8 +143,12 @@ Rectangle {
     // ~28 squares otherwise) to halve the damaged redraw area per selection.
     // Off by default: full highlighting is the more helpful default, this
     // just trades some of that away for speed once someone wants it.
-    property bool minimalHighlights: false
+    property bool minimalHighlights: true
     property bool premovesEnabled: false
+    property bool showCoordinates: true
+    property bool showCapturedPieces: true
+    property bool highlightLastMove: true
+    property bool confirmResign: false
     property var pendingPremove: null
     onPremovesEnabledChanged: {
         if (!boardScreen.premovesEnabled) boardScreen.cancelPremove()
@@ -379,7 +383,14 @@ Rectangle {
         return Math.max(0, boardScreen.firstMoveTimeMs - elapsed)
     }
 
+    // Faster only when the visible clock text is about to change often.
+    // Above one minute, 10s ticks are enough and much kinder to e-ink.
     function clockRefreshIntervalMs() {
+        var ms = boardScreen.displayClockFor(boardScreen.turn)
+        var firstMoveMs = boardScreen.displayFirstMoveTimeMs()
+        if (firstMoveMs !== null) ms = Math.min(ms, firstMoveMs)
+        if (ms <= 15000) return 1000
+        if (ms <= 60000) return 5000
         return 10000
     }
 
@@ -753,7 +764,7 @@ Rectangle {
 
         PlayerBar {
             objectName: "topPlayerBar"
-            width: parent.width - theme.pageTopRightInset
+            width: parent.width
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.topColor)
             rating: boardScreen.ratingFor(boardScreen.topColor)
@@ -762,8 +773,8 @@ Rectangle {
             active: boardScreen.turn === boardScreen.topColor
             opponent: boardScreen.topColor !== boardScreen.yourColor
             lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
-            materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.topColor)
-            capturedPieces: boardScreen.capturedPiecesFor(boardScreen.topColor)
+            materialAdvantage: boardScreen.showCapturedPieces ? boardScreen.materialAdvantageFor(boardScreen.topColor) : 0
+            capturedPieces: boardScreen.showCapturedPieces ? boardScreen.capturedPiecesFor(boardScreen.topColor) : []
             statusText: boardScreen.topStatusText()
             statusEmphasized: !boardScreen.gameOver &&
                 boardScreen.turn === boardScreen.yourColor
@@ -775,6 +786,9 @@ Rectangle {
 
             Column {
                 id: rankLabels
+                // Hidden but keeps its width, so toggling coordinates doesn't
+                // resize/shift the board (grid width keys off rankLabels.width).
+                visible: boardScreen.showCoordinates
                 Repeater {
                     model: 8
                     Text {
@@ -831,11 +845,12 @@ Rectangle {
                             isSelected: boardScreen.selectedSquare === squareName
                             isLegalDestination: !boardScreen.minimalHighlights &&
                                 isDestination
-                            isLastMove: boardScreen.viewingHistory
-                                ? boardScreen.historicalLastMoveLookup[squareName] === true
-                                : boardScreen.lastMove !== null &&
-                                    (squareName === boardScreen.lastMove[0] ||
-                                     squareName === boardScreen.lastMove[1])
+                            isLastMove: boardScreen.highlightLastMove &&
+                                (boardScreen.viewingHistory
+                                    ? boardScreen.historicalLastMoveLookup[squareName] === true
+                                    : boardScreen.lastMove !== null &&
+                                        (squareName === boardScreen.lastMove[0] ||
+                                         squareName === boardScreen.lastMove[1]))
                             isCheckSquare: squareName === boardScreen.checkedSquare
                             isPremoveSource: boardScreen.pendingPremove !== null &&
                                 boardScreen.pendingPremove.from === squareName
@@ -968,6 +983,7 @@ Rectangle {
 
         Row {
             spacing: theme.spacingXs
+            visible: boardScreen.showCoordinates
             Item { width: 64; height: 1 }
             Row {
                 width: grid.width
@@ -987,7 +1003,7 @@ Rectangle {
 
         PlayerBar {
             objectName: "bottomPlayerBar"
-            width: parent.width - theme.pageTopRightInset
+            width: parent.width
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.bottomColor)
             rating: boardScreen.ratingFor(boardScreen.bottomColor)
@@ -996,8 +1012,8 @@ Rectangle {
             active: boardScreen.turn === boardScreen.bottomColor
             opponent: boardScreen.bottomColor !== boardScreen.yourColor
             lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
-            materialAdvantage: boardScreen.materialAdvantageFor(boardScreen.bottomColor)
-            capturedPieces: boardScreen.capturedPiecesFor(boardScreen.bottomColor)
+            materialAdvantage: boardScreen.showCapturedPieces ? boardScreen.materialAdvantageFor(boardScreen.bottomColor) : 0
+            capturedPieces: boardScreen.showCapturedPieces ? boardScreen.capturedPiecesFor(boardScreen.bottomColor) : []
             pieceSet: boardScreen.pieceSet
         }
     }
@@ -1009,7 +1025,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: theme.pageSideMargin
-        anchors.rightMargin: theme.pageSideMargin + theme.pageTopRightInset
+        anchors.rightMargin: theme.pageSideMargin
         anchors.topMargin: theme.spacingXs
         spacing: theme.spacingXs
 
@@ -1178,6 +1194,7 @@ Rectangle {
             busyText: "Aborting game"
             busy: boardScreen.pendingGameAction === "Abort"
             critical: true
+            extraConfirm: boardScreen.confirmResign
             visible: !boardScreen.gameOver && boardScreen.canAbort
             onConfirmed: boardScreen.requestGameAction({type: "Abort"}, "Abort")
         }
@@ -1274,6 +1291,7 @@ Rectangle {
             busyText: "Resigning game"
             busy: boardScreen.pendingGameAction === "Resign"
             critical: true
+            extraConfirm: boardScreen.confirmResign
             visible: !boardScreen.gameOver && !boardScreen.canAbort
             onConfirmed: boardScreen.requestGameAction({type: "Resign"}, "Resign")
         }

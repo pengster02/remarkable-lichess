@@ -88,7 +88,14 @@ host. Current policy:
 
 Avoid interactive `Flickable` and `ListView` movement for long pages. A drag
 produces a stream of large damaged regions even with overshoot disabled. Use
-fixed page controls and change `contentY` once per tap.
+`EinkPagedFlickable`: non-interactive content, Prev/Next page controls, one
+`contentY` jump per tap, and `EinkRefreshArea.Content` over the viewport so
+each page turn gets a slow clean refresh instead of repeated fast ones.
+`reveal()` is a no-op when the target row is already fully visible.
+
+Live clocks: only the active chip uses `Fast`; refresh cadence is 10s above one
+minute, 5s at or below one minute, and 1s in the last 15 seconds. Minimal
+legal-move highlights default on to keep selection damage to one square.
 
 Do not use `UFast` for the board by default. Its speed is not worth risking
 reduced color/detail on the Paper Pro Move. The PC emulator proves loading and

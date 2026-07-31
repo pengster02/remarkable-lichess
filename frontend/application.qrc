@@ -16,7 +16,8 @@
         <file>ui/PromotionDialog.qml</file>
         <file>ui/SectionCard.qml</file>
         <file>ui/SettingsToggle.qml</file>
-        <file>ui/SetupScreen.qml</file>
+        <file>ui/QrCode.qml</file>
+        <file>ui/LoginScreen.qml</file>
         <file>ui/HomeScreen.qml</file>
         <file>ui/SeekScreen.qml</file>
         <file>ui/SettingsScreen.qml</file>

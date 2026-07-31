@@ -12,14 +12,10 @@ pub struct AppSettings {
     // is a real cost, not just a safety net.
     #[serde(default)]
     pub move_confirmation: bool,
-    // E-ink-specific, not a mainstream-chess-client setting like the two
-    // above -- tap-to-select highlights every legal destination square (up
-    // to ~28 of them scattered across the board) in addition to the
-    // selected square itself, each one real redraw damage on a display
-    // where that's a slower, more visible cost than on an LCD. Default off
-    // (full highlighting is the more helpful default; this trades some of
-    // that away for speed once someone actually wants the tradeoff).
-    #[serde(default)]
+    // E-ink-specific: full legal-destination spray can damage ~28 squares per
+    // tap. Default on so selection only refreshes the chosen square; users who
+    // want destinations can turn this off in Settings.
+    #[serde(default = "default_true")]
     pub minimal_highlights: bool,
     #[serde(default)]
     pub premoves_enabled: bool,
@@ -29,6 +25,18 @@ pub struct AppSettings {
     pub board_theme: String,
     #[serde(default = "default_piece_set")]
     pub piece_set: String,
+    // Board display toggles -- all default on (the app's existing behavior) so an
+    // upgrade doesn't silently hide anything; off is opt-in per user.
+    #[serde(default = "default_true")]
+    pub show_coordinates: bool,
+    #[serde(default = "default_true")]
+    pub show_captured_pieces: bool,
+    #[serde(default = "default_true")]
+    pub highlight_last_move: bool,
+    // Extra guard on resign/abort, on top of the existing two-tap. Default off:
+    // the two-tap already covers the common misfire, this is belt-and-suspenders.
+    #[serde(default)]
+    pub confirm_resign: bool,
 }
 
 fn default_true() -> bool {
@@ -70,11 +78,15 @@ impl Default for AppSettings {
         Self {
             auto_queen_promotion: false,
             move_confirmation: false,
-            minimal_highlights: false,
+            minimal_highlights: true,
             premoves_enabled: false,
             live_clock_enabled: true,
             board_theme: default_board_theme(),
             piece_set: default_piece_set(),
+            show_coordinates: true,
+            show_captured_pieces: true,
+            highlight_last_move: true,
+            confirm_resign: false,
         }
     }
 }
@@ -110,8 +122,15 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_minimal_highlights_off() {
-        assert!(!AppSettings::default().minimal_highlights);
+    fn defaults_to_minimal_highlights_on() {
+        assert!(AppSettings::default().minimal_highlights);
+    }
+
+    #[test]
+    fn older_settings_default_minimal_highlights_on() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"auto_queen_promotion":true}"#).unwrap();
+        assert!(settings.minimal_highlights);
     }
 
     #[test]

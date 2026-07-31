@@ -24,6 +24,10 @@ Rectangle {
     property bool liveClockEnabled: true
     property string boardTheme: "brown"
     property string pieceSet: "cburnett"
+    property bool showCoordinates: true
+    property bool showCapturedPieces: true
+    property bool highlightLastMove: true
+    property bool confirmResign: false
     // Set from GameMoves right before navigating to GameReviewScreen -- same
     // hand-off pattern as darkMode/autoQueenPromotion above, since a freshly
     // Loader-created screen has no other way to receive this reply's payload.
@@ -82,7 +86,11 @@ Rectangle {
             premoves_enabled: root.premovesEnabled,
             live_clock_enabled: root.liveClockEnabled,
             board_theme: root.boardTheme,
-            piece_set: root.pieceSet
+            piece_set: root.pieceSet,
+            show_coordinates: root.showCoordinates,
+            show_captured_pieces: root.showCapturedPieces,
+            highlight_last_move: root.highlightLastMove,
+            confirm_resign: root.confirmResign
         })
     }
 
@@ -118,6 +126,26 @@ Rectangle {
 
     function setPieceSet(value) {
         root.pieceSet = value
+        root.persistSettings()
+    }
+
+    function setShowCoordinates(value) {
+        root.showCoordinates = value
+        root.persistSettings()
+    }
+
+    function setShowCapturedPieces(value) {
+        root.showCapturedPieces = value
+        root.persistSettings()
+    }
+
+    function setHighlightLastMove(value) {
+        root.highlightLastMove = value
+        root.persistSettings()
+    }
+
+    function setConfirmResign(value) {
+        root.confirmResign = value
         root.persistSettings()
     }
 
@@ -177,6 +205,30 @@ Rectangle {
         }
     }
 
+    onShowCoordinatesChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("showCoordinates")) {
+            screenLoader.item.showCoordinates = root.showCoordinates
+        }
+    }
+
+    onShowCapturedPiecesChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("showCapturedPieces")) {
+            screenLoader.item.showCapturedPieces = root.showCapturedPieces
+        }
+    }
+
+    onHighlightLastMoveChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("highlightLastMove")) {
+            screenLoader.item.highlightLastMove = root.highlightLastMove
+        }
+    }
+
+    onConfirmResignChanged: {
+        if (screenLoader.item && screenLoader.item.hasOwnProperty("confirmResign")) {
+            screenLoader.item.confirmResign = root.confirmResign
+        }
+    }
+
     // Required by the AppLoad host: it looks up `close`/`unloading` on the
     // root QML item (see rmpp-appload's window.qml Connections/onUnloading
     // wiring). `close` lets the app request that AppLoad tear down its
@@ -211,6 +263,10 @@ Rectangle {
                 root.liveClockEnabled = msg.live_clock_enabled !== undefined ? msg.live_clock_enabled : true
                 root.boardTheme = msg.board_theme || "brown"
                 root.pieceSet = msg.piece_set || "cburnett"
+                root.showCoordinates = msg.show_coordinates !== undefined ? msg.show_coordinates : true
+                root.showCapturedPieces = msg.show_captured_pieces !== undefined ? msg.show_captured_pieces : true
+                root.highlightLastMove = msg.highlight_last_move !== undefined ? msg.highlight_last_move : true
+                root.confirmResign = msg.confirm_resign || false
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
                 screenLoader.source = "LoginScreen.qml"
@@ -376,6 +432,30 @@ Rectangle {
             }
             if (item.hasOwnProperty("setPieceSet")) {
                 item.setPieceSet = root.setPieceSet
+            }
+            if (item.hasOwnProperty("showCoordinates")) {
+                item.showCoordinates = root.showCoordinates
+            }
+            if (item.hasOwnProperty("setShowCoordinates")) {
+                item.setShowCoordinates = root.setShowCoordinates
+            }
+            if (item.hasOwnProperty("showCapturedPieces")) {
+                item.showCapturedPieces = root.showCapturedPieces
+            }
+            if (item.hasOwnProperty("setShowCapturedPieces")) {
+                item.setShowCapturedPieces = root.setShowCapturedPieces
+            }
+            if (item.hasOwnProperty("highlightLastMove")) {
+                item.highlightLastMove = root.highlightLastMove
+            }
+            if (item.hasOwnProperty("setHighlightLastMove")) {
+                item.setHighlightLastMove = root.setHighlightLastMove
+            }
+            if (item.hasOwnProperty("confirmResign")) {
+                item.confirmResign = root.confirmResign
+            }
+            if (item.hasOwnProperty("setConfirmResign")) {
+                item.setConfirmResign = root.setConfirmResign
             }
             if (item.hasOwnProperty("moves")) {
                 item.moves = root.reviewMoves
