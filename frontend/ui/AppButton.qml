@@ -23,13 +23,17 @@ QQC2.Button {
     bottomPadding: control.compact ? theme.spacingXs : theme.buttonPaddingV
     leftPadding: control.compact ? theme.spacingSmall : theme.buttonPaddingH
     rightPadding: control.compact ? theme.spacingSmall : theme.buttonPaddingH
+    // Width the label actually needs. Call sites that override `width` must
+    // keep this as their floor, or the text renders outside the background.
+    readonly property real naturalWidth: contentItem.implicitWidth + leftPadding + rightPadding
+
     // Real height/width, not implicitHeight/implicitWidth: Control's C++
     // side recomputes implicit size from contentItem+padding on its own and
     // silently clears any QML binding on it, throwing away this floor.
     height: control.compact
         ? theme.touchTarget
         : Math.max(contentItem.implicitHeight + topPadding + bottomPadding, theme.buttonMinHeight)
-    width: Math.max(contentItem.implicitWidth + leftPadding + rightPadding, theme.touchTarget * 2)
+    width: Math.max(control.naturalWidth, theme.touchTarget * 2)
 
     background: Rectangle {
         radius: theme.cardRadius

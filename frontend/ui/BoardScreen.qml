@@ -1369,7 +1369,8 @@ Rectangle {
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottomMargin: theme.pageSideMargin
-        width: Math.min(parent.width - theme.pageSideMargin * 2, theme.textFieldWidthMedium)
+        width: Math.min(parent.width - theme.pageSideMargin * 2,
+                        Math.max(theme.textFieldWidthMedium, naturalWidth))
         compact: true
         text: "Back to Home"
         visible: boardScreen.canNavigateHome
