@@ -19,9 +19,7 @@ use shakmaty::{fen::Fen, san::SanPlus, Chess, EnPassantMode, Position};
 /// review screen index directly into this array for Prev/Next/jump-to-move,
 /// no re-simulation per step.
 ///
-/// Standard starting position only (no Chess960/variant `initialFen` support)
-/// -- out of scope per
-/// docs/superpowers/specs/2026-07-21-game-review-move-navigation-design.md.
+/// Standard starting position only (no Chess960/variant `initialFen` support).
 pub fn fens_for_moves(moves: &[String]) -> Result<Vec<String>> {
     let mut pos = Chess::default();
     let mut fens = Vec::with_capacity(moves.len() + 1);

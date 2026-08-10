@@ -1,7 +1,7 @@
 import QtQuick 2.5
 
 // Read-only replay of a finished game's move list, opened from
-// GameHistoryScreen (see docs/superpowers/specs/2026-07-21-game-review-move-navigation-design.md).
+// GameHistoryScreen.
 // `moves`/`fens` arrive pre-computed from the backend's GameMoves reply
 // (main.qml hands them in on load, same pattern as darkMode/username) -- this
 // screen does no chess logic at all, just indexes into `fens`.

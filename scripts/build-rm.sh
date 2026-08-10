@@ -7,8 +7,7 @@ set -euo pipefail
 # target triple if `cross` reports a mismatch for your specific rm-appload
 # toolchain image.
 cd "$(dirname "$0")/../backend"
-# The plan's own dev docs tell developers to export CARGO_TARGET_DIR for local
-# `cargo test` runs (see docs/superpowers/plans/2026-07-21-ui-strategy-phases-plan.md) --
+# Local dev sometimes exports CARGO_TARGET_DIR for `cargo test` runs --
 # unset it here so the `cp` below (which assumes the default ./target layout)
 # doesn't silently pick up a stale/empty binary if that's still set in the
 # calling shell.

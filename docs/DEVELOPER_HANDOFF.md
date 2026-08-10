@@ -262,12 +262,7 @@ default; both are poor fits for e-ink.
 
 ## Supporting research
 
-- `docs/chess-ui-research-audit-2026-07-27.md` — current comparison with Lichess
-  and Chess.com plus remaining feature priorities.
-- `docs/ui-strategy-2026-07-21.md` — whole-app UI strategy and implementation
-  history.
 - `docs/remarkable-appload-platform-notes.md` — AppLoad, XOVI, e-ink refresh,
   build, and deployment constraints.
-- `docs/audit-2026-07-21-eink-and-repo.md` — earlier repository and e-ink audit.
 
 Never commit `.lichess-token` or print its contents in logs.

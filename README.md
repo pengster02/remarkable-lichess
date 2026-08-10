@@ -376,22 +376,6 @@ The constraints that shaped this app, and that changes should respect:
 | --- | --- |
 | [`docs/DEVELOPER_HANDOFF.md`](docs/DEVELOPER_HANDOFF.md) | The fastest path to running, understanding, and extending the app |
 | [`docs/remarkable-appload-platform-notes.md`](docs/remarkable-appload-platform-notes.md) | AppLoad, XOVI, e-ink refresh, build, and deploy constraints |
-| [`docs/ui-strategy-2026-07-21.md`](docs/ui-strategy-2026-07-21.md) | Whole-app UI strategy and implementation history |
-| [`docs/chess-ui-research-audit-2026-07-27.md`](docs/chess-ui-research-audit-2026-07-27.md) | Comparison against Lichess and Chess.com, plus remaining priorities |
-| [`docs/chess-ux-gaps-vs-reference-apps.md`](docs/chess-ux-gaps-vs-reference-apps.md) | Known UX gaps against reference apps |
-| [`docs/audit-2026-07-21-eink-and-repo.md`](docs/audit-2026-07-21-eink-and-repo.md) | Earlier repository and e-ink audit |
-
-### Original design and plans
-
-How the app was scoped and built, kept for rationale rather than as current
-reference — where these disagree with the code, the code wins.
-
-| Document | What's in it |
-| --- | --- |
-| [`docs/superpowers/specs/2026-07-17-remarkable-lichess-client-design.md`](docs/superpowers/specs/2026-07-17-remarkable-lichess-client-design.md) | The original design: target device, why the Board API, and what was ruled out of v1 |
-| [`docs/superpowers/plans/2026-07-17-remarkable-lichess-client-plan.md`](docs/superpowers/plans/2026-07-17-remarkable-lichess-client-plan.md) | The build plan that produced the QML-frontend / Rust-backend split |
-| [`docs/superpowers/specs/2026-07-21-game-review-move-navigation-design.md`](docs/superpowers/specs/2026-07-21-game-review-move-navigation-design.md) | Design for move-by-move review of finished games |
-| [`docs/superpowers/plans/2026-07-21-ui-strategy-phases-plan.md`](docs/superpowers/plans/2026-07-21-ui-strategy-phases-plan.md) | Phased implementation of the UI strategy backlog |
 
 Known remaining work: persistent variation branches instead of a single linear
 scratch line, an on-demand opening explorer, PGN export, and a final real-device

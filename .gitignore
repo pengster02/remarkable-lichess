@@ -2,6 +2,15 @@
 .superpowers/
 rm-appload/
 .DS_Store
+
+# Internal working notes and agent instructions: kept locally, not published.
+/CLAUDE.md
+/AGENTS.md
+/docs/superpowers/
+/docs/audit-2026-07-21-eink-and-repo.md
+/docs/chess-ui-research-audit-2026-07-27.md
+/docs/chess-ux-gaps-vs-reference-apps.md
+/docs/ui-strategy-2026-07-21.md
 *.core
 *.tar
 *.tar.gz

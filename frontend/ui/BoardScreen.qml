@@ -128,8 +128,7 @@ Rectangle {
     // Cancel step (see requestMove/pendingMoveConfirmation) instead of
     // sending MakeMove the instant a legal destination is tapped. Confirmed
     // against the official lichess-org/mobile app's own moveToConfirm
-    // setting (see docs/superpowers/plans/2026-07-21-ui-strategy-phases-plan.md's
-    // Phase 3) -- same off-by-default posture as auto-queen above.
+    // setting -- same off-by-default posture as auto-queen above.
     property bool moveConfirmation: false
     // {from, to, promotion} while a move is pending the user's explicit
     // Confirm/Cancel (only when moveConfirmation is on), else null. Applied
@@ -680,9 +679,9 @@ Rectangle {
                 moveRequestGate.pending !== null) return
         // Not a correctness fix (legalMoves is always keyed to whoever's turn it
         // actually is, per the current FEN, so a tap during the opponent's turn
-        // could never produce an illegal MakeMove) -- this is the UX gap flagged
-        // in docs/chess-ux-gaps-vs-reference-apps.md #5: every reference client
-        // disables input and shows whose turn it is rather than letting a player
+        // could never produce an illegal MakeMove) -- it closes a UX gap: every
+        // reference client disables input and shows whose turn it is rather
+        // than letting a player
         // tap around pointlessly waiting for a reply that never comes.
         if (boardScreen.turn !== boardScreen.yourColor) {
             if (!boardScreen.premovesEnabled) return

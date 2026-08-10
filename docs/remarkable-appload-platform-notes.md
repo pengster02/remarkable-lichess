@@ -124,6 +124,5 @@ Sources: [Writing Qt Quick Applications — developer.remarkable.com](https://de
   scopes, so this class of bug (verified-but-underscoped token) needs its own explicit handling in any
   Lichess Board API client, not just here.
 
-See `docs/superpowers/specs/2026-07-17-remarkable-lichess-client-design.md` and
-`docs/superpowers/plans/2026-07-17-remarkable-lichess-client-plan.md` for this specific app's design
-and task-by-task build log.
+See `docs/DEVELOPER_HANDOFF.md` for this specific app's architecture and the
+rules that changes are expected to respect.

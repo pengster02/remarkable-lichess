@@ -6,8 +6,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub auto_queen_promotion: bool,
     // Confirmed shipped in the official lichess-org/mobile app (its own
-    // `moveToConfirm`/`confirmMove()`/`cancelMove()`, default off there too --
-    // see docs/ui-strategy-2026-07-21.md's P2), not a made-up setting. Default
+    // `moveToConfirm`/`confirmMove()`/`cancelMove()`, default off there too),
+    // not a made-up setting. Default
     // off here for the same reason: a forced second tap on every single move
     // is a real cost, not just a safety net.
     #[serde(default)]
