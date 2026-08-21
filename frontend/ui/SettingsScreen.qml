@@ -38,6 +38,8 @@ Rectangle {
     // clears the saved token entirely (see backend_app.rs's handle_log_out), not
     // something a single mistaken tap should be able to do.
     property bool logOutArmed: false
+    property string saveError: ""
+    property bool rollbackRequested: false
 
     BoardStyle {
         id: appearanceStyle
@@ -95,6 +97,30 @@ Rectangle {
             }
 
             SectionCard {
+                objectName: "settingsSaveErrorCard"
+                width: parent.width
+                darkMode: settingsScreen.darkMode
+                compact: true
+                title: "Settings not saved"
+                visible: settingsScreen.saveError.length > 0
+
+                Text {
+                    width: parent.width
+                    text: settingsScreen.saveError
+                    font.pixelSize: theme.fontBody
+                    wrapMode: Text.WordWrap
+                    color: theme.errorText
+                }
+
+                AppButton {
+                    width: parent.width
+                    compact: true
+                    text: "Dismiss"
+                    onClicked: settingsScreen.saveError = ""
+                }
+            }
+
+            SectionCard {
                 id: appearanceSection
                 objectName: "appearanceSection"
                 darkMode: settingsScreen.darkMode
@@ -139,27 +165,13 @@ Rectangle {
                     color: theme.text
                 }
 
-                Flow {
-                    id: boardThemeFlow
+                SegmentedControl {
+                    objectName: "boardThemeControl"
                     width: parent.width
-                    height: childrenRect.height
-                    spacing: theme.spacingXs
-
-                    Repeater {
-                        id: boardThemeRepeater
-                        model: appearanceStyle.boardOptions
-
-                        AppButton {
-                            required property var modelData
-                            width: (boardThemeFlow.width -
-                                boardThemeFlow.spacing * (boardThemeRepeater.count - 1)) /
-                                boardThemeRepeater.count
-                            compact: true
-                            text: modelData.label
-                            highlighted: settingsScreen.boardTheme === modelData.id
-                            onClicked: settingsScreen.setBoardTheme(modelData.id)
-                        }
-                    }
+                    darkMode: settingsScreen.darkMode
+                    options: appearanceStyle.boardOptions
+                    value: settingsScreen.boardTheme
+                    onSelected: (value) => settingsScreen.setBoardTheme(value)
                 }
 
                 Text {
@@ -170,27 +182,13 @@ Rectangle {
                     color: theme.text
                 }
 
-                Flow {
-                    id: pieceSetFlow
+                SegmentedControl {
+                    objectName: "pieceSetControl"
                     width: parent.width
-                    height: childrenRect.height
-                    spacing: theme.spacingXs
-
-                    Repeater {
-                        id: pieceSetRepeater
-                        model: appearanceStyle.pieceOptions
-
-                        AppButton {
-                            required property var modelData
-                            width: (pieceSetFlow.width -
-                                pieceSetFlow.spacing * (pieceSetRepeater.count - 1)) /
-                                pieceSetRepeater.count
-                            compact: true
-                            text: modelData.label
-                            highlighted: settingsScreen.pieceSet === modelData.id
-                            onClicked: settingsScreen.setPieceSet(modelData.id)
-                        }
-                    }
+                    darkMode: settingsScreen.darkMode
+                    options: appearanceStyle.pieceOptions
+                    value: settingsScreen.pieceSet
+                    onSelected: (value) => settingsScreen.setPieceSet(value)
                 }
 
             }
@@ -320,9 +318,16 @@ Rectangle {
     }
 
     function handleMessage(msg) {
-        // main.qml's router already updates root.autoQueenPromotion (and pushes it
-        // back down here) on every SettingsState -- nothing left for this screen
-        // to do with the message itself, but it still needs a handleMessage the
-        // Loader can call without erroring, same as every other screen.
+        if (msg.type === "ErrorMsg") {
+            settingsScreen.saveError = msg.message || "The new settings could not be saved."
+            // Reloading persisted state prevents the optimistic toggle from lying;
+            // leaving it changed or reverting one field locally can both drift.
+            if (!settingsScreen.rollbackRequested) {
+                settingsScreen.rollbackRequested = true
+                settingsScreen.backendSender({type: "RequestSettings"})
+            }
+        } else if (msg.type === "SettingsState") {
+            settingsScreen.rollbackRequested = false
+        }
     }
 }

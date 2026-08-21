@@ -13,8 +13,9 @@ Rectangle {
 
     width: parent ? parent.width : implicitWidth
     height: Math.max(theme.buttonMinHeight, copyColumn.height + theme.spacingSmall * 2)
-    radius: theme.controlRadius
-    border.width: menuRow.highlighted ? 3 : 2
+    radius: theme.cardRadius
+    clip: true
+    border.width: menuRow.highlighted ? 2 : 1
     border.color: menuRow.highlighted ? theme.accentBackground : theme.buttonBorder
     color: mouseArea.pressed
         ? theme.text

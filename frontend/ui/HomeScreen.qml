@@ -8,6 +8,7 @@ Rectangle {
     ChessDisplay { id: chessDisplay }
     property var backendSender
     property var navigateTo
+    property var expectNextGame: function() {}
     property bool darkMode: false
     // Every now-playing game, not just one -- replaces the old singular
     // resumableGameId, which silently dropped every game past the first for
@@ -35,6 +36,9 @@ Rectangle {
     property string connectionMessage: ""
     property string loadError: ""
     property string challengesError: ""
+    property string actionError: ""
+    property string pendingChallengeId: ""
+    property string pendingChallengeAction: ""
 
     onBackendSenderChanged: {
         if (homeScreen.backendSender) homeScreen.refresh()
@@ -45,6 +49,7 @@ Rectangle {
         homeScreen.connectivityKnown = false
         homeScreen.loadError = ""
         homeScreen.challengesError = ""
+        homeScreen.actionError = ""
         homeScreen.backendSender({type: "RequestHome"})
         homeScreen.backendSender({type: "RequestChallenges"})
     }
@@ -52,6 +57,18 @@ Rectangle {
     function refreshChallenges() {
         homeScreen.challengesError = ""
         homeScreen.backendSender({type: "RequestChallenges"})
+    }
+
+    function submitChallengeAction(action, challengeId) {
+        if (homeScreen.pendingChallengeId.length > 0) return
+        homeScreen.actionError = ""
+        homeScreen.pendingChallengeId = challengeId
+        homeScreen.pendingChallengeAction = action
+        if (action === "accept") homeScreen.expectNextGame(challengeId)
+        homeScreen.backendSender({
+            type: action === "accept" ? "AcceptChallenge" : "DeclineChallenge",
+            id: challengeId
+        })
     }
 
     function connectivityLabel() {
@@ -131,6 +148,27 @@ Rectangle {
                     width: parent.width
                     text: "Retry challenges"
                     onClicked: homeScreen.refreshChallenges()
+                }
+            }
+
+            SectionCard {
+                objectName: "homeActionErrorCard"
+                darkMode: homeScreen.darkMode
+                title: "Action not completed"
+                visible: homeScreen.actionError.length > 0
+
+                Text {
+                    width: parent.width
+                    text: homeScreen.actionError
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.errorText
+                }
+                AppButton {
+                    width: parent.width
+                    compact: true
+                    text: "Dismiss"
+                    onClicked: homeScreen.actionError = ""
                 }
             }
 
@@ -232,14 +270,22 @@ Rectangle {
                             // gets the accent treatment as the primary action.
                             AppButton {
                                 width: (parent.width - theme.spacingSmall) / 2
-                                text: "Accept"
+                                text: homeScreen.pendingChallengeId === modelData.id &&
+                                    homeScreen.pendingChallengeAction === "accept"
+                                    ? "Accepting…"
+                                    : "Accept"
                                 highlighted: true
-                                onClicked: homeScreen.backendSender({type: "AcceptChallenge", id: modelData.id})
+                                enabled: homeScreen.pendingChallengeId.length === 0
+                                onClicked: homeScreen.submitChallengeAction("accept", modelData.id)
                             }
                             AppButton {
                                 width: (parent.width - theme.spacingSmall) / 2
-                                text: "Decline"
-                                onClicked: homeScreen.backendSender({type: "DeclineChallenge", id: modelData.id})
+                                text: homeScreen.pendingChallengeId === modelData.id &&
+                                    homeScreen.pendingChallengeAction === "decline"
+                                    ? "Declining…"
+                                    : "Decline"
+                                enabled: homeScreen.pendingChallengeId.length === 0
+                                onClicked: homeScreen.submitChallengeAction("decline", modelData.id)
                             }
                         }
                     }
@@ -293,6 +339,8 @@ Rectangle {
             homeScreen.ratings = msg.ratings || []
         } else if (msg.type === "PendingChallenges") {
             homeScreen.challengesError = ""
+            homeScreen.pendingChallengeId = ""
+            homeScreen.pendingChallengeAction = ""
             homeScreen.pendingChallenges = msg.challenges || []
         } else if (msg.type === "ConnectivityState") {
             homeScreen.connectivityKnown = true
@@ -309,7 +357,9 @@ Rectangle {
             homeScreen.challengesError = msg.message ||
                 "Couldn't load challenges."
         } else if (msg.type === "ErrorMsg") {
-            console.warn("Backend error: " + (msg.message || ""))
+            homeScreen.pendingChallengeId = ""
+            homeScreen.pendingChallengeAction = ""
+            homeScreen.actionError = msg.message || "Lichess could not complete that action."
         }
     }
 }

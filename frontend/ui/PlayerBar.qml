@@ -27,6 +27,7 @@ Rectangle {
     Theme { id: theme; darkMode: playerBar.darkMode }
     height: theme.playerBarHeight
     radius: theme.cardRadius
+    clip: true
     color: theme.cardBackground
     border.width: 1
     border.color: theme.cardBorder

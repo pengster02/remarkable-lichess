@@ -183,7 +183,7 @@ Item {
             enabled: pager.usesPageStops
                 ? pager.currentPage > 1
                 : pager.contentY > 0
-            text: "Prev"
+            text: "Previous"
             onClicked: pager.pageUp()
         }
 

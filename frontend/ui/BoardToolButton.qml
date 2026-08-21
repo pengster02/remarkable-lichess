@@ -18,8 +18,8 @@ QQC2.Button {
     padding: 4
 
     background: Rectangle {
-        radius: theme.controlRadius
-        border.width: control.highlighted ? 3 : 2
+        radius: theme.compactControlRadius
+        border.width: control.highlighted ? 2 : 1
         border.color: !control.enabled
             ? theme.cardBorder
             : (control.highlighted ? theme.accentBackground : theme.buttonBorder)

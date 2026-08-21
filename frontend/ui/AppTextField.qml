@@ -27,7 +27,7 @@ QQC2.TextField {
 
     background: Rectangle {
         radius: theme.controlRadius
-        border.width: control.activeFocus ? 3 : 2
+        border.width: control.activeFocus ? 3 : 1
         border.color: control.activeFocus ? theme.accentBackground : theme.buttonBorder
         color: theme.buttonBackground
     }

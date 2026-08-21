@@ -52,6 +52,9 @@ Rectangle {
     property bool online: false
     property var wifiConnected: null
     property string connectionMessage: ""
+    // A game ID is safer than a broad "next game" flag: always navigating breaks
+    // Back-to-Home, while a boolean can let an unrelated background game win a race.
+    property string expectedHomeGameId: ""
 
     function connectivityLabel() {
         if (!root.connectivityKnown) return "Connecting…"
@@ -71,6 +74,10 @@ Rectangle {
     function openGameReview(gameId, game) {
         root.reviewGame = game || null
         root.sendToBackend({type: "RequestGameMoves", game_id: gameId})
+    }
+
+    function expectNextGame(gameId) {
+        root.expectedHomeGameId = gameId
     }
 
     function toggleDarkMode() {
@@ -267,8 +274,12 @@ Rectangle {
                 root.showCapturedPieces = msg.show_captured_pieces !== undefined ? msg.show_captured_pieces : true
                 root.highlightLastMove = msg.highlight_last_move !== undefined ? msg.highlight_last_move : true
                 root.confirmResign = msg.confirm_resign || false
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
+                }
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
+                root.expectedHomeGameId = ""
                 screenLoader.source = "LoginScreen.qml"
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
@@ -301,6 +312,7 @@ Rectangle {
                 }
             } else if (msg.type === "HomeState" || msg.type === "HomeLoadFailed" ||
                        msg.type === "SeekCreated" || msg.type === "ChallengeCreated" ||
+                       msg.type === "OpenChallengeCreated" ||
                        msg.type === "PendingChallenges" ||
                        msg.type === "ChallengesLoadFailed" ||
                        msg.type === "GameHistory") {
@@ -332,7 +344,12 @@ Rectangle {
                 // back to Board with no way out). Every other screen (Setup, Seek,
                 // Board itself) still auto-advances to Board normally, since that's
                 // the desired flow for a freshly-started/still-loading game.
-                if (screenLoader.source.toString().indexOf("HomeScreen") === -1) {
+                var showingHome = screenLoader.source.toString().indexOf("HomeScreen") !== -1
+                var isExpectedHomeGame = msg.type === "BoardState" &&
+                    root.expectedHomeGameId.length > 0 &&
+                    msg.game_id === root.expectedHomeGameId
+                if (!showingHome || isExpectedHomeGame) {
+                    root.expectedHomeGameId = ""
                     if (screenLoader.source.toString().indexOf("BoardScreen") === -1) {
                         screenLoader.source = "BoardScreen.qml"
                     }
@@ -352,6 +369,9 @@ Rectangle {
                 }
             } else if (msg.type === "ErrorMsg") {
                 console.warn("Backend error: " + msg.message)
+                if (screenLoader.source.toString().indexOf("HomeScreen") !== -1) {
+                    root.expectedHomeGameId = ""
+                }
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
@@ -477,6 +497,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGameReview")) {
                 item.openGameReview = root.openGameReview
+            }
+            if (item.hasOwnProperty("expectNextGame")) {
+                item.expectNextGame = root.expectNextGame
             }
         }
     }

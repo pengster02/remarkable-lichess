@@ -34,7 +34,8 @@ Item {
         color: theme.background
         border.width: 3
         border.color: theme.text
-        radius: theme.cardRadius
+        radius: theme.dialogRadius
+        clip: true
 
         Rectangle {
             anchors.left: parent.left

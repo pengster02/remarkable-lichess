@@ -22,15 +22,52 @@ Item {
         elide: Text.ElideRight
     }
 
-    AppButton {
+    Rectangle {
         id: toggleButton
         objectName: "settingsToggleButton"
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         width: theme.touchTarget * 2
-        compact: true
-        text: toggleRow.value ? "On" : "Off"
-        highlighted: toggleRow.value
-        onClicked: toggleRow.toggled()
+        height: theme.touchTarget
+        radius: theme.pillRadius
+        color: toggleRow.value ? theme.accentBackground : theme.buttonBackground
+        border.width: 2
+        border.color: toggleRow.value ? theme.accentBackground : theme.buttonBorder
+
+        Text {
+            anchors.left: toggleRow.value ? parent.left : switchKnob.right
+            anchors.right: toggleRow.value ? switchKnob.left : parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: toggleRow.value ? "On" : "Off"
+            font.pixelSize: theme.fontSmall
+            font.bold: true
+            horizontalAlignment: Text.AlignHCenter
+            color: toggleRow.value ? theme.accentText : theme.textMuted
+        }
+
+        Rectangle {
+            id: switchKnob
+            width: parent.height - theme.spacingXs * 2
+            height: width
+            radius: width / 2
+            anchors.verticalCenter: parent.verticalCenter
+            x: toggleRow.value
+                ? parent.width - width - theme.spacingXs
+                : theme.spacingXs
+            color: toggleRow.value ? theme.accentText : theme.textMuted
+        }
+
+        MouseArea {
+            id: toggleMouse
+            anchors.fill: parent
+            onClicked: toggleRow.toggled()
+        }
+
+        EinkRefreshArea {
+            anchors.fill: parent
+            displayMethod: toggleMouse.pressed
+                ? EinkRefreshArea.Fast
+                : EinkRefreshArea.UI
+        }
     }
 }

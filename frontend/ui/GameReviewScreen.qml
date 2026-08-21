@@ -593,8 +593,10 @@ Rectangle {
             Text {
                 text: gameReviewScreen.exploreMode
                     ? gameReviewScreen.explorationHeader()
-                    : "Move " + gameReviewScreen.currentIndex + " of " +
-                      Math.max(0, gameReviewScreen.fens.length - 1)
+                    : (gameReviewScreen.currentIndex === 0
+                        ? "Starting position"
+                        : "Move " + gameReviewScreen.currentIndex + " of " +
+                          Math.max(0, gameReviewScreen.fens.length - 1))
                 font.pixelSize: theme.fontLabel
                 font.bold: gameReviewScreen.exploreMode
                 width: gameReviewScreen.exploreMode ? boardArea.width : implicitWidth
@@ -791,13 +793,13 @@ Rectangle {
             }
             BoardToolButton {
                 width: (parent.width - parent.spacing * 3) / 4
-                text: "<"
+                text: "‹"
                 enabled: gameReviewScreen.currentIndex > 0
                 onClicked: gameReviewScreen.goPrev()
             }
             BoardToolButton {
                 width: (parent.width - parent.spacing * 3) / 4
-                text: ">"
+                text: "›"
                 enabled: gameReviewScreen.currentIndex < gameReviewScreen.fens.length - 1
                 onClicked: gameReviewScreen.goNext()
             }

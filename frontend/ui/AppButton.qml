@@ -11,6 +11,9 @@ QQC2.Button {
     // buttons would split one interaction system, while global compactness is too broad.
     property bool compact: nearestDenseActions(parent)
     property int textAlignment: Text.AlignHCenter
+    property real cornerRadius: control.compact
+        ? theme.compactControlRadius
+        : theme.controlRadius
 
     function nearestDarkMode(item) {
         while (item) {
@@ -48,8 +51,8 @@ QQC2.Button {
     width: Math.max(control.naturalWidth, theme.touchTarget * 2)
 
     background: Rectangle {
-        radius: theme.controlRadius
-        border.width: control.highlighted || control.critical ? 3 : 2
+        radius: control.cornerRadius
+        border.width: control.highlighted || control.critical ? 2 : 1
         border.color: !control.enabled
             ? theme.cardBorder
             : (control.critical

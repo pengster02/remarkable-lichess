@@ -3,20 +3,31 @@ import QtTest 1.2
 import "../ui"
 
 TestCase {
+    id: testCase
     name: "HomeScreen"
     when: windowShown
     width: 1696
     height: 2384
+    property var sentMessages: []
+    property int expectedGameStarts: 0
+    property string expectedGameId: ""
 
     HomeScreen {
         id: home
         width: 1696
         height: 2384
-        backendSender: function() {}
+        backendSender: function(message) { testCase.sentMessages.push(message) }
         navigateTo: function() {}
+        expectNextGame: function(gameId) {
+            testCase.expectedGameStarts++
+            testCase.expectedGameId = gameId
+        }
     }
 
     function init() {
+        sentMessages = []
+        expectedGameStarts = 0
+        expectedGameId = ""
         home.loadedOnce = false
         home.connectivityKnown = false
         home.online = false
@@ -24,6 +35,9 @@ TestCase {
         home.connectionMessage = ""
         home.loadError = ""
         home.challengesError = ""
+        home.actionError = ""
+        home.pendingChallengeId = ""
+        home.pendingChallengeAction = ""
         home.ongoingGames = []
         home.ratings = []
     }
@@ -58,12 +72,27 @@ TestCase {
         compare(home.challengesError, "Couldn't load challenges.")
     }
 
-    function test_genericActionErrorDoesNotChangeHomeState() {
+    function test_genericActionErrorIsVisibleWithoutChangingLoadState() {
         home.loadedOnce = false
         home.handleMessage({type: "ErrorMsg", message: "Challenge expired"})
         compare(home.loadedOnce, false)
         compare(home.loadError, "")
         compare(home.challengesError, "")
+        compare(home.actionError, "Challenge expired")
+    }
+
+    function test_challengeActionIsSingleFlightUntilAReply() {
+        home.submitChallengeAction("accept", "abc123")
+        home.submitChallengeAction("decline", "abc123")
+        compare(sentMessages.length, 1)
+        compare(sentMessages[0].type, "AcceptChallenge")
+        compare(home.pendingChallengeId, "abc123")
+        compare(expectedGameStarts, 1)
+        compare(expectedGameId, "abc123")
+
+        home.handleMessage({type: "PendingChallenges", challenges: []})
+        compare(home.pendingChallengeId, "")
+        compare(home.pendingChallengeAction, "")
     }
 
     function test_successClearsAnEarlierConnectionError() {

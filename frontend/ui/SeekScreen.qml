@@ -23,6 +23,89 @@ Rectangle {
     // the link stays valid on Lichess's side independent of this screen, so
     // there's deliberately no "Cancel" for it, just Back to Home.
     property var openChallengeUrls: null
+    property string pendingAction: ""
+    property string formError: ""
+
+    function wholeNumber(text) {
+        var trimmed = text.trim()
+        return /^\d+$/.test(trimmed) ? Number(trimmed) : NaN
+    }
+
+    function timeControlError(maximumIncrement) {
+        var minutes = wholeNumber(minutesField.text)
+        var increment = wholeNumber(incrementField.text)
+        if (isNaN(minutes)) return "Minutes must be a whole number."
+        if (minutes < 0 || minutes > 180) return "Minutes must be between 0 and 180."
+        if (isNaN(increment)) return "Increment must be a whole number."
+        if (increment < 0 || increment > maximumIncrement)
+            return "Increment must be between 0 and " + maximumIncrement + "."
+        if (minutes === 0 && increment === 0) return "Choose some starting time or an increment."
+        return ""
+    }
+
+    function validateTimeControl(maximumIncrement) {
+        formError = timeControlError(maximumIncrement)
+        return formError.length === 0
+    }
+
+    function submitSeek() {
+        // Lichess permits 180s on seeks but only 60s on challenges; one global
+        // 60s cap hides valid seeks, while separate duplicate forms add drift.
+        if (pendingAction.length > 0 || !validateTimeControl(180)) return
+        pendingAction = "seek"
+        backendSender({
+            type: "CreateSeek",
+            minutes: wholeNumber(minutesField.text),
+            increment: wholeNumber(incrementField.text),
+            rated: rated,
+            color: selectedColor
+        })
+    }
+
+    function submitChallenge() {
+        if (pendingAction.length > 0 || !validateTimeControl(60)) return
+        var username = usernameField.text.trim()
+        if (username.length === 0) {
+            formError = "Enter the Lichess username you want to challenge."
+            return
+        }
+        pendingAction = "challenge"
+        backendSender({
+            type: "CreateChallenge",
+            username: username,
+            minutes: wholeNumber(minutesField.text),
+            increment: wholeNumber(incrementField.text),
+            rated: rated,
+            color: selectedColor
+        })
+    }
+
+    function submitOpenChallenge() {
+        if (pendingAction.length > 0 || !validateTimeControl(60)) return
+        pendingAction = "open"
+        backendSender({
+            type: "CreateOpenChallenge",
+            minutes: wholeNumber(minutesField.text),
+            increment: wholeNumber(incrementField.text),
+            rated: rated
+        })
+    }
+
+    function submitComputerGame() {
+        if (pendingAction.length > 0 || !validateTimeControl(60)) return
+        var level = wholeNumber(aiLevelField.text)
+        if (isNaN(level) || level < 1 || level > 8) {
+            formError = "Computer level must be a whole number from 1 to 8."
+            return
+        }
+        pendingAction = "computer"
+        backendSender({
+            type: "ChallengeAi",
+            level: level,
+            minutes: wholeNumber(minutesField.text),
+            increment: wholeNumber(incrementField.text)
+        })
+    }
 
     AppButton {
         id: backButton
@@ -32,6 +115,7 @@ Rectangle {
         width: Math.min(parent.width - theme.pageSideMargin * 2,
                         Math.max(theme.textFieldWidthMedium, naturalWidth))
         compact: true
+        enabled: seekScreen.pendingAction.length === 0 || seekScreen.waiting
         text: "Back to Home"
         onClicked: {
             if (seekScreen.waiting) seekScreen.backendSender({type: "CancelSeek"})
@@ -73,7 +157,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             eyebrow: "Play"
             title: "New game"
-            detail: "Rapid chess on your terms"
+            detail: "Set up your next game"
         }
 
         SectionCard {
@@ -87,14 +171,30 @@ Rectangle {
                 width: parent.width
                 spacing: theme.spacingSmall
                 Text { text: "Minutes"; font.pixelSize: theme.fontBody; width: parent.width - minutesField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
-                AppTextField { id: minutesField; text: "10"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+                AppTextField {
+                    id: minutesField
+                    objectName: "minutesField"
+                    text: "10"
+                    font.pixelSize: theme.fontLarge
+                    width: theme.textFieldWidthNarrow
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    onTextChanged: seekScreen.formError = ""
+                }
             }
 
             Row {
                 width: parent.width
                 spacing: theme.spacingSmall
                 Text { text: "Increment"; font.pixelSize: theme.fontBody; width: parent.width - incrementField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
-                AppTextField { id: incrementField; text: "0"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+                AppTextField {
+                    id: incrementField
+                    objectName: "incrementField"
+                    text: "0"
+                    font.pixelSize: theme.fontLarge
+                    width: theme.textFieldWidthNarrow
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    onTextChanged: seekScreen.formError = ""
+                }
             }
         }
 
@@ -106,35 +206,61 @@ Rectangle {
             visible: !seekScreen.waiting
 
             Text { text: "Game type"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
-            Flow {
+            SegmentedControl {
+                objectName: "gameTypeControl"
                 width: parent.width
-                spacing: theme.spacingXs
-                AppButton { compact: true; text: "Casual"; highlighted: !seekScreen.rated; onClicked: seekScreen.rated = false }
-                AppButton { compact: true; text: "Rated"; highlighted: seekScreen.rated; onClicked: seekScreen.rated = true }
+                darkMode: seekScreen.darkMode
+                options: [
+                    {id: "casual", label: "Casual"},
+                    {id: "rated", label: "Rated"}
+                ]
+                value: seekScreen.rated ? "rated" : "casual"
+                onSelected: (value) => seekScreen.rated = value === "rated"
             }
 
             Text { text: "Your color"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
-            Flow {
+            SegmentedControl {
+                objectName: "colorControl"
                 width: parent.width
-                spacing: theme.spacingXs
-                AppButton { compact: true; text: "White"; highlighted: seekScreen.selectedColor === "white"; onClicked: seekScreen.selectedColor = "white" }
-                AppButton { compact: true; text: "Black"; highlighted: seekScreen.selectedColor === "black"; onClicked: seekScreen.selectedColor = "black" }
-                AppButton { compact: true; text: "Random"; highlighted: seekScreen.selectedColor === "random"; onClicked: seekScreen.selectedColor = "random" }
+                darkMode: seekScreen.darkMode
+                options: [
+                    {id: "white", label: "White"},
+                    {id: "black", label: "Black"},
+                    {id: "random", label: "Random"}
+                ]
+                value: seekScreen.selectedColor
+                onSelected: (value) => seekScreen.selectedColor = value
+            }
+        }
+
+        SectionCard {
+            objectName: "seekErrorCard"
+            width: parent.width
+            darkMode: seekScreen.darkMode
+            compact: true
+            title: "Check game setup"
+            visible: seekScreen.formError.length > 0
+
+            Text {
+                objectName: "seekErrorText"
+                width: parent.width
+                text: seekScreen.formError
+                font.pixelSize: theme.fontBody
+                wrapMode: Text.WordWrap
+                color: theme.errorText
             }
         }
 
         AppButton {
             width: parent.width
-            text: "Find an opponent"
+            objectName: "findOpponentButton"
+            text: seekScreen.pendingAction === "seek"
+                ? "Finding an opponent…"
+                : "Find an opponent"
             highlighted: true
             visible: !seekScreen.waiting
-            onClicked: seekScreen.backendSender({
-                type: "CreateSeek",
-                minutes: parseInt(minutesField.text),
-                increment: parseInt(incrementField.text),
-                rated: seekScreen.rated,
-                color: seekScreen.selectedColor
-            })
+            enabled: seekScreen.pendingAction.length === 0
+            onClicked: seekScreen.submitSeek()
         }
 
         SectionCard {
@@ -145,31 +271,34 @@ Rectangle {
             compact: true
             title: "Challenge a player"
             visible: !seekScreen.waiting
-            AppTextField { id: usernameField; font.pixelSize: theme.fontLarge; placeholderText: "opponent username"; width: parent.width }
-            AppButton {
+            AppTextField {
+                id: usernameField
+                objectName: "usernameField"
+                font.pixelSize: theme.fontLarge
+                placeholderText: "opponent username"
                 width: parent.width
-                text: "Challenge"
-                onClicked: seekScreen.backendSender({
-                    type: "CreateChallenge",
-                    username: usernameField.text,
-                    minutes: parseInt(minutesField.text),
-                    increment: parseInt(incrementField.text),
-                    rated: seekScreen.rated,
-                    color: seekScreen.selectedColor
-                })
+                onTextChanged: seekScreen.formError = ""
+            }
+            AppButton {
+                objectName: "challengePlayerButton"
+                width: parent.width
+                text: seekScreen.pendingAction === "challenge"
+                    ? "Sending challenge…"
+                    : "Challenge"
+                enabled: seekScreen.pendingAction.length === 0
+                onClicked: seekScreen.submitChallenge()
             }
         }
 
         AppButton {
+            objectName: "openChallengeButton"
             width: parent.width
-            text: "Create a shareable challenge"
+            text: seekScreen.pendingAction === "open"
+                ? "Creating link…"
+                : "Create a shareable challenge"
             visible: !seekScreen.waiting && seekScreen.openChallengeUrls === null
-            onClicked: seekScreen.backendSender({
-                type: "CreateOpenChallenge",
-                minutes: parseInt(minutesField.text),
-                increment: parseInt(incrementField.text),
-                rated: seekScreen.rated
-            })
+            enabled: seekScreen.pendingAction.length === 0
+            onClicked: seekScreen.submitOpenChallenge()
         }
 
         Column {
@@ -216,22 +345,29 @@ Rectangle {
                 width: parent.width
                 spacing: theme.spacingSmall
                 Text { text: "Computer level (1-8)"; font.pixelSize: theme.fontBody; width: parent.width - aiLevelField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
-                AppTextField { id: aiLevelField; text: "3"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
+                AppTextField {
+                    id: aiLevelField
+                    objectName: "aiLevelField"
+                    text: "3"
+                    font.pixelSize: theme.fontLarge
+                    width: theme.textFieldWidthNarrow
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    onTextChanged: seekScreen.formError = ""
+                }
             }
             AppButton {
+                objectName: "computerGameButton"
                 width: parent.width
-                text: "Start computer game"
+                text: seekScreen.pendingAction === "computer"
+                    ? "Starting game…"
+                    : "Start computer game"
+                enabled: seekScreen.pendingAction.length === 0
                 // Starts immediately -- no accept/decline step, so unlike the
                 // seek/challenge buttons above there's no "waiting" state to enter;
                 // the game arrives the same way any other game does, via the
                 // account event stream's gameStart, and main.qml's router switches
                 // to BoardScreen on the first BoardState like normal.
-                onClicked: seekScreen.backendSender({
-                    type: "ChallengeAi",
-                    level: parseInt(aiLevelField.text),
-                    minutes: parseInt(minutesField.text),
-                    increment: parseInt(incrementField.text)
-                })
+                onClicked: seekScreen.submitComputerGame()
             }
         }
 
@@ -249,6 +385,7 @@ Rectangle {
             onClicked: {
                 seekScreen.backendSender({type: "CancelSeek"})
                 seekScreen.waiting = false
+                seekScreen.pendingAction = ""
             }
         }
         }
@@ -260,13 +397,22 @@ Rectangle {
         // stream once an opponent is found -- these two just confirm the
         // seek/challenge's long-poll connection is now held open server-side.
         if (msg.type === "SeekCreated") {
+            seekScreen.pendingAction = ""
+            seekScreen.formError = ""
             seekScreen.waiting = true
             seekScreen.waitingLabel = "Waiting for an opponent..."
         } else if (msg.type === "ChallengeCreated") {
+            seekScreen.pendingAction = ""
+            seekScreen.formError = ""
             seekScreen.waiting = true
             seekScreen.waitingLabel = "Challenge sent, waiting for a reply..."
         } else if (msg.type === "OpenChallengeCreated") {
+            seekScreen.pendingAction = ""
+            seekScreen.formError = ""
             seekScreen.openChallengeUrls = {url: msg.url, url_white: msg.url_white, url_black: msg.url_black}
+        } else if (msg.type === "ErrorMsg") {
+            seekScreen.pendingAction = ""
+            seekScreen.formError = msg.message || "Lichess could not create that game."
         }
     }
 }

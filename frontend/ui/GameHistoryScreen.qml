@@ -180,6 +180,7 @@ Rectangle {
                 border.width: 1
                 border.color: theme.cardBorder
                 radius: theme.cardRadius
+                clip: true
 
                 Rectangle {
                     anchors.left: parent.left

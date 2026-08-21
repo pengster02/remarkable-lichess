@@ -6,6 +6,7 @@
         <file>ui/AppDialog.qml</file>
         <file>ui/AppPageHeader.qml</file>
         <file>ui/MenuRow.qml</file>
+        <file>ui/SegmentedControl.qml</file>
         <file>ui/BoardToolButton.qml</file>
         <file>ui/ConfirmAction.qml</file>
         <file>ui/EinkRefreshArea.qml</file>

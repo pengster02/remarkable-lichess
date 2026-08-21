@@ -29,6 +29,7 @@ Item {
                 visible: pageHeader.pieceSource.length > 0
                 width: visible ? 118 : 0
                 height: visible ? 118 : 0
+                radius: theme.cardRadius
                 color: theme.sectionRail
 
                 Image {

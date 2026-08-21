@@ -13,7 +13,7 @@ Rectangle {
     readonly property bool hasMove: moveData !== null && moveData !== undefined
     readonly property bool isCurrent: hasMove && moveData.fenIndex === currentIndex
 
-    radius: theme.cardRadius
+    radius: theme.compactControlRadius
     color: moveCellMouse.pressed
         ? theme.text
         : (isCurrent ? theme.accentBackground : "transparent")

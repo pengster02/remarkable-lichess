@@ -19,8 +19,13 @@ QtObject {
     readonly property color cardTitleText: darkMode ? "#f6f1e6" : "#27231d"
     readonly property color divider: darkMode ? "#777064" : "#9b9282"
     readonly property color sectionRail: darkMode ? "#7394a6" : "#5c4d3a"
-    readonly property int cardRadius: 2
-    readonly property int controlRadius: 4
+    // Rounded rectangles preserve a hardware-control feel; full pills made long
+    // chess actions toy-like, while the previous 2–4 px corners looked unfinished.
+    readonly property int cardRadius: 22
+    readonly property int controlRadius: 18
+    readonly property int compactControlRadius: 16
+    readonly property int dialogRadius: 28
+    readonly property int pillRadius: 48
     readonly property int sectionRailWidth: 9
 
     readonly property color buttonBackground: darkMode ? "#46433b" : "#f8f4e9"
