@@ -34,6 +34,10 @@ Rectangle {
     // with a visible reason instead of silently doing nothing.
     property string errorMessage: ""
     property bool loading: true
+    property bool showFilters: false
+    property string draftRated: "all"
+    property string draftSpeed: "all"
+    property string draftColor: "all"
 
     onBackendSenderChanged: {
         if (gameHistoryScreen.backendSender) gameHistoryScreen.requestFiltered()
@@ -48,6 +52,34 @@ Rectangle {
             speed: gameHistoryScreen.filterSpeed === "all" ? null : gameHistoryScreen.filterSpeed,
             color: gameHistoryScreen.filterColor === "all" ? null : gameHistoryScreen.filterColor
         })
+    }
+
+    function capitalized(value) {
+        return value.charAt(0).toUpperCase() + value.slice(1)
+    }
+
+    function filterSummary() {
+        var gameType = filterRated === "all" ? "All games" : capitalized(filterRated)
+        var speed = filterSpeed === "all" ? "All speeds" : capitalized(filterSpeed)
+        var side = filterColor === "all" ? "Both sides" : "Played " + capitalized(filterColor)
+        return gameType + " · " + speed + " · " + side
+    }
+
+    function openFilters() {
+        draftRated = filterRated
+        draftSpeed = filterSpeed
+        draftColor = filterColor
+        showFilters = true
+    }
+
+    function applyFilters() {
+        var changed = filterRated !== draftRated ||
+            filterSpeed !== draftSpeed || filterColor !== draftColor
+        filterRated = draftRated
+        filterSpeed = draftSpeed
+        filterColor = draftColor
+        showFilters = false
+        if (changed) requestFiltered()
     }
 
     function resultColor(result) {
@@ -75,68 +107,15 @@ Rectangle {
                 : (gameHistoryScreen.games.length + " recent games")
         }
 
-        SectionCard {
+        // Drafting in a dialog avoids a network request on every tap; instant
+        // filters chatter, while a separate filter screen loses archive context.
+        MenuRow {
             width: parent.width
             darkMode: gameHistoryScreen.darkMode
-            compact: true
             title: "Filters"
-
-            Text { text: "Game type"; font.pixelSize: theme.fontEyebrow; font.bold: true; color: theme.textMuted }
-            Flow {
-                width: parent.width
-                spacing: theme.spacingXs
-                Repeater {
-                    model: ["all", "rated", "casual"]
-                    AppButton {
-                        required property string modelData
-                        compact: true
-                        text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                        highlighted: gameHistoryScreen.filterRated === modelData
-                        onClicked: {
-                            gameHistoryScreen.filterRated = modelData
-                            gameHistoryScreen.requestFiltered()
-                        }
-                    }
-                }
-            }
-
-            Text { text: "Speed"; font.pixelSize: theme.fontEyebrow; font.bold: true; color: theme.textMuted }
-            Flow {
-                width: parent.width
-                spacing: theme.spacingXs
-                Repeater {
-                    model: ["all", "bullet", "blitz", "rapid", "classical", "correspondence"]
-                    AppButton {
-                        required property string modelData
-                        compact: true
-                        text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                        highlighted: gameHistoryScreen.filterSpeed === modelData
-                        onClicked: {
-                            gameHistoryScreen.filterSpeed = modelData
-                            gameHistoryScreen.requestFiltered()
-                        }
-                    }
-                }
-            }
-
-            Text { text: "Side"; font.pixelSize: theme.fontEyebrow; font.bold: true; color: theme.textMuted }
-            Flow {
-                width: parent.width
-                spacing: theme.spacingXs
-                Repeater {
-                    model: ["all", "white", "black"]
-                    AppButton {
-                        required property string modelData
-                        compact: true
-                        text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                        highlighted: gameHistoryScreen.filterColor === modelData
-                        onClicked: {
-                            gameHistoryScreen.filterColor = modelData
-                            gameHistoryScreen.requestFiltered()
-                        }
-                    }
-                }
-            }
+            subtitle: gameHistoryScreen.filterSummary()
+            marker: "Change"
+            onClicked: gameHistoryScreen.openFilters()
         }
 
         Text {
@@ -291,6 +270,76 @@ Rectangle {
                 }
                 }
             }
+        }
+    }
+
+    AppDialog {
+        anchors.fill: parent
+        visible: gameHistoryScreen.showFilters
+        darkMode: gameHistoryScreen.darkMode
+        title: "Filter games"
+        onDismissed: gameHistoryScreen.showFilters = false
+
+        Text { text: "Game type"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
+        Flow {
+            width: parent.width
+            spacing: theme.spacingXs
+            Repeater {
+                model: ["all", "rated", "casual"]
+                AppButton {
+                    required property string modelData
+                    text: gameHistoryScreen.capitalized(modelData)
+                    highlighted: gameHistoryScreen.draftRated === modelData
+                    onClicked: gameHistoryScreen.draftRated = modelData
+                }
+            }
+        }
+
+        Text { text: "Speed"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
+        Flow {
+            width: parent.width
+            spacing: theme.spacingXs
+            Repeater {
+                model: ["all", "bullet", "blitz", "rapid", "classical", "correspondence"]
+                AppButton {
+                    required property string modelData
+                    text: gameHistoryScreen.capitalized(modelData)
+                    highlighted: gameHistoryScreen.draftSpeed === modelData
+                    onClicked: gameHistoryScreen.draftSpeed = modelData
+                }
+            }
+        }
+
+        Text { text: "Side"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
+        Flow {
+            width: parent.width
+            spacing: theme.spacingXs
+            Repeater {
+                model: ["all", "white", "black"]
+                AppButton {
+                    required property string modelData
+                    text: gameHistoryScreen.capitalized(modelData)
+                    highlighted: gameHistoryScreen.draftColor === modelData
+                    onClicked: gameHistoryScreen.draftColor = modelData
+                }
+            }
+        }
+
+        AppButton {
+            width: parent.width
+            text: "Reset filters"
+            onClicked: {
+                gameHistoryScreen.draftRated = "all"
+                gameHistoryScreen.draftSpeed = "all"
+                gameHistoryScreen.draftColor = "all"
+            }
+        }
+
+        AppButton {
+            width: parent.width
+            text: "Show games"
+            highlighted: true
+            onClicked: gameHistoryScreen.applyFilters()
         }
     }
 

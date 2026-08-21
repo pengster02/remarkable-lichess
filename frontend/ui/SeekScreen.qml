@@ -40,6 +40,8 @@ Rectangle {
     }
 
     EinkPagedFlickable {
+        id: seekPager
+        objectName: "seekFlickable"
         // Top-anchored (was `anchors.centerIn: parent`) for the same
         // cross-page-alignment reason as SettingsScreen, and for a more
         // concrete reason specific to this screen: centered content this
@@ -57,6 +59,9 @@ Rectangle {
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: seekColumn.height
+        pageStops: seekScreen.waiting
+            ? [0]
+            : [0, playerChallengeSection.y]
 
     Column {
         id: seekColumn
@@ -81,14 +86,14 @@ Rectangle {
             Row {
                 width: parent.width
                 spacing: theme.spacingSmall
-                Text { text: "Minutes"; font.pixelSize: theme.fontLarge; width: parent.width - minutesField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                Text { text: "Minutes"; font.pixelSize: theme.fontBody; width: parent.width - minutesField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
                 AppTextField { id: minutesField; text: "10"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
             }
 
             Row {
                 width: parent.width
                 spacing: theme.spacingSmall
-                Text { text: "Increment"; font.pixelSize: theme.fontLarge; width: parent.width - incrementField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                Text { text: "Increment"; font.pixelSize: theme.fontBody; width: parent.width - incrementField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
                 AppTextField { id: incrementField; text: "0"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
             }
         }
@@ -100,7 +105,7 @@ Rectangle {
             title: "Game preferences"
             visible: !seekScreen.waiting
 
-            Text { text: "Game type"; font.pixelSize: theme.fontLabel; font.bold: true; color: theme.text }
+            Text { text: "Game type"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
             Flow {
                 width: parent.width
                 spacing: theme.spacingXs
@@ -108,7 +113,7 @@ Rectangle {
                 AppButton { compact: true; text: "Rated"; highlighted: seekScreen.rated; onClicked: seekScreen.rated = true }
             }
 
-            Text { text: "Your color"; font.pixelSize: theme.fontLabel; font.bold: true; color: theme.text }
+            Text { text: "Your color"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
             Flow {
                 width: parent.width
                 spacing: theme.spacingXs
@@ -133,6 +138,8 @@ Rectangle {
         }
 
         SectionCard {
+            id: playerChallengeSection
+            objectName: "playerChallengeSection"
             width: parent.width
             darkMode: seekScreen.darkMode
             compact: true
@@ -198,6 +205,8 @@ Rectangle {
         }
 
         SectionCard {
+            id: computerSection
+            objectName: "computerSection"
             width: parent.width
             darkMode: seekScreen.darkMode
             compact: true
@@ -206,7 +215,7 @@ Rectangle {
             Row {
                 width: parent.width
                 spacing: theme.spacingSmall
-                Text { text: "Computer level (1-8)"; font.pixelSize: theme.fontLarge; width: parent.width - aiLevelField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                Text { text: "Computer level (1-8)"; font.pixelSize: theme.fontBody; width: parent.width - aiLevelField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
                 AppTextField { id: aiLevelField; text: "3"; font.pixelSize: theme.fontLarge; width: theme.textFieldWidthNarrow }
             }
             AppButton {

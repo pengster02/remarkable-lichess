@@ -95,6 +95,7 @@ Rectangle {
     property string cloudEvaluationPendingFen: ""
     property string cloudEvaluationErrorFen: ""
     property string cloudEvaluationError: ""
+    readonly property int coordinateGutter: 52
 
     function currentFen() {
         if (gameReviewScreen.exploreMode && gameReviewScreen.exploreFen.length > 0) {
@@ -525,14 +526,14 @@ Rectangle {
         anchors.right: parent.right
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
-        spacing: theme.spacingSmall
+        spacing: theme.spacingXs
 
         Row {
             spacing: theme.spacingSmall
             visible: gameReviewScreen.game !== null
             Text {
                 text: gameReviewScreen.game ? chessDisplay.resultLabel(gameReviewScreen.game.result) : ""
-                font.pixelSize: theme.fontBody
+                font.pixelSize: theme.fontLabel
                 font.bold: true
                 color: gameReviewScreen.game ? gameReviewScreen.resultColor(gameReviewScreen.game.result) : theme.text
             }
@@ -542,7 +543,7 @@ Rectangle {
                 text: gameReviewScreen.game && gameReviewScreen.game.rating_diff > 0
                     ? ("+" + gameReviewScreen.game.rating_diff)
                     : ("" + (gameReviewScreen.game ? gameReviewScreen.game.rating_diff : ""))
-                font.pixelSize: theme.fontBody
+                font.pixelSize: theme.fontLabel
                 color: gameReviewScreen.game && gameReviewScreen.game.rating_diff > 0 ? theme.winText : theme.lossText
             }
             Text {
@@ -550,7 +551,7 @@ Rectangle {
                     ? "vs " + (gameReviewScreen.game.opponent_name || "Opponent") +
                       (gameReviewScreen.game.opponent_rating ? " (" + gameReviewScreen.game.opponent_rating + ")" : "")
                     : ""
-                font.pixelSize: theme.fontBody
+                font.pixelSize: theme.fontLabel
                 color: theme.text
             }
         }
@@ -594,7 +595,7 @@ Rectangle {
                     ? gameReviewScreen.explorationHeader()
                     : "Move " + gameReviewScreen.currentIndex + " of " +
                       Math.max(0, gameReviewScreen.fens.length - 1)
-                font.pixelSize: theme.fontBody
+                font.pixelSize: theme.fontLabel
                 font.bold: gameReviewScreen.exploreMode
                 width: gameReviewScreen.exploreMode ? boardArea.width : implicitWidth
                 elide: Text.ElideRight
@@ -608,7 +609,7 @@ Rectangle {
             Text {
                 visible: !gameReviewScreen.exploreMode
                 text: gameReviewScreen.evalLabel(gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1))
-                font.pixelSize: theme.fontBody
+                font.pixelSize: theme.fontLabel
                 font.bold: true
                 color: theme.textMuted
             }
@@ -665,7 +666,7 @@ Rectangle {
                     model: 8
                     Text {
                         required property int index
-                        width: 64
+                        width: gameReviewScreen.coordinateGutter
                         height: grid.height / 8
                         verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
@@ -684,7 +685,10 @@ Rectangle {
                 id: grid
                 columns: 8
                 rows: 8
-                width: Math.min(gameReviewScreen.width - rankLabels.width - theme.spacingXs, gameReviewScreen.height * 0.38)
+                width: Math.min(
+                    boardArea.width - rankLabels.width - theme.spacingXs,
+                    gameReviewScreen.height * 0.42
+                )
                 height: width
 
                 Repeater {
@@ -753,7 +757,7 @@ Rectangle {
 
         Row {
             spacing: theme.spacingXs
-            Item { width: 64; height: 1 }
+            Item { width: gameReviewScreen.coordinateGutter; height: 1 }
             Row {
                 width: grid.width
                 Repeater {

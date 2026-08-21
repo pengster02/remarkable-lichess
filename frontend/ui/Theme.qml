@@ -85,6 +85,6 @@ QtObject {
     readonly property int boardDragThreshold: 12
 
     readonly property int playerBarHeight: 140
-    readonly property int fontClock: 64
+    readonly property int fontClock: 58
     readonly property int clockChipWidth: 240
 }

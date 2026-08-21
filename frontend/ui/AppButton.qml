@@ -7,12 +7,22 @@ QQC2.Button {
     id: control
     property bool darkMode: nearestDarkMode(parent)
     property bool critical: false
-    property bool compact: false
+    // Dialog-level density avoids duplicated call-site flags; separate dialog
+    // buttons would split one interaction system, while global compactness is too broad.
+    property bool compact: nearestDenseActions(parent)
     property int textAlignment: Text.AlignHCenter
 
     function nearestDarkMode(item) {
         while (item) {
             if (item.hasOwnProperty("darkMode")) return item.darkMode
+            item = item.parent
+        }
+        return false
+    }
+
+    function nearestDenseActions(item) {
+        while (item) {
+            if (item.hasOwnProperty("denseActions")) return item.denseActions
             item = item.parent
         }
         return false

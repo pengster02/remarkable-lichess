@@ -3,10 +3,8 @@ import QtQuick 2.5
 // One side's identity + clock, shown as a full-width bar directly above or
 // below the board -- the standard chess-client arrangement (lichess mobile,
 // chess.com): opponent bar above, your bar below, both swapping when the
-// board is flipped, active side's clock emphasized. Emphasis is a full
-// invert (dark chip, light digits) plus a bold name -- a redundant,
-// hue-independent cue, since color alone can't be trusted to survive this
-// panel's desaturation.
+// board is flipped, active side's clock emphasized. The colored rail is the
+// turn signal; the clock inversion remains legible when color is desaturated.
 Rectangle {
     id: playerBar
     property bool darkMode: false
@@ -16,7 +14,7 @@ Rectangle {
     property int clockMs: 0
     // Untimed/correspondence games have no clock to show at all.
     property bool showClock: true
-    // This side is to move -- inverts the clock chip and bolds the name.
+    // This side is to move -- marks the rail and inverts the clock chip.
     property bool active: false
     property bool opponent: false
     property bool lowTime: false
@@ -64,8 +62,8 @@ Rectangle {
             text: playerBar.playerName +
                   (playerBar.rating !== null ? " (" + playerBar.rating + ")" : "") +
                   (playerBar.materialAdvantage > 0 ? "  |  +" + playerBar.materialAdvantage : "")
-            font.pixelSize: theme.fontBody
-            font.bold: playerBar.opponent || playerBar.active
+            font.pixelSize: theme.fontLabel
+            font.bold: playerBar.opponent
             elide: Text.ElideRight
             color: theme.text
         }
@@ -142,7 +140,7 @@ Rectangle {
             anchors.centerIn: parent
             text: playerBar.formatClock(playerBar.clockMs)
             font.pixelSize: theme.fontClock
-            font.bold: playerBar.active || playerBar.lowTime
+            font.bold: playerBar.lowTime
             color: playerBar.active
                 ? theme.background
                 : (playerBar.lowTime ? theme.errorText : theme.text)

@@ -7,28 +7,39 @@ import QtQuick 2.5
 Item {
     id: pager
     default property alias contentData: contentHost.data
-    property alias contentHeight: viewport.contentHeight
+    property alias contentHeight: contentHost.height
     property alias contentY: viewport.contentY
     property bool darkMode: nearestDarkMode(parent)
+    property var pageStops: []
     // Outer height avoids a visible↔viewport loop; always reserving the bar wastes
     // space, while an imperative delayed check can leave the layout stale.
-    readonly property bool pagingNeeded: contentHeight > pager.height + 1
+    readonly property bool pagingNeeded: viewport.contentHeight > pager.height + 1
     readonly property bool continuousScrollingEnabled: viewport.interactive
     readonly property real pageHeight: viewport.height
     readonly property real pageStep: Math.max(1, viewport.height - theme.spacingSmall)
-    readonly property real maximumContentY: Math.max(0, contentHeight - viewport.height)
-    readonly property real visibleFraction: contentHeight > 0
-        ? Math.min(1, pageViewport.height / contentHeight)
+    readonly property real maximumContentY: Math.max(
+        0,
+        viewport.contentHeight - viewport.height
+    )
+    readonly property real visibleFraction: viewport.contentHeight > 0
+        ? Math.min(1, pageViewport.height / viewport.contentHeight)
         : 1
     readonly property real scrollProgress: maximumContentY > 0
         ? contentY / maximumContentY
         : 0
-    readonly property int currentPage: pageStep > 0
-        ? Math.floor(contentY / pageStep) + 1
-        : 1
-    readonly property int pageCount: pageStep > 0
-        ? Math.max(1, Math.ceil(Math.max(contentHeight - viewport.height, 0) / pageStep) + 1)
-        : 1
+    // Explicit section stops beat per-screen pagers or fragile child discovery:
+    // screens keep layout intent while this control retains one paging policy.
+    readonly property var effectivePageStops: normalizedPageStops()
+    readonly property bool usesPageStops: pageStops && pageStops.length > 0
+    readonly property real requestedLastStop: largestRequestedPageStop()
+    readonly property int currentPage: usesPageStops
+        ? pageIndexFor(contentY) + 1
+        : (pageStep > 0 ? Math.floor(contentY / pageStep) + 1 : 1)
+    readonly property int pageCount: usesPageStops
+        ? effectivePageStops.length
+        : (pageStep > 0
+            ? Math.max(1, Math.ceil(Math.max(contentHeight - viewport.height, 0) / pageStep) + 1)
+            : 1)
 
     function nearestDarkMode(item) {
         while (item) {
@@ -42,12 +53,62 @@ Item {
         viewport.contentY = Math.max(0, Math.min(pager.maximumContentY, y))
     }
 
+    function largestRequestedPageStop() {
+        var largest = 0
+        if (!pageStops) return largest
+        for (var i = 0; i < pageStops.length; ++i) {
+            var candidate = Number(pageStops[i])
+            if (!isNaN(candidate)) largest = Math.max(largest, candidate)
+        }
+        return largest
+    }
+
+    function normalizedPageStops() {
+        var stops = [0]
+        if (pageStops) {
+            for (var i = 0; i < pageStops.length; ++i) {
+                var candidate = Number(pageStops[i])
+                if (!isNaN(candidate))
+                    stops.push(Math.max(0, Math.min(maximumContentY, candidate)))
+            }
+        }
+        stops.sort(function(a, b) { return a - b })
+
+        var unique = []
+        for (var j = 0; j < stops.length; ++j) {
+            if (unique.length === 0 || Math.abs(stops[j] - unique[unique.length - 1]) > 1)
+                unique.push(stops[j])
+        }
+        return unique
+    }
+
+    function pageIndexFor(y) {
+        var stops = effectivePageStops
+        var index = 0
+        for (var i = 1; i < stops.length; ++i) {
+            if (stops[i] <= y + 1) index = i
+            else break
+        }
+        return index
+    }
+
     function pageUp() {
-        moveTo(viewport.contentY - pager.pageStep)
+        if (!usesPageStops) {
+            moveTo(viewport.contentY - pager.pageStep)
+            return
+        }
+        var index = pageIndexFor(viewport.contentY)
+        if (effectivePageStops[index] >= viewport.contentY - 1) index--
+        moveTo(effectivePageStops[Math.max(0, index)])
     }
 
     function pageDown() {
-        moveTo(viewport.contentY + pager.pageStep)
+        if (!usesPageStops) {
+            moveTo(viewport.contentY + pager.pageStep)
+            return
+        }
+        var index = pageIndexFor(viewport.contentY)
+        moveTo(effectivePageStops[Math.min(effectivePageStops.length - 1, index + 1)])
     }
 
     function reveal(y, itemHeight) {
@@ -86,6 +147,12 @@ Item {
             anchors.fill: parent
             z: 1
             contentWidth: width
+            contentHeight: Math.max(
+                contentHost.height,
+                pager.usesPageStops
+                    ? pager.requestedLastStop + height
+                    : contentHost.height
+            )
             interactive: false
             boundsBehavior: Flickable.StopAtBounds
             clip: true
@@ -93,7 +160,6 @@ Item {
             Item {
                 id: contentHost
                 width: viewport.width
-                height: viewport.contentHeight
             }
         }
     }
@@ -114,7 +180,9 @@ Item {
             compact: true
             width: Math.max(theme.touchTarget * 2, (pageBar.width - theme.spacingSmall * 2) / 3)
             height: parent.height
-            enabled: pager.contentY > 0
+            enabled: pager.usesPageStops
+                ? pager.currentPage > 1
+                : pager.contentY > 0
             text: "Prev"
             onClicked: pager.pageUp()
         }
@@ -135,7 +203,9 @@ Item {
             compact: true
             width: Math.max(theme.touchTarget * 2, (pageBar.width - theme.spacingSmall * 2) / 3)
             height: parent.height
-            enabled: pager.contentY < pager.maximumContentY
+            enabled: pager.usesPageStops
+                ? pager.currentPage < pager.pageCount
+                : pager.contentY < pager.maximumContentY
             text: "Next"
             onClicked: pager.pageDown()
         }

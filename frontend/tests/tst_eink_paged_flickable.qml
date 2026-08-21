@@ -14,8 +14,32 @@ TestCase {
         contentHeight: 1200
     }
 
+    EinkPagedFlickable {
+        id: logicalPager
+        width: 600
+        height: 400
+        visible: false
+        contentHeight: 1200
+        pageStops: [0, 275, 725]
+    }
+
     function init() {
         pager.moveTo(0)
+        logicalPager.moveTo(0)
+    }
+
+    function test_logicalPagesLandOnSectionStarts() {
+        logicalPager.pageDown()
+        compare(logicalPager.contentY, 275)
+        compare(logicalPager.currentPage, 2)
+        logicalPager.pageDown()
+        compare(logicalPager.contentY, 725)
+        compare(logicalPager.currentPage, 3)
+        compare(logicalPager.pageCount, 3)
+        logicalPager.pageDown()
+        compare(logicalPager.contentY, 725)
+        logicalPager.pageUp()
+        compare(logicalPager.contentY, 275)
     }
 
     function test_continuousScrollingIsDisabled() {

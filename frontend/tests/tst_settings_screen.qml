@@ -48,4 +48,18 @@ TestCase {
         verify(preview.width <= 400)
         compare(backButton.height, theme.touchTarget)
     }
+
+    function test_nextPageBeginsAtDisplaySection() {
+        var pager = findChild(settings, "settingsFlickable")
+        var display = findChild(settings, "displaySection")
+        var gameplay = findChild(settings, "gameplaySection")
+        verify(pager !== null)
+        verify(display !== null)
+        verify(gameplay !== null)
+        pager.moveTo(0)
+        pager.pageDown()
+        fuzzyCompare(pager.contentY, display.y, 1)
+        pager.pageDown()
+        fuzzyCompare(pager.contentY, gameplay.y, 1)
+    }
 }

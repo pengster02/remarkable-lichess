@@ -32,7 +32,7 @@ Rectangle {
         id: copyColumn
         anchors.left: parent.left
         anchors.leftMargin: theme.spacingSmall + theme.sectionRailWidth
-        anchors.right: markerText.left
+        anchors.right: markerText.visible ? markerText.left : parent.right
         anchors.rightMargin: theme.spacingSmall
         anchors.verticalCenter: parent.verticalCenter
         spacing: theme.spacingXs / 2
@@ -62,6 +62,7 @@ Rectangle {
 
     Text {
         id: markerText
+        visible: menuRow.marker.length > 0
         anchors.right: parent.right
         anchors.rightMargin: theme.spacingSmall
         anchors.verticalCenter: parent.verticalCenter

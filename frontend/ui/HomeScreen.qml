@@ -255,7 +255,6 @@ Rectangle {
                     darkMode: homeScreen.darkMode
                     title: "New game"
                     subtitle: "Find a match or challenge a player"
-                    marker: "Play"
                     highlighted: true
                     onClicked: homeScreen.navigateTo("SeekScreen.qml")
                 }
@@ -265,7 +264,6 @@ Rectangle {
                     darkMode: homeScreen.darkMode
                     title: "Game history"
                     subtitle: "Replay finished games"
-                    marker: "Archive"
                     onClicked: homeScreen.navigateTo("GameHistoryScreen.qml")
                 }
 
@@ -274,7 +272,6 @@ Rectangle {
                     darkMode: homeScreen.darkMode
                     title: "Settings"
                     subtitle: "Board, display, and gameplay"
-                    marker: "Tune"
                     onClicked: homeScreen.navigateTo("SettingsScreen.qml")
                 }
 

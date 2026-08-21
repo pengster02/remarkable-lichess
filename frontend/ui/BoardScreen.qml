@@ -405,6 +405,7 @@ Rectangle {
     }
 
     function topStatusText() {
+        if (boardScreen.gameOver && boardScreen.showGameOverDialog) return ""
         if (boardScreen.statusText.length > 0) return boardScreen.statusText
         if (boardScreen.gameOver) return "Game over"
         if (boardScreen.viewingHistory) {
@@ -1462,7 +1463,7 @@ Rectangle {
                     text: boardScreen.statusText
                     wrapMode: Text.WordWrap
                     horizontalAlignment: Text.AlignHCenter
-                    font.pixelSize: theme.fontLarge
+                    font.pixelSize: theme.fontBody
                     font.bold: true
                     color: theme.text
                 }
@@ -1640,9 +1641,9 @@ Rectangle {
             boardScreen.pendingPremove = null
             boardScreen.resetGameActionControls()
             boardScreen.pendingGameAction = ""
-            boardScreen.statusText = "Game over: " + outcome
+            boardScreen.statusText = outcome
             if (msg.reason && msg.reason.length > 0 && msg.reason !== outcome) {
-                boardScreen.statusText += " (" + msg.reason + ")"
+                boardScreen.statusText += " · " + msg.reason
             }
             if (boardScreen.pendingRatingDiffText.length > 0) {
                 boardScreen.statusText += boardScreen.pendingRatingDiffText
@@ -1650,8 +1651,9 @@ Rectangle {
             }
             boardScreen.showGameOverDialog = true
         } else if (msg.type === "RatingDiff") {
-            var diffText = "  (" + (msg.rating_diff > 0 ? "+" : "") + msg.rating_diff + ")"
-            if (boardScreen.statusText.indexOf("Game over") === 0) {
+            var diffText = " · " + (msg.rating_diff > 0 ? "+" : "") +
+                msg.rating_diff + " rating"
+            if (boardScreen.gameOver) {
                 boardScreen.statusText += diffText
             } else {
                 boardScreen.pendingRatingDiffText = diffText

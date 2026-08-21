@@ -104,7 +104,7 @@ TestCase {
         compare(topPlayerBar.opponent, true)
         compare(bottomPlayerBar.opponent, false)
         compare(topName.font.bold, true)
-        compare(bottomName.font.bold, true)
+        compare(bottomName.font.bold, false)
         board.turn = "black"
         compare(topName.font.bold, true)
         compare(bottomName.font.bold, false)
@@ -327,9 +327,13 @@ TestCase {
             result: "black",
             reason: "Time forfeit"
         })
-        compare(board.statusText, "Game over: You lost (Time forfeit)")
+        compare(board.statusText, "You lost · Time forfeit")
         compare(board.gameReason, "Time forfeit")
         compare(board.showGameOverDialog, true)
+        compare(board.topStatusText(), "")
+        board.showGameOverDialog = false
+        compare(board.topStatusText(), "You lost · Time forfeit")
+        board.showGameOverDialog = true
         verify(findChild(board, "gameOverLoader").item !== null)
     }
 }

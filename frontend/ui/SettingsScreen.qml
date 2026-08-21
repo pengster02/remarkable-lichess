@@ -60,6 +60,7 @@ Rectangle {
     }
 
     EinkPagedFlickable {
+        id: settingsPager
         objectName: "settingsFlickable"
         // Top-anchored like every other screen now (was `anchors.centerIn:
         // parent`) -- centering made this screen's title/cards start at a
@@ -77,6 +78,7 @@ Rectangle {
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: settingsColumn.height
+        pageStops: [0, displaySection.y, gameplaySection.y]
 
         Column {
             id: settingsColumn
@@ -93,6 +95,8 @@ Rectangle {
             }
 
             SectionCard {
+                id: appearanceSection
+                objectName: "appearanceSection"
                 darkMode: settingsScreen.darkMode
                 compact: true
                 title: "Appearance"
@@ -189,6 +193,16 @@ Rectangle {
                     }
                 }
 
+            }
+
+            SectionCard {
+                id: displaySection
+                objectName: "displaySection"
+                darkMode: settingsScreen.darkMode
+                compact: true
+                title: "Board display"
+                width: parent.width
+
                 SettingsToggle {
                     objectName: "minimalHighlightsSetting"
                     width: parent.width
@@ -227,6 +241,8 @@ Rectangle {
             }
 
             SectionCard {
+                id: gameplaySection
+                objectName: "gameplaySection"
                 darkMode: settingsScreen.darkMode
                 compact: true
                 title: "Gameplay"
@@ -279,6 +295,7 @@ Rectangle {
             }
 
             SectionCard {
+                id: accountSection
                 darkMode: settingsScreen.darkMode
                 compact: true
                 title: "Account"
@@ -298,6 +315,7 @@ Rectangle {
                     }
                 }
             }
+
         }
     }
 

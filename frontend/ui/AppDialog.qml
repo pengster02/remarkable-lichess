@@ -6,6 +6,7 @@ Item {
     property string title: ""
     property bool dismissOnBackground: true
     property int maximumWidth: 840
+    property bool denseActions: true
     default property alias content: dialogContent.data
     signal dismissed()
 
