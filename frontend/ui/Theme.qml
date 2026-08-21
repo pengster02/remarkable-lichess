@@ -8,21 +8,27 @@ QtObject {
     id: theme
     property bool darkMode: false
 
-    readonly property color background: darkMode ? "#302f2b" : "#f2f0e9"
-    readonly property color text: darkMode ? "#f5f0e5" : "#191817"
-    readonly property color textMuted: darkMode ? "#cfc8ba" : "#403d36"
+    // Slate annotation keeps states distinct; pure monochrome hid selection,
+    // while a green-led palette fought the warm paper and brown board.
+    readonly property color background: darkMode ? "#282724" : "#f4f1e8"
+    readonly property color text: darkMode ? "#f6f1e6" : "#1f1d19"
+    readonly property color textMuted: darkMode ? "#c8c1b4" : "#5c564a"
 
-    readonly property color cardBackground: darkMode ? "#47443c" : "#e9e5d8"
-    readonly property color cardBorder: darkMode ? "#9b9384" : "#6f6a5c"
-    readonly property color cardTitleText: darkMode ? "#f5f0e5" : "#22201c"
-    readonly property int cardRadius: 6
+    readonly property color cardBackground: darkMode ? "#37352f" : "#ebe6d8"
+    readonly property color cardBorder: darkMode ? "#8f887a" : "#7d7463"
+    readonly property color cardTitleText: darkMode ? "#f6f1e6" : "#27231d"
+    readonly property color divider: darkMode ? "#777064" : "#9b9282"
+    readonly property color sectionRail: darkMode ? "#7394a6" : "#5c4d3a"
+    readonly property int cardRadius: 2
+    readonly property int controlRadius: 4
+    readonly property int sectionRailWidth: 9
 
-    readonly property color buttonBackground: darkMode ? "#5b564b" : "#dcd6c4"
-    readonly property color buttonBorder: darkMode ? "#a79e8d" : "#8a7f6a"
-    readonly property color accentBackground: darkMode ? "#527b9d" : "#396b92"
-    readonly property color accentText: "#f2ede0"
-    readonly property color criticalBackground: "#74312d"
-    readonly property color criticalText: "#fff8ec"
+    readonly property color buttonBackground: darkMode ? "#46433b" : "#f8f4e9"
+    readonly property color buttonBorder: darkMode ? "#aaa191" : "#857b69"
+    readonly property color accentBackground: darkMode ? "#648ba0" : "#315f7c"
+    readonly property color accentText: "#fffaf0"
+    readonly property color criticalBackground: "#83382e"
+    readonly property color criticalText: "#fffaf0"
 
     readonly property color errorText: darkMode ? "#f08076" : "#a03030"
     readonly property color winText: darkMode ? "#7dcc82" : "#2e7d32"
@@ -45,6 +51,7 @@ QtObject {
     readonly property int spacingMedium: 46
     readonly property int spacingLarge: 66
 
+    readonly property int fontEyebrow: 26
     readonly property int fontSmall: 30
     readonly property int fontLabel: 34
     readonly property int fontBody: 38
@@ -60,7 +67,7 @@ QtObject {
     readonly property int fontButton: 44
     readonly property int buttonPaddingV: 24
     readonly property int buttonPaddingH: 36
-    readonly property int buttonMinHeight: 144
+    readonly property int buttonMinHeight: 128
 
     readonly property int pageSideMargin: spacingMedium
     // Gap below the persistent top bar, which every screen is anchored under.

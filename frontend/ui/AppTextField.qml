@@ -26,10 +26,10 @@ QQC2.TextField {
     rightPadding: theme.spacingSmall
 
     background: Rectangle {
-        radius: theme.cardRadius
-        border.width: 1
+        radius: theme.controlRadius
+        border.width: control.activeFocus ? 3 : 2
         border.color: control.activeFocus ? theme.accentBackground : theme.buttonBorder
-        color: theme.cardBackground
+        color: theme.buttonBackground
     }
 
     cursorDelegate: Rectangle {

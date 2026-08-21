@@ -494,9 +494,15 @@ Rectangle {
         anchors.right: parent.right
         height: theme.topBarHeight
         z: 1000
-        color: theme.cardBackground
-        border.width: 1
-        border.color: theme.cardBorder
+        color: theme.background
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 2
+            color: theme.divider
+        }
 
         // Filled dot = online, hollow ring = offline/connecting -- a solid-vs-open
         // shape reads at a glance on e-ink even where the text color barely shifts.
@@ -505,7 +511,7 @@ Rectangle {
             anchors.left: parent.left
             anchors.leftMargin: theme.pageSideMargin
             anchors.verticalCenter: parent.verticalCenter
-            width: theme.fontLabel * 0.55
+            width: theme.fontLabel * 0.48
             height: width
             radius: width / 2
             color: root.online ? theme.text : "transparent"

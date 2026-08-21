@@ -84,11 +84,12 @@ Rectangle {
             width: parent.width
             spacing: theme.spacingSmall
 
-            Text {
-                text: "Settings"
-                font.pixelSize: theme.fontTitle
-                font.bold: true
-                color: theme.text
+            AppPageHeader {
+                width: parent.width
+                darkMode: settingsScreen.darkMode
+                eyebrow: "Preferences"
+                title: "Settings"
+                detail: "Board, display, and gameplay"
             }
 
             SectionCard {

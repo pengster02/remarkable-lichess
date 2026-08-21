@@ -8,6 +8,7 @@ QQC2.Button {
     property bool darkMode: nearestDarkMode(parent)
     property bool critical: false
     property bool compact: false
+    property int textAlignment: Text.AlignHCenter
 
     function nearestDarkMode(item) {
         while (item) {
@@ -18,7 +19,8 @@ QQC2.Button {
     }
 
     Theme { id: theme; darkMode: control.darkMode }
-    font.pixelSize: control.compact ? theme.fontBody : theme.fontButton
+    font.pixelSize: control.compact ? theme.fontLabel : theme.fontButton
+    font.bold: control.highlighted || control.critical
     topPadding: control.compact ? theme.spacingXs : theme.buttonPaddingV
     bottomPadding: control.compact ? theme.spacingXs : theme.buttonPaddingV
     leftPadding: control.compact ? theme.spacingSmall : theme.buttonPaddingH
@@ -36,8 +38,8 @@ QQC2.Button {
     width: Math.max(control.naturalWidth, theme.touchTarget * 2)
 
     background: Rectangle {
-        radius: theme.cardRadius
-        border.width: control.highlighted || control.critical ? 3 : 1
+        radius: theme.controlRadius
+        border.width: control.highlighted || control.critical ? 3 : 2
         border.color: !control.enabled
             ? theme.cardBorder
             : (control.critical
@@ -64,8 +66,9 @@ QQC2.Button {
             : (control.critical
                 ? theme.criticalText
                 : (control.highlighted ? theme.accentText : theme.text)))
-        horizontalAlignment: Text.AlignHCenter
+        horizontalAlignment: control.textAlignment
         verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
     }
 
     EinkRefreshArea {

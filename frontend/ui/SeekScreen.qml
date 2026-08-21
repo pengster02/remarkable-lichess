@@ -61,13 +61,21 @@ Rectangle {
     Column {
         id: seekColumn
         width: parent.width
-        spacing: theme.spacingLarge
+        spacing: theme.spacingMedium
 
-        Text { text: "New rapid game"; font.pixelSize: theme.fontHeading; color: theme.text }
-
-        Column {
+        AppPageHeader {
             width: parent.width
-            spacing: theme.spacingSmall
+            darkMode: seekScreen.darkMode
+            eyebrow: "Play"
+            title: "New game"
+            detail: "Rapid chess on your terms"
+        }
+
+        SectionCard {
+            width: parent.width
+            darkMode: seekScreen.darkMode
+            compact: true
+            title: "Time control"
             visible: !seekScreen.waiting
 
             Row {
@@ -85,33 +93,34 @@ Rectangle {
             }
         }
 
-        // Casual/Rated as a highlighted toggle pair, same pattern as the
-        // Color selector below -- the previous QtQuick Controls CheckBox was
-        // the one control on this screen still using the un-themed Basic
-        // style: a desktop-sized indicator well under this panel's touch
-        // floor, with built-in check animations to boot.
-        Flow {
+        SectionCard {
             width: parent.width
-            spacing: theme.spacingSmall
+            darkMode: seekScreen.darkMode
+            compact: true
+            title: "Game preferences"
             visible: !seekScreen.waiting
-            Text { text: "Game:"; font.pixelSize: theme.fontLarge; color: theme.text }
-            AppButton { text: "Casual"; highlighted: !seekScreen.rated; onClicked: seekScreen.rated = false }
-            AppButton { text: "Rated"; highlighted: seekScreen.rated; onClicked: seekScreen.rated = true }
-        }
 
-        Flow {
-            width: parent.width
-            spacing: theme.spacingSmall
-            visible: !seekScreen.waiting
-            Text { text: "Color:"; font.pixelSize: theme.fontLarge; color: theme.text }
-            AppButton { text: "White"; highlighted: seekScreen.selectedColor === "white"; onClicked: seekScreen.selectedColor = "white" }
-            AppButton { text: "Black"; highlighted: seekScreen.selectedColor === "black"; onClicked: seekScreen.selectedColor = "black" }
-            AppButton { text: "Random"; highlighted: seekScreen.selectedColor === "random"; onClicked: seekScreen.selectedColor = "random" }
+            Text { text: "Game type"; font.pixelSize: theme.fontLabel; font.bold: true; color: theme.text }
+            Flow {
+                width: parent.width
+                spacing: theme.spacingXs
+                AppButton { compact: true; text: "Casual"; highlighted: !seekScreen.rated; onClicked: seekScreen.rated = false }
+                AppButton { compact: true; text: "Rated"; highlighted: seekScreen.rated; onClicked: seekScreen.rated = true }
+            }
+
+            Text { text: "Your color"; font.pixelSize: theme.fontLabel; font.bold: true; color: theme.text }
+            Flow {
+                width: parent.width
+                spacing: theme.spacingXs
+                AppButton { compact: true; text: "White"; highlighted: seekScreen.selectedColor === "white"; onClicked: seekScreen.selectedColor = "white" }
+                AppButton { compact: true; text: "Black"; highlighted: seekScreen.selectedColor === "black"; onClicked: seekScreen.selectedColor = "black" }
+                AppButton { compact: true; text: "Random"; highlighted: seekScreen.selectedColor === "random"; onClicked: seekScreen.selectedColor = "random" }
+            }
         }
 
         AppButton {
             width: parent.width
-            text: "Open seek (auto-pair)"
+            text: "Find an opponent"
             highlighted: true
             visible: !seekScreen.waiting
             onClicked: seekScreen.backendSender({
@@ -123,9 +132,11 @@ Rectangle {
             })
         }
 
-        Column {
+        SectionCard {
             width: parent.width
-            spacing: theme.spacingSmall
+            darkMode: seekScreen.darkMode
+            compact: true
+            title: "Challenge a player"
             visible: !seekScreen.waiting
             AppTextField { id: usernameField; font.pixelSize: theme.fontLarge; placeholderText: "opponent username"; width: parent.width }
             AppButton {
@@ -144,7 +155,7 @@ Rectangle {
 
         AppButton {
             width: parent.width
-            text: "Create open challenge link"
+            text: "Create a shareable challenge"
             visible: !seekScreen.waiting && seekScreen.openChallengeUrls === null
             onClicked: seekScreen.backendSender({
                 type: "CreateOpenChallenge",
@@ -160,7 +171,7 @@ Rectangle {
             spacing: theme.spacingSmall
 
             Text {
-                text: "Share one of these links -- whoever opens it starts the game:"
+                text: "Share one of these links — whoever opens it starts the game:"
                 font.pixelSize: theme.fontLabel
                 wrapMode: Text.WordWrap
                 width: parent.width
@@ -186,9 +197,11 @@ Rectangle {
             }
         }
 
-        Column {
+        SectionCard {
             width: parent.width
-            spacing: theme.spacingSmall
+            darkMode: seekScreen.darkMode
+            compact: true
+            title: "Play the computer"
             visible: !seekScreen.waiting
             Row {
                 width: parent.width
@@ -198,7 +211,7 @@ Rectangle {
             }
             AppButton {
                 width: parent.width
-                text: "Play vs Computer"
+                text: "Start computer game"
                 // Starts immediately -- no accept/decline step, so unlike the
                 // seek/challenge buttons above there's no "waiting" state to enter;
                 // the game arrives the same way any other game does, via the

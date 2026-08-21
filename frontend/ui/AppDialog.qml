@@ -35,6 +35,14 @@ Item {
         border.color: theme.text
         radius: theme.cardRadius
 
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: theme.sectionRailWidth
+            color: theme.accentBackground
+        }
+
         MouseArea {
             anchors.fill: parent
         }
@@ -56,7 +64,7 @@ Item {
                     visible: text.length > 0
                     font.pixelSize: theme.fontLarge
                     font.bold: true
-                    horizontalAlignment: Text.AlignHCenter
+                    horizontalAlignment: Text.AlignLeft
                     color: theme.text
                 }
             }

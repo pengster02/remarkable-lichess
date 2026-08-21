@@ -35,7 +35,6 @@ Rectangle {
     property string connectionMessage: ""
     property string loadError: ""
     property string challengesError: ""
-    property string actionError: ""
 
     onBackendSenderChanged: {
         if (homeScreen.backendSender) homeScreen.refresh()
@@ -46,7 +45,6 @@ Rectangle {
         homeScreen.connectivityKnown = false
         homeScreen.loadError = ""
         homeScreen.challengesError = ""
-        homeScreen.actionError = ""
         homeScreen.backendSender({type: "RequestHome"})
         homeScreen.backendSender({type: "RequestChallenges"})
     }
@@ -80,35 +78,13 @@ Rectangle {
             width: parent.width
             spacing: theme.spacingMedium
 
-            Column {
+            AppPageHeader {
                 width: parent.width
-                spacing: theme.spacingSmall
-                Image {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    source: "../assets/pieces/cburnett/wN.png"
-                    width: 150
-                    height: 150
-                    fillMode: Image.PreserveAspectFit
-                    smooth: false
-                    sourceSize.width: width
-                    sourceSize.height: height
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "Lichess"
-                    font.pixelSize: theme.fontDisplay
-                    font.bold: true
-                    color: theme.text
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    visible: homeScreen.username.length > 0
-                    text: homeScreen.username
-                    font.pixelSize: theme.fontBody
-                    color: theme.textMuted
-                }
-                // Connection status now lives in the persistent top bar (main.qml),
-                // so it's no longer repeated here.
+                darkMode: homeScreen.darkMode
+                eyebrow: "Your board"
+                title: "Lichess"
+                detail: homeScreen.username
+                pieceSource: "../assets/pieces/cburnett/wN.png"
             }
 
             Text {
@@ -160,25 +136,6 @@ Rectangle {
 
             SectionCard {
                 darkMode: homeScreen.darkMode
-                title: "Action failed"
-                visible: homeScreen.actionError.length > 0
-
-                Text {
-                    width: parent.width
-                    text: homeScreen.actionError
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: theme.fontBody
-                    color: theme.errorText
-                }
-                AppButton {
-                    width: parent.width
-                    text: "Dismiss"
-                    onClicked: homeScreen.actionError = ""
-                }
-            }
-
-            SectionCard {
-                darkMode: homeScreen.darkMode
                 title: "Your ratings"
                 visible: homeScreen.ratings.length > 0
                 Flow {
@@ -217,7 +174,7 @@ Rectangle {
                         Text {
                             text: (modelData.opponent_name || "Opponent") +
                                   (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
-                                  (modelData.is_my_turn ? " -- your move" : " -- waiting")
+                                  (modelData.is_my_turn ? " — your move" : " — waiting")
                             font.pixelSize: theme.fontLabel
                             font.bold: modelData.is_my_turn
                             wrapMode: Text.WordWrap
@@ -289,36 +246,41 @@ Rectangle {
                 }
             }
 
-            // Full-width navigation rows (was a Flow of shrink-wrapped
-            // buttons whose widths varied with their own label lengths) --
-            // the e-ink list convention: every primary destination is one
-            // unmissable full-width target, stacked, identical in size.
-            // "New game" is the primary action and gets the accent.
             Column {
                 width: parent.width
                 spacing: theme.spacingSmall
 
-                AppButton {
+                MenuRow {
                     width: parent.width
-                    text: "New game"
+                    darkMode: homeScreen.darkMode
+                    title: "New game"
+                    subtitle: "Find a match or challenge a player"
+                    marker: "Play"
                     highlighted: true
                     onClicked: homeScreen.navigateTo("SeekScreen.qml")
                 }
 
-                AppButton {
+                MenuRow {
                     width: parent.width
-                    text: "Game history"
+                    darkMode: homeScreen.darkMode
+                    title: "Game history"
+                    subtitle: "Replay finished games"
+                    marker: "Archive"
                     onClicked: homeScreen.navigateTo("GameHistoryScreen.qml")
                 }
 
-                AppButton {
+                MenuRow {
                     width: parent.width
-                    text: "Settings"
+                    darkMode: homeScreen.darkMode
+                    title: "Settings"
+                    subtitle: "Board, display, and gameplay"
+                    marker: "Tune"
                     onClicked: homeScreen.navigateTo("SettingsScreen.qml")
                 }
 
                 AppButton {
                     width: parent.width
+                    compact: true
                     text: "Refresh"
                     onClicked: homeScreen.refresh()
                 }
@@ -350,10 +312,6 @@ Rectangle {
             homeScreen.challengesError = msg.message ||
                 "Couldn't load challenges."
         } else if (msg.type === "ErrorMsg") {
-            // Logged, not shown. Surfacing every backend ErrorMsg as an "Action
-            // failed" card was noise -- including internal ones like a malformed
-            // IPC message. Real user-actionable failures arrive as their own typed
-            // messages (HomeLoadFailed / ChallengesLoadFailed) with their own cards.
             console.warn("Backend error: " + (msg.message || ""))
         }
     }

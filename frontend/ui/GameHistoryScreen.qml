@@ -65,58 +65,75 @@ Rectangle {
         anchors.topMargin: theme.pageTopMargin
         spacing: theme.spacingSmall
 
-        Text {
-            text: "Game history"
-            font.pixelSize: theme.fontHeading
-            color: theme.text
+        AppPageHeader {
+            width: parent.width
+            darkMode: gameHistoryScreen.darkMode
+            eyebrow: "Archive"
+            title: "Game history"
+            detail: gameHistoryScreen.loading
+                ? "Loading your games"
+                : (gameHistoryScreen.games.length + " recent games")
         }
 
-        Flow {
+        SectionCard {
             width: parent.width
-            spacing: theme.spacingSmall
-            Repeater {
-                model: ["all", "rated", "casual"]
-                AppButton {
-                    required property string modelData
-                    text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                    highlighted: gameHistoryScreen.filterRated === modelData
-                    onClicked: {
-                        gameHistoryScreen.filterRated = modelData
-                        gameHistoryScreen.requestFiltered()
+            darkMode: gameHistoryScreen.darkMode
+            compact: true
+            title: "Filters"
+
+            Text { text: "Game type"; font.pixelSize: theme.fontEyebrow; font.bold: true; color: theme.textMuted }
+            Flow {
+                width: parent.width
+                spacing: theme.spacingXs
+                Repeater {
+                    model: ["all", "rated", "casual"]
+                    AppButton {
+                        required property string modelData
+                        compact: true
+                        text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
+                        highlighted: gameHistoryScreen.filterRated === modelData
+                        onClicked: {
+                            gameHistoryScreen.filterRated = modelData
+                            gameHistoryScreen.requestFiltered()
+                        }
                     }
                 }
             }
-        }
 
-        Flow {
-            width: parent.width
-            spacing: theme.spacingSmall
-            Repeater {
-                model: ["all", "bullet", "blitz", "rapid", "classical", "correspondence"]
-                AppButton {
-                    required property string modelData
-                    text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                    highlighted: gameHistoryScreen.filterSpeed === modelData
-                    onClicked: {
-                        gameHistoryScreen.filterSpeed = modelData
-                        gameHistoryScreen.requestFiltered()
+            Text { text: "Speed"; font.pixelSize: theme.fontEyebrow; font.bold: true; color: theme.textMuted }
+            Flow {
+                width: parent.width
+                spacing: theme.spacingXs
+                Repeater {
+                    model: ["all", "bullet", "blitz", "rapid", "classical", "correspondence"]
+                    AppButton {
+                        required property string modelData
+                        compact: true
+                        text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
+                        highlighted: gameHistoryScreen.filterSpeed === modelData
+                        onClicked: {
+                            gameHistoryScreen.filterSpeed = modelData
+                            gameHistoryScreen.requestFiltered()
+                        }
                     }
                 }
             }
-        }
 
-        Flow {
-            width: parent.width
-            spacing: theme.spacingSmall
-            Repeater {
-                model: ["all", "white", "black"]
-                AppButton {
-                    required property string modelData
-                    text: "Played " + modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                    highlighted: gameHistoryScreen.filterColor === modelData
-                    onClicked: {
-                        gameHistoryScreen.filterColor = modelData
-                        gameHistoryScreen.requestFiltered()
+            Text { text: "Side"; font.pixelSize: theme.fontEyebrow; font.bold: true; color: theme.textMuted }
+            Flow {
+                width: parent.width
+                spacing: theme.spacingXs
+                Repeater {
+                    model: ["all", "white", "black"]
+                    AppButton {
+                        required property string modelData
+                        compact: true
+                        text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
+                        highlighted: gameHistoryScreen.filterColor === modelData
+                        onClicked: {
+                            gameHistoryScreen.filterColor = modelData
+                            gameHistoryScreen.requestFiltered()
+                        }
                     }
                 }
             }
@@ -185,6 +202,14 @@ Rectangle {
                 border.color: theme.cardBorder
                 radius: theme.cardRadius
 
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: theme.sectionRailWidth
+                    color: gameHistoryScreen.resultColor(modelData.result)
+                }
+
                 // Opens GameReviewScreen once the reply lands -- see main.qml's
                 // GameMoves handler. Not an immediate navigation: staying here
                 // until the reply arrives is what lets an ErrorMsg reply (bad
@@ -203,7 +228,8 @@ Rectangle {
                     id: rowContent
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.margins: theme.spacingXs
+                    anchors.leftMargin: theme.spacingSmall + theme.sectionRailWidth
+                    anchors.rightMargin: theme.spacingXs
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: theme.spacingXs
 
@@ -234,10 +260,10 @@ Rectangle {
 
                     Text {
                         text: (modelData.rated ? "Rated" : "Casual") +
-                              (modelData.speed ? " " + chessDisplay.speedLabel(modelData.speed) : "") +
-                              (modelData.termination ? " -- " + chessDisplay.terminationLabel(modelData.termination) : "") +
-                              (modelData.opening_name ? " -- " + modelData.opening_name : "") +
-                              (modelData.created_at_ms ? " -- " + new Date(modelData.created_at_ms).toLocaleDateString() : "")
+                              (modelData.speed ? " · " + chessDisplay.speedLabel(modelData.speed) : "") +
+                              (modelData.termination ? " · " + chessDisplay.terminationLabel(modelData.termination) : "") +
+                              (modelData.opening_name ? " · " + modelData.opening_name : "") +
+                              (modelData.created_at_ms ? " · " + new Date(modelData.created_at_ms).toLocaleDateString() : "")
                         font.pixelSize: theme.fontSmall
                         wrapMode: Text.WordWrap
                         width: rowContent.width
@@ -254,7 +280,7 @@ Rectangle {
                               (modelData.your_analysis.accuracy !== null && modelData.your_analysis.accuracy !== undefined
                                   ? modelData.your_analysis.accuracy + "%"
                                   : "n/a") +
-                              " -- " + modelData.your_analysis.blunders + " blunders, " +
+                              " · " + modelData.your_analysis.blunders + " blunders, " +
                               modelData.your_analysis.mistakes + " mistakes"
                             : ""
                         font.pixelSize: theme.fontSmall

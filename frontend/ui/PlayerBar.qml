@@ -30,8 +30,17 @@ Rectangle {
     height: theme.playerBarHeight
     radius: theme.cardRadius
     color: theme.cardBackground
-    border.width: playerBar.active ? 3 : 1
-    border.color: playerBar.active ? theme.text : theme.cardBorder
+    border.width: 1
+    border.color: theme.cardBorder
+
+    Rectangle {
+        visible: playerBar.active
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: theme.sectionRailWidth
+        color: playerBar.lowTime ? theme.errorText : theme.accentBackground
+    }
 
     function formatClock(ms) {
         var totalSeconds = Math.floor(ms / 1000)
@@ -42,7 +51,8 @@ Rectangle {
 
     Column {
         anchors.left: parent.left
-        anchors.leftMargin: theme.spacingSmall
+        anchors.leftMargin: theme.spacingSmall +
+            (playerBar.active ? theme.sectionRailWidth : 0)
         anchors.right: clockChip.visible ? clockChip.left : parent.right
         anchors.rightMargin: theme.spacingSmall
         anchors.verticalCenter: parent.verticalCenter

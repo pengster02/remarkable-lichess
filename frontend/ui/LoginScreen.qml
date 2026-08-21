@@ -50,23 +50,13 @@ Rectangle {
             spacing: theme.spacingMedium
             width: parent.width * 0.85
 
-            Column {
-                spacing: theme.spacingXs
-                anchors.horizontalCenter: parent.horizontalCenter
-                Image {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    source: "../assets/pieces/cburnett/wK.png"
-                    width: 110
-                    height: 110
-                    fillMode: Image.PreserveAspectFit
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "Lichess"
-                    font.pixelSize: theme.fontTitle
-                    font.bold: true
-                    color: theme.text
-                }
+            AppPageHeader {
+                width: parent.width
+                darkMode: loginScreen.darkMode
+                eyebrow: "Welcome"
+                title: "Lichess"
+                detail: "Chess, made for paper"
+                pieceSource: "../assets/pieces/cburnett/wK.png"
             }
 
             SectionCard {
@@ -109,7 +99,7 @@ Rectangle {
                     width: parent.width
                     wrapMode: Text.WordWrap
                     visible: loginScreen.showingQr
-                    text: "Scan with your phone and approve on lichess.org. Your phone has to be on the same Wi-Fi as this tablet -- it sends the answer straight back here, so Lichess will note that last hop isn't encrypted. Nothing leaves your local network."
+                    text: "Scan with your phone and approve on lichess.org. Your phone has to be on the same Wi-Fi as this tablet — it sends the answer straight back here, so Lichess will note that last hop isn't encrypted. Nothing leaves your local network."
                     font.pixelSize: theme.fontSmall
                     color: theme.textMuted
                 }

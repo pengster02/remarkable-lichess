@@ -10,7 +10,9 @@ Item {
     property alias contentHeight: viewport.contentHeight
     property alias contentY: viewport.contentY
     property bool darkMode: nearestDarkMode(parent)
-    readonly property bool pagingNeeded: contentHeight > pageViewport.height + 1
+    // Outer height avoids a visible↔viewport loop; always reserving the bar wastes
+    // space, while an imperative delayed check can leave the layout stale.
+    readonly property bool pagingNeeded: contentHeight > pager.height + 1
     readonly property bool continuousScrollingEnabled: viewport.interactive
     readonly property real pageHeight: viewport.height
     readonly property real pageStep: Math.max(1, viewport.height - theme.spacingSmall)

@@ -23,12 +23,23 @@ Rectangle {
     border.width: 1
     border.color: theme.cardBorder
 
+    Rectangle {
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: theme.sectionRailWidth
+        color: theme.sectionRail
+    }
+
     Column {
         id: innerColumn
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: sectionCard.compact ? theme.spacingXs : theme.spacingSmall
+        anchors.leftMargin: (sectionCard.compact ? theme.spacingXs : theme.spacingSmall) +
+            theme.sectionRailWidth
+        anchors.rightMargin: sectionCard.compact ? theme.spacingXs : theme.spacingSmall
+        anchors.topMargin: sectionCard.compact ? theme.spacingXs : theme.spacingSmall
         spacing: sectionCard.compact ? theme.spacingXs : theme.spacingSmall
 
         Text {
@@ -36,6 +47,8 @@ Rectangle {
             text: sectionCard.title
             font.pixelSize: theme.fontLabel
             font.bold: true
+            font.capitalization: Font.AllUppercase
+            font.letterSpacing: 1.5
             color: theme.cardTitleText
         }
 

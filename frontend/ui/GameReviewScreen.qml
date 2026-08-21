@@ -457,8 +457,8 @@ Rectangle {
         var evaluation = gameReviewScreen.currentCloudEvaluation()
         if (!evaluation) return ""
         return "Cloud " + gameReviewScreen.evalLabel(evaluation) +
-            " -- depth " + evaluation.depth +
-            " -- " + gameReviewScreen.formatCloudNodes(evaluation.knodes)
+            " · depth " + evaluation.depth +
+            " · " + gameReviewScreen.formatCloudNodes(evaluation.knodes)
     }
 
     function cloudBestLineLabel() {
@@ -510,7 +510,7 @@ Rectangle {
         if (gameReviewScreen.game.created_at_ms) {
             parts.push(new Date(gameReviewScreen.game.created_at_ms).toLocaleDateString())
         }
-        return parts.join(" -- ")
+        return parts.join(" · ")
     }
 
     function goFirst() { gameReviewScreen.currentIndex = 0 }
@@ -577,7 +577,7 @@ Rectangle {
                   (gameReviewScreen.game.your_analysis.accuracy !== null && gameReviewScreen.game.your_analysis.accuracy !== undefined
                       ? gameReviewScreen.game.your_analysis.accuracy + "%"
                       : "n/a") +
-                  " -- " + gameReviewScreen.game.your_analysis.inaccuracies + " inaccuracies, " +
+                  " · " + gameReviewScreen.game.your_analysis.inaccuracies + " inaccuracies, " +
                   gameReviewScreen.game.your_analysis.mistakes + " mistakes, " +
                   gameReviewScreen.game.your_analysis.blunders + " blunders"
                 : ""

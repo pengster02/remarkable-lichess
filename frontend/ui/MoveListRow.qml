@@ -64,6 +64,6 @@ Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         height: 1
-        color: theme.cardBorder
+        color: theme.divider
     }
 }

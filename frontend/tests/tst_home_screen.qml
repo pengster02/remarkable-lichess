@@ -24,7 +24,6 @@ TestCase {
         home.connectionMessage = ""
         home.loadError = ""
         home.challengesError = ""
-        home.actionError = ""
         home.ongoingGames = []
         home.ratings = []
     }
@@ -59,12 +58,12 @@ TestCase {
         compare(home.challengesError, "Couldn't load challenges.")
     }
 
-    function test_genericActionErrorDoesNotChangeLoadingState() {
+    function test_genericActionErrorDoesNotChangeHomeState() {
         home.loadedOnce = false
         home.handleMessage({type: "ErrorMsg", message: "Challenge expired"})
         compare(home.loadedOnce, false)
         compare(home.loadError, "")
-        compare(home.actionError, "Challenge expired")
+        compare(home.challengesError, "")
     }
 
     function test_successClearsAnEarlierConnectionError() {
