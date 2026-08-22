@@ -16,11 +16,12 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const STREAM_RECONNECT_MAX_BACKOFF_SECS: u64 = 5;
 
 fn wifi_link_state_at(network_root: &Path) -> Option<bool> {
     let mut found = false;
@@ -965,8 +966,8 @@ fn spawn_game_stream(
         let mut game_over = false;
         let mut player_status_requested = false;
         while !game_over {
+            let stream_started_at = Instant::now();
             if let Ok(mut lines) = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
-                backoff_secs = 1;
                 while let Ok(Some(line)) =
                     next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
                 {
@@ -1114,7 +1115,14 @@ fn spawn_game_stream(
                 &BackendMessage::GameStreamReconnecting,
             );
             tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-            backoff_secs = (backoff_secs * 2).min(30);
+            // A stream that stayed healthy through the idle watchdog deserves a
+            // fast retry. Alternatives were resetting after every HTTP 200 (the
+            // observed 1s loop) or allowing 30s stale boards during live play.
+            backoff_secs = if stream_started_at.elapsed() >= STREAM_IDLE_TIMEOUT {
+                1
+            } else {
+                (backoff_secs * 2).min(STREAM_RECONNECT_MAX_BACKOFF_SECS)
+            };
         }
     })
 }

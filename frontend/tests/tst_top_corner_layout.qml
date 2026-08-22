@@ -294,7 +294,7 @@ TestCase {
         compare(board.moveHistory.length, 0)
     }
 
-    function test_pieceUiModelOnlyChangesMovedSquares() {
+    function test_pieceDelegatesReceiveCodesAndImageSources() {
         var before = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
         var after = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
         board.fen = before
@@ -303,18 +303,21 @@ TestCase {
         var e4Square = findChild(board, "boardSquare-e4")
         verify(e2Square !== null)
         verify(e4Square !== null)
-        compare(board.renderedPieceCodeAt("e2"), "wP")
-        compare(board.renderedPieceCodeAt("e4"), "")
         compare(e2Square.pieceCode, "wP")
         compare(e4Square.pieceCode, "")
+        var e2Image = findChild(e2Square, "pieceImage")
+        verify(e2Image !== null)
+        verify(e2Image.source.toString().indexOf("/cburnett/wP.png") !== -1)
+        tryCompare(e2Image, "status", Image.Ready)
 
         board.fen = after
         wait(0)
-        compare(board.lastPieceSyncChangeCount, 2)
-        compare(board.renderedPieceCodeAt("e2"), "")
-        compare(board.renderedPieceCodeAt("e4"), "wP")
         compare(e2Square.pieceCode, "")
         compare(e4Square.pieceCode, "wP")
+        var e4Image = findChild(e4Square, "pieceImage")
+        verify(e4Image !== null)
+        verify(e4Image.source.toString().indexOf("/cburnett/wP.png") !== -1)
+        tryCompare(e4Image, "status", Image.Ready)
     }
 
     function test_unacceptedMovePreviewRollsBackCleanly() {
@@ -386,6 +389,11 @@ TestCase {
         compare(board.fen, liveFen)
         compare(board.turn, "white")
         compare(board.whiteTimeMs, 60000)
+        compare(board.statusText, "")
+        compare(board.topStatusText(), "Your move")
+
+        board.liveFen = ""
+        board.handleMessage({type: "GameStreamReconnecting"})
         compare(board.statusText, "Reconnecting...")
     }
 
