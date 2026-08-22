@@ -286,7 +286,7 @@ build in a Linux container:
 cross check --features transport --target aarch64-unknown-linux-gnu
 ```
 
-QML lint and the 11 shared interaction test suites, using the emulator's Qt:
+QML lint and the 13 shared interaction test suites, using the emulator's Qt:
 
 ```bash
 docker exec remarkable-lichess-local sh -lc \

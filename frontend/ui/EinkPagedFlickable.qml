@@ -11,9 +11,10 @@ Item {
     property alias contentY: viewport.contentY
     property bool darkMode: nearestDarkMode(parent)
     property var pageStops: []
-    // Outer height avoids a visible↔viewport loop; always reserving the bar wastes
-    // space, while an imperative delayed check can leave the layout stale.
-    readonly property bool pagingNeeded: viewport.contentHeight > pager.height + 1
+    // Raw content height breaks the page-bar visibility loop. Always reserving
+    // the bar and deferring the check were the alternatives, but each wastes
+    // space or creates a second layout pass.
+    readonly property bool pagingNeeded: contentHost.height > pager.height + 1
     readonly property bool continuousScrollingEnabled: viewport.interactive
     readonly property real pageHeight: viewport.height
     readonly property real pageStep: Math.max(1, viewport.height - theme.spacingSmall)
@@ -149,7 +150,7 @@ Item {
             contentWidth: width
             contentHeight: Math.max(
                 contentHost.height,
-                pager.usesPageStops
+                pager.usesPageStops && pager.pagingNeeded
                     ? pager.requestedLastStop + height
                     : contentHost.height
             )

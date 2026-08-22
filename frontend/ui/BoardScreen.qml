@@ -458,6 +458,22 @@ Rectangle {
     // whole placement field on every single call -- checkedKingSquare() alone
     // was already calling it 64 times by itself).
     property var pieceMap: boardScreen.buildPieceMap(boardScreen.fen)
+    // A stable role model lets a move update only its changed piece roles.
+    // Rebuilding all 64 delegates and binding every square to the whole map
+    // were the other viable designs; both redo substantially more GUI work.
+    ListModel { id: boardSquareModel }
+    property bool boardSquareModelReady: false
+    property int lastPieceSyncChangeCount: 0
+    onFrChanged: {
+        if (boardScreen.boardSquareModelReady) boardScreen.rebuildBoardSquareModel()
+    }
+    onPieceMapChanged: {
+        if (boardScreen.boardSquareModelReady) boardScreen.syncBoardPieceRoles()
+    }
+    Component.onCompleted: {
+        boardScreen.boardSquareModelReady = true
+        boardScreen.rebuildBoardSquareModel()
+    }
     property var historicalLastMoveSquares: boardScreen.changedSquaresForHistory()
     property var historicalLastMoveLookup: boardScreen.squareLookup(
         boardScreen.historicalLastMoveSquares)
@@ -489,6 +505,41 @@ Rectangle {
             }
         }
         return map
+    }
+
+    function rebuildBoardSquareModel() {
+        boardSquareModel.clear()
+        for (var index = 0; index < 64; index++) {
+            var fileIdx = index % 8
+            var rankIdx = Math.floor(index / 8)
+            var squareName = boardScreen.fr.files[fileIdx] + boardScreen.fr.ranks[rankIdx]
+            boardSquareModel.append({
+                squareName: squareName,
+                pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
+            })
+        }
+        boardScreen.lastPieceSyncChangeCount = 64
+    }
+
+    function syncBoardPieceRoles() {
+        var changed = 0
+        for (var index = 0; index < boardSquareModel.count; index++) {
+            var squareName = boardSquareModel.get(index).squareName
+            var nextPieceCode = boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
+            if (boardSquareModel.get(index).pieceCode !== nextPieceCode) {
+                boardSquareModel.setProperty(index, "pieceCode", nextPieceCode)
+                changed++
+            }
+        }
+        boardScreen.lastPieceSyncChangeCount = changed
+    }
+
+    function renderedPieceCodeAt(squareName) {
+        for (var index = 0; index < boardSquareModel.count; index++) {
+            var square = boardSquareModel.get(index)
+            if (square.squareName === squareName) return square.pieceCode
+        }
+        return ""
     }
 
     function changedSquaresForHistory() {
@@ -819,14 +870,16 @@ Rectangle {
                     height: width
 
                     Repeater {
-                        model: 64
+                        model: boardSquareModel
                         BoardSquare {
                             required property int index
+                            required property string squareName
+                            required property string pieceCode
+                            objectName: "boardSquare-" + squareName
                             width: grid.width / 8
                             height: grid.height / 8
                             property int fileIdx: index % 8
                             property int rankIdx: Math.floor(index / 8)
-                            squareName: boardScreen.fr.files[fileIdx] + boardScreen.fr.ranks[rankIdx]
                             isLight: (fileIdx + rankIdx) % 2 === 0
                             darkMode: boardScreen.darkMode
                             lightSquareColor: boardStyle.lightSquare
@@ -837,7 +890,6 @@ Rectangle {
                             premoveSquareColor: boardStyle.premoveSquare
                             inkColor: boardStyle.ink
                             pieceSet: boardScreen.pieceSet
-                            pieceCode: boardScreen.pieceCodeFor(boardScreen.pieceAt(squareName))
                             property bool isDestination:
                                 boardScreen.selectedDestinationLookup[squareName] === true
                             isHighlighted: boardScreen.selectedSquare === squareName ||

@@ -235,6 +235,29 @@ TestCase {
         compare(board.moveHistory.length, 0)
     }
 
+    function test_pieceUiModelOnlyChangesMovedSquares() {
+        var before = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        var after = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+        board.fen = before
+        wait(0)
+        var e2Square = findChild(board, "boardSquare-e2")
+        var e4Square = findChild(board, "boardSquare-e4")
+        verify(e2Square !== null)
+        verify(e4Square !== null)
+        compare(board.renderedPieceCodeAt("e2"), "wP")
+        compare(board.renderedPieceCodeAt("e4"), "")
+        compare(e2Square.pieceCode, "wP")
+        compare(e4Square.pieceCode, "")
+
+        board.fen = after
+        wait(0)
+        compare(board.lastPieceSyncChangeCount, 2)
+        compare(board.renderedPieceCodeAt("e2"), "")
+        compare(board.renderedPieceCodeAt("e4"), "wP")
+        compare(e2Square.pieceCode, "")
+        compare(e4Square.pieceCode, "wP")
+    }
+
     function test_unacceptedMovePreviewRollsBackCleanly() {
         var liveFen = "8/8/8/8/8/8/4P3/4K2k w - - 0 1"
         var previewFen = "8/8/8/8/4P3/8/8/4K2k b - - 0 1"

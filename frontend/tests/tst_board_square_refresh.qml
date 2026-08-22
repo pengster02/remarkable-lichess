@@ -14,6 +14,11 @@ TestCase {
         height: 200
     }
 
+    EinkRefreshArea {
+        id: refreshAreaUnderTest
+        visible: false
+    }
+
     function init() {
         square.isHighlighted = false
         square.isSelected = false
@@ -53,5 +58,13 @@ TestCase {
         compare(square.refreshFlashColor, "#111111")
         square.darkMode = true
         compare(square.refreshFlashColor, "#fffdf7")
+    }
+
+    function test_refreshAdapterSupportsBothAppLoadEnumLayouts() {
+        compare(refreshAreaUnderTest.platformMethodFor(EinkRefreshArea.Content, 3), 3)
+        compare(refreshAreaUnderTest.platformMethodFor(EinkRefreshArea.UI, 3), 4)
+        compare(refreshAreaUnderTest.platformMethodFor(EinkRefreshArea.Content, 4), 4)
+        compare(refreshAreaUnderTest.platformMethodFor(EinkRefreshArea.UI, 4), 3)
+        compare(refreshAreaUnderTest.platformMethodFor(EinkRefreshArea.Fast, 4), 1)
     }
 }

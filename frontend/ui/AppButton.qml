@@ -1,9 +1,12 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5 as QQC2
+import QtQuick.Templates 2.5 as T
 
 // Uses an explicit app-specific type name so Qt cannot resolve call sites to
 // QtQuick Controls' desktop-sized Button instead.
-QQC2.Button {
+// Templates skip platform-style objects entirely. Explicit Basic style and a
+// qtquickcontrols2.conf style lock were the next-best options, but both retain
+// a style layer this fully drawn control does not use.
+T.Button {
     id: control
     property bool darkMode: nearestDarkMode(parent)
     property bool critical: false

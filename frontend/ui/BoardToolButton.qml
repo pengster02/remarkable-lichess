@@ -1,7 +1,7 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5 as QQC2
+import QtQuick.Templates 2.5 as T
 
-QQC2.Button {
+T.Button {
     id: control
     property bool darkMode: nearestDarkMode(parent)
 

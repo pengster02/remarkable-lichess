@@ -35,13 +35,16 @@ Item {
         border.width: 3
         border.color: theme.text
         radius: theme.dialogRadius
-        clip: true
 
         Rectangle {
             anchors.left: parent.left
+            anchors.leftMargin: theme.dialogRadius
             anchors.right: parent.right
+            anchors.rightMargin: theme.dialogRadius
             anchors.top: parent.top
+            anchors.topMargin: theme.spacingXs / 2
             height: theme.sectionRailWidth
+            radius: height / 2
             color: theme.accentBackground
         }
 

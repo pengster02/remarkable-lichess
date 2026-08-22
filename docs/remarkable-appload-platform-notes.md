@@ -8,7 +8,7 @@ web research and the actual `rm-appload` source (a local checkout was available 
 worth re-cloning `github.com/asivery/rm-appload` directly for the full repo, including its `examples/`
 and `xovi/` directories, rather than relying on the shallow single-commit checkout Cargo pulls).
 
-Last verified: 2026-07-18. XOVI/AppLoad/reMarkable OS are all actively moving targets — re-check
+Last verified: 2026-08-21. XOVI/AppLoad/reMarkable OS are all actively moving targets — re-check
 version compatibility before trusting any specific version number below.
 
 ## 1. Can this actually install on reMarkable Paper Pro / Paper Pro Move?
@@ -77,7 +77,10 @@ AppLoad-hosted QML frontend.
 
 `EinkRefreshArea.qml` dynamically loads AppLoad's resource-owned
 `DisplayMethodArea.qml`, keeping shared controls testable without the AppLoad
-host. Current policy:
+host. AppLoad source has used both `[..., Content, UI]` and `[..., UI, Content]`
+enum layouts; the adapter reads the platform component's default `Content`
+value before forwarding a method, so installing a newer AppLoad cannot silently
+swap clean content refreshes with UI refreshes. Current policy:
 
 - board selection, legal targets, premoves, and the short changed-square clearing
   pulse use `Fast`; the clearing pulse must oppose the canvas polarity (light
@@ -101,7 +104,34 @@ Do not use `UFast` for the board by default. Its speed is not worth risking
 reduced color/detail on the Paper Pro Move. The PC emulator proves loading and
 layout but cannot reproduce physical waveform timing or ghosting.
 
-Sources: [Writing Qt Quick Applications — developer.remarkable.com](https://developer.remarkable.com/documentation/qt_epaper), [libqsgepaper reference — canselcik/libremarkable](https://github.com/canselcik/libremarkable/blob/master/reference-material/libqsgepaper.md), [epframebuffer.h — Eeems-Org/remarkable-template-qt-app](https://github.com/Eeems-Org/remarkable-template-qt-app/blob/main/src/vendor/epaper/epframebuffer.h), [rm-appload GitHub](https://github.com/asivery/rm-appload) (`resources/ApploadUtils/DisplayMethodArea.qml`, `examples/appload/frontend-only/ui/example.qml`, `xovi/template/appload.qmd`), [Ghosting — reMarkable support](https://support.remarkable.com/s/article/Ghosting), [chessmarkable](https://github.com/LinusCDE/chessmarkable) (a non-Qt reference point — it manages partial e-ink updates manually via direct framebuffer/ioctl calls since it's Rust+SDL, not QML, so its approach doesn't transfer directly, but its release notes confirm per-field partial-update tuning was worth doing for a reMarkable chess board specifically).
+### QML frame-preparation costs
+
+The August performance pass also reduced the CPU work before a frame reaches
+the e-ink pipeline:
+
+- fully drawn buttons and text fields now derive from `QtQuick.Templates`
+  instead of constructing a platform style and replacing its visuals;
+- the board keeps a stable 64-row piece UI model and changes only the roles for
+  moved squares, rather than re-running all 64 image-source bindings whenever
+  the FEN map object changes;
+- small rounded cards keep their inset accent rails without `clip`, preserving
+  the visual design while avoiding per-control scene-graph clip nodes.
+
+A repeatable `qmlprofiler` run of the incremental-move test on Qt 6.11 reduced
+aggregate binding time from about 182 ms to 15 ms, binding events from 8,048 to
+6,543, and the Qt Test body from 79 ms to 21 ms. These are host measurements,
+not claims about panel waveform latency, but they directly measure how soon Qt
+can hand the next frame to AppLoad.
+
+Qt's current guidance supports these choices: use the QML Profiler, avoid
+unnecessary clipping, keep bindings simple, and avoid carrying a style layer
+when implementing a complete custom control. AppLoad's open QTFB partial-update
+fixes ([#63](https://github.com/asivery/rm-appload/pull/63) and
+[#66](https://github.com/asivery/rm-appload/pull/66)) target external framebuffer
+clients, not this internal QML frontend, so they should be tracked upstream
+rather than copied into this app.
+
+Sources: [Writing Qt Quick Applications — developer.remarkable.com](https://developer.remarkable.com/documentation/qt_epaper), [Qt Quick performance guidance](https://doc.qt.io/qt-6/qtquick-performance.html), [Qt Quick scene-graph renderer](https://doc.qt.io/qt-6/qtquick-visualcanvas-scenegraph-renderer.html), [customizing Qt Quick Controls](https://doc.qt.io/qt-6/qtquickcontrols-customize.html), [libqsgepaper reference — canselcik/libremarkable](https://github.com/canselcik/libremarkable/blob/master/reference-material/libqsgepaper.md), [epframebuffer.h — Eeems-Org/remarkable-template-qt-app](https://github.com/Eeems-Org/remarkable-template-qt-app/blob/main/src/vendor/epaper/epframebuffer.h), [rm-appload GitHub](https://github.com/asivery/rm-appload) (`resources/ApploadUtils/DisplayMethodArea.qml`, `examples/appload/frontend-only/ui/example.qml`, `xovi/template/appload.qmd`), [Ghosting — reMarkable support](https://support.remarkable.com/s/article/Ghosting), [chessmarkable](https://github.com/LinusCDE/chessmarkable) (a non-Qt reference point — it manages partial e-ink updates manually via direct framebuffer/ioctl calls since it's Rust+SDL, not QML, so its approach doesn't transfer directly, but its release notes confirm per-field partial-update tuning was worth doing for a reMarkable chess board specifically).
 
 ## 3. Build/test findings from this session (general, not just this app)
 

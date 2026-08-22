@@ -1,9 +1,9 @@
 import QtQuick 2.5
-import QtQuick.Controls 2.5 as QQC2
+import QtQuick.Templates as T
 
 // The explicit app-specific type name prevents Qt from falling back to its
 // desktop-sized TextField. The static cursor also avoids periodic e-ink redraws.
-QQC2.TextField {
+T.TextField {
     id: control
     property bool darkMode: nearestDarkMode(parent)
 
@@ -20,10 +20,7 @@ QQC2.TextField {
     color: theme.text
     placeholderTextColor: theme.textMuted
     width: theme.textFieldWidthMedium
-    topPadding: theme.spacingSmall
-    bottomPadding: theme.spacingSmall
-    leftPadding: theme.spacingSmall
-    rightPadding: theme.spacingSmall
+    padding: theme.spacingSmall
 
     background: Rectangle {
         radius: theme.controlRadius

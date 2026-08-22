@@ -15,7 +15,6 @@ Rectangle {
     color: theme.buttonBackground
     border.width: 1
     border.color: theme.buttonBorder
-    clip: true
 
     Row {
         anchors.fill: parent

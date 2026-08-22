@@ -23,6 +23,15 @@ TestCase {
         pageStops: [0, 275, 725]
     }
 
+    EinkPagedFlickable {
+        id: shortLogicalPager
+        width: 600
+        height: 400
+        visible: false
+        contentHeight: 350
+        pageStops: [0, 100]
+    }
+
     function init() {
         pager.moveTo(0)
         logicalPager.moveTo(0)
@@ -48,6 +57,12 @@ TestCase {
         verify(pager.pageCount > 1)
         verify(pager.pageStep > 0)
         verify(pager.pageStep < pager.height)
+    }
+
+    function test_shortLogicalContentDoesNotCreatePhantomPages() {
+        compare(shortLogicalPager.pagingNeeded, false)
+        compare(shortLogicalPager.maximumContentY, 0)
+        compare(shortLogicalPager.pageCount, 1)
     }
 
     function test_pageControlsJumpAndClamp() {

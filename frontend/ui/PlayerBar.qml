@@ -27,7 +27,6 @@ Rectangle {
     Theme { id: theme; darkMode: playerBar.darkMode }
     height: theme.playerBarHeight
     radius: theme.cardRadius
-    clip: true
     color: theme.cardBackground
     border.width: 1
     border.color: theme.cardBorder
@@ -35,9 +34,13 @@ Rectangle {
     Rectangle {
         visible: playerBar.active
         anchors.left: parent.left
+        anchors.leftMargin: theme.spacingXs / 2
         anchors.top: parent.top
+        anchors.topMargin: theme.spacingXs
         anchors.bottom: parent.bottom
+        anchors.bottomMargin: theme.spacingXs
         width: theme.sectionRailWidth
+        radius: width / 2
         color: playerBar.lowTime ? theme.errorText : theme.accentBackground
     }
 
