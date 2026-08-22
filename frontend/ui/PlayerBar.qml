@@ -9,8 +9,15 @@ Rectangle {
     id: playerBar
     property bool darkMode: false
     property string playerName: ""
+    property string playerTitle: ""
     // null when there's no rating to show (AI opponents, or your own bar).
     property var rating: null
+    property bool provisional: false
+    property string presenceText: ""
+    property bool streaming: false
+    property bool patron: false
+    property string flair: ""
+    property string identityDetailText: playerBar.buildIdentityDetails()
     property int clockMs: 0
     // Untimed/correspondence games have no clock to show at all.
     property bool showClock: true
@@ -23,6 +30,28 @@ Rectangle {
     property string statusText: ""
     property bool statusEmphasized: false
     property string pieceSet: "cburnett"
+
+    function flairLabel(value) {
+        if (!value || value.length === 0) return ""
+        var slug = value.substring(value.lastIndexOf(".") + 1)
+        var words = slug.split("-")
+        if (words.length === 0) return ""
+        words[0] = words[0].charAt(0).toUpperCase() + words[0].substring(1)
+        return words.join(" ")
+    }
+
+    function buildIdentityDetails() {
+        var details = []
+        if (playerBar.rating !== null) {
+            details.push("(" + playerBar.rating + (playerBar.provisional ? "?" : "") + ")")
+        }
+        if (playerBar.presenceText.length > 0) details.push(playerBar.presenceText)
+        if (playerBar.streaming) details.push("Live")
+        if (playerBar.patron) details.push("Patron")
+        var flairName = playerBar.flairLabel(playerBar.flair)
+        if (flairName.length > 0) details.push(flairName)
+        return details.join("  ·  ")
+    }
 
     Theme { id: theme; darkMode: playerBar.darkMode }
     height: theme.playerBarHeight
@@ -60,16 +89,47 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         spacing: theme.spacingXs / 2
 
-        Text {
-            objectName: "playerNameText"
+        Row {
             width: parent.width
-            text: playerBar.playerName +
-                  (playerBar.rating !== null ? " (" + playerBar.rating + ")" : "") +
-                  (playerBar.materialAdvantage > 0 ? "  |  +" + playerBar.materialAdvantage : "")
-            font.pixelSize: theme.fontLabel
-            font.bold: playerBar.opponent
-            elide: Text.ElideRight
-            color: theme.text
+            height: theme.fontLarge
+            spacing: playerBar.playerTitle.length > 0 ? theme.spacingXs : 0
+
+            Rectangle {
+                visible: playerBar.playerTitle.length > 0
+                width: visible ? titleLabel.implicitWidth + theme.spacingXs : 0
+                height: parent.height
+                radius: theme.cardRadius / 2
+                color: "transparent"
+                border.width: 1
+                border.color: theme.text
+
+                Text {
+                    id: titleLabel
+                    objectName: "playerTitleText"
+                    anchors.centerIn: parent
+                    text: playerBar.playerTitle
+                    font.pixelSize: theme.fontSmall
+                    font.bold: true
+                    font.letterSpacing: 1
+                    color: theme.text
+                }
+            }
+
+            Text {
+                objectName: "playerNameText"
+                width: parent.width - x
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
+                text: playerBar.playerName +
+                      (playerBar.identityDetailText.length > 0
+                          ? "  " + playerBar.identityDetailText
+                          : "") +
+                      (playerBar.materialAdvantage > 0 ? "  |  +" + playerBar.materialAdvantage : "")
+                font.pixelSize: theme.fontLabel
+                font.bold: playerBar.opponent
+                elide: Text.ElideRight
+                color: theme.text
+            }
         }
 
         Row {

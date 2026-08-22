@@ -47,8 +47,15 @@ TestCase {
         board.capturedByBlack = []
         board.yourName = ""
         board.yourRating = null
+        board.yourId = ""
+        board.yourTitle = ""
+        board.yourProvisional = false
         board.opponentName = ""
         board.opponentRating = null
+        board.opponentId = ""
+        board.opponentTitle = ""
+        board.opponentProvisional = false
+        board.resetPlayerStatuses()
     }
 
     // Screens are anchored under the persistent top bar already (see main.qml),
@@ -108,6 +115,47 @@ TestCase {
         board.turn = "black"
         compare(topName.font.bold, true)
         compare(bottomName.font.bold, false)
+    }
+
+    function test_structured_title_provisional_and_optional_status_render_without_layout_change() {
+        var fen = "8/8/8/8/8/8/4P3/4K2k w - - 0 1"
+        board.handleMessage({
+            type: "BoardState", game_id: "identity-game", fen: fen, turn: "white",
+            white_time_ms: 60000, black_time_ms: 60000, your_color: "white",
+            legal_moves: [], position_history: [fen], move_history: [],
+            captured_by_white: [], captured_by_black: [],
+            your_player: {id: "alice", name: "Alice", rating: 1800, provisional: false},
+            opponent_player: {
+                id: "bob", name: "Bob", rating: 2501, title: "GM", provisional: true
+            }
+        })
+        var retainedFen = board.fen
+        var retainedLegalMoves = board.legalMoves
+        var retainedPositionHistory = board.positionHistory
+        board.handleMessage({
+            type: "PlayerStatuses", game_id: "identity-game", players: [{
+                id: "bob", title: "GM", online: true, playing: true,
+                streaming: true, patron: true, flair: "symbols.white-heart"
+            }]
+        })
+        compare(board.fen, retainedFen)
+        verify(board.legalMoves === retainedLegalMoves)
+        verify(board.positionHistory === retainedPositionHistory)
+
+        var topPlayerBar = findChild(board, "topPlayerBar")
+        var topTitle = findChild(topPlayerBar, "playerTitleText")
+        var topName = findChild(topPlayerBar, "playerNameText")
+        compare(topPlayerBar.height, theme.playerBarHeight)
+        compare(topTitle.text, "GM")
+        verify(topName.text.indexOf("Bob") !== -1)
+        verify(topName.text.indexOf("(2501?)") !== -1)
+        verify(topName.text.indexOf("Playing") !== -1)
+        verify(topName.text.indexOf("Live") !== -1)
+        verify(topName.text.indexOf("Patron") !== -1)
+        verify(topName.text.indexOf("White heart") !== -1)
+
+        board.handleMessage({type: "OpponentGone", gone: true, claim_win_in_seconds: 8})
+        compare(topPlayerBar.presenceText, "Disconnected")
     }
 
     function test_liveStatusUsesTopPlayerBar() {

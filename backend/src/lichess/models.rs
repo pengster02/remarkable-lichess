@@ -61,6 +61,26 @@ pub struct PlayingResponse {
     pub now_playing: Vec<PlayingGame>,
 }
 
+// One row from GET /api/users/status. Presence booleans are omitted when false;
+// patronColor is the current patron signal while patron remains for older replies.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct UserStatus {
+    pub id: String,
+    pub name: String,
+    pub title: Option<String>,
+    pub flair: Option<String>,
+    #[serde(default)]
+    pub online: bool,
+    #[serde(default)]
+    pub playing: bool,
+    #[serde(default)]
+    pub streaming: bool,
+    #[serde(default)]
+    pub patron: bool,
+    #[serde(rename = "patronColor")]
+    pub patron_color: Option<u8>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Clock {
     pub initial: u64,
@@ -517,6 +537,21 @@ mod tests {
         let json = r#"{"id":"myid","username":"MyUser"}"#;
         let account: Account = serde_json::from_str(json).unwrap();
         assert_eq!(account.perfs, None);
+    }
+
+    #[test]
+    fn parses_sparse_and_enriched_user_status_rows() {
+        let json = r#"[
+            {"id":"quiet","name":"Quiet"},
+            {"id":"ana","name":"Ana","title":"IM","online":true,"playing":true,
+             "streaming":true,"flair":"symbols.white-heart","patronColor":3}
+        ]"#;
+        let statuses: Vec<UserStatus> = serde_json::from_str(json).unwrap();
+        assert!(!statuses[0].online);
+        assert_eq!(statuses[1].title.as_deref(), Some("IM"));
+        assert!(statuses[1].online && statuses[1].playing && statuses[1].streaming);
+        assert_eq!(statuses[1].flair.as_deref(), Some("symbols.white-heart"));
+        assert_eq!(statuses[1].patron_color, Some(3));
     }
 
     #[test]

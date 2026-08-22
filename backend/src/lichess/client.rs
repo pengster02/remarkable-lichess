@@ -1,7 +1,7 @@
 use crate::lichess::models::{
     Account, ChallengeListResponse, ChallengeOpenJson, CloudEvaluation, GameExport,
     GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame,
-    PlayingResponse,
+    PlayingResponse, UserStatus,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use anyhow::{anyhow, Result};
@@ -163,6 +163,24 @@ impl LichessClient {
         }
         let parsed = resp.json::<PlayingResponse>().await?;
         Ok(parsed.now_playing)
+    }
+
+    pub async fn get_user_statuses(&self, user_ids: &[String]) -> Result<Vec<UserStatus>> {
+        if user_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let resp = self
+            .send_logged(
+                "get_user_statuses",
+                self.http
+                    .get(format!("{}/api/users/status", self.base_url))
+                    .query(&[("ids", user_ids.join(","))]),
+            )
+            .await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("get_user_statuses", resp).await);
+        }
+        Ok(resp.json::<Vec<UserStatus>>().await?)
     }
 
     /// GET /api/games/user/{username} defaults to returning PGN text -- confirmed
@@ -730,6 +748,31 @@ mod tests {
         let games = client.get_playing().await.unwrap();
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].game_id, "g1");
+    }
+
+    #[tokio::test]
+    async fn get_user_statuses_is_a_single_bounded_metadata_request() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/users/status"))
+            .and(query_param("ids", "alice,bob"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": "alice", "name": "Alice", "online": true},
+                {"id": "bob", "name": "Bob", "playing": true, "patronColor": 2}
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let rows = client
+            .get_user_statuses(&["alice".into(), "bob".into()])
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].online);
+        assert_eq!(rows[1].patron_color, Some(2));
     }
 
     #[tokio::test]

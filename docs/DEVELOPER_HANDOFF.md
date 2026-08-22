@@ -1,6 +1,6 @@
 # Developer handoff
 
-Last updated: 2026-07-27
+Last updated: 2026-08-21
 
 This is the fastest path to understanding, running, and safely extending
 `remarkable-lichess`.
@@ -15,7 +15,8 @@ The current UI supports:
 
 - token setup, home ratings, ongoing games, seeks, direct/open/AI challenges;
 - live games with tap or drag input, legal targets, premoves, promotion,
-  move confirmation, clocks, both players' names/ratings,
+  move confirmation, clocks, both players' names/titles/ratings, provisional
+  markers, one-shot presence/profile metadata,
   contract-gated draw/takeback,
   abort/resign, opponent-left claims, time gifts, typed action-completion
   feedback, reconnect and game-over states;
@@ -174,6 +175,10 @@ Minimum emulator smoke test:
 - Turn, submission, check, premove, and connection status share one compact
   Fast-refresh line in the top player bar. Live games cannot navigate Home;
   GameOver enables and reveals the bottom navigation action.
+- Player title/provisional data comes from the existing `gameFull` snapshot.
+  Presence, streaming, patron, and flair use one asynchronous `/api/users/status`
+  request after that snapshot; never block or poll the authoritative game stream.
+  `opponentGone` remains the live source for disconnect and claim state.
 - Game-over result logic keeps Lichess's raw status internally, but the backend
   sends a human-readable termination label such as `Time forfeit` for display.
 - Live clocks refresh every 10 seconds above one minute, align one transition

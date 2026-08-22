@@ -113,8 +113,26 @@ Rectangle {
     // backend and the "" / null fallback here.
     property string yourName: ""
     property var yourRating: null
+    property string yourId: ""
+    property string yourTitle: ""
+    property bool yourProvisional: false
+    property bool yourStatusKnown: false
+    property bool yourOnline: false
+    property bool yourPlaying: false
+    property bool yourStreaming: false
+    property bool yourPatron: false
+    property string yourFlair: ""
     property string opponentName: ""
     property var opponentRating: null
+    property string opponentId: ""
+    property string opponentTitle: ""
+    property bool opponentProvisional: false
+    property bool opponentStatusKnown: false
+    property bool opponentOnline: false
+    property bool opponentPlaying: false
+    property bool opponentStreaming: false
+    property bool opponentPatron: false
+    property string opponentFlair: ""
     property string gameDescription: ""
     property var firstMoveTimeMs: null
     // Pushed from main.qml's root state (see settings.rs / SettingsScreen.qml) --
@@ -352,6 +370,49 @@ Rectangle {
         return color === boardScreen.yourColor
             ? boardScreen.yourRating
             : boardScreen.opponentRating
+    }
+
+    function titleFor(color) {
+        return color === boardScreen.yourColor
+            ? boardScreen.yourTitle
+            : boardScreen.opponentTitle
+    }
+
+    function provisionalFor(color) {
+        return color === boardScreen.yourColor
+            ? boardScreen.yourProvisional
+            : boardScreen.opponentProvisional
+    }
+
+    function presenceFor(color) {
+        var isOpponent = color !== boardScreen.yourColor
+        if (isOpponent && boardScreen.opponentGone) return "Disconnected"
+        var known = isOpponent
+            ? boardScreen.opponentStatusKnown
+            : boardScreen.yourStatusKnown
+        if (!known) return ""
+        var playing = isOpponent ? boardScreen.opponentPlaying : boardScreen.yourPlaying
+        var online = isOpponent ? boardScreen.opponentOnline : boardScreen.yourOnline
+        if (playing) return "Playing"
+        return online ? "Online" : "Offline"
+    }
+
+    function streamingFor(color) {
+        return color === boardScreen.yourColor
+            ? boardScreen.yourStreaming
+            : boardScreen.opponentStreaming
+    }
+
+    function patronFor(color) {
+        return color === boardScreen.yourColor
+            ? boardScreen.yourPatron
+            : boardScreen.opponentPatron
+    }
+
+    function flairFor(color) {
+        return color === boardScreen.yourColor
+            ? boardScreen.yourFlair
+            : boardScreen.opponentFlair
     }
 
     function clockFor(color) {
@@ -818,7 +879,13 @@ Rectangle {
             width: parent.width
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.topColor)
+            playerTitle: boardScreen.titleFor(boardScreen.topColor)
             rating: boardScreen.ratingFor(boardScreen.topColor)
+            provisional: boardScreen.provisionalFor(boardScreen.topColor)
+            presenceText: boardScreen.presenceFor(boardScreen.topColor)
+            streaming: boardScreen.streamingFor(boardScreen.topColor)
+            patron: boardScreen.patronFor(boardScreen.topColor)
+            flair: boardScreen.flairFor(boardScreen.topColor)
             clockMs: boardScreen.displayClockFor(boardScreen.topColor)
             showClock: boardScreen.initialClockMs !== null
             active: boardScreen.turn === boardScreen.topColor
@@ -1058,7 +1125,13 @@ Rectangle {
             width: parent.width
             darkMode: boardScreen.darkMode
             playerName: boardScreen.nameFor(boardScreen.bottomColor)
+            playerTitle: boardScreen.titleFor(boardScreen.bottomColor)
             rating: boardScreen.ratingFor(boardScreen.bottomColor)
+            provisional: boardScreen.provisionalFor(boardScreen.bottomColor)
+            presenceText: boardScreen.presenceFor(boardScreen.bottomColor)
+            streaming: boardScreen.streamingFor(boardScreen.bottomColor)
+            patron: boardScreen.patronFor(boardScreen.bottomColor)
+            flair: boardScreen.flairFor(boardScreen.bottomColor)
             clockMs: boardScreen.displayClockFor(boardScreen.bottomColor)
             showClock: boardScreen.initialClockMs !== null
             active: boardScreen.turn === boardScreen.bottomColor
@@ -1553,12 +1626,50 @@ Rectangle {
         }
     }
 
+    function resetPlayerStatuses() {
+        boardScreen.yourStatusKnown = false
+        boardScreen.yourOnline = false
+        boardScreen.yourPlaying = false
+        boardScreen.yourStreaming = false
+        boardScreen.yourPatron = false
+        boardScreen.yourFlair = ""
+        boardScreen.opponentStatusKnown = false
+        boardScreen.opponentOnline = false
+        boardScreen.opponentPlaying = false
+        boardScreen.opponentStreaming = false
+        boardScreen.opponentPatron = false
+        boardScreen.opponentFlair = ""
+    }
+
+    function applyPlayerStatus(player) {
+        var playerId = (player.id || "").toLowerCase()
+        if (playerId.length === 0) return
+        if (playerId === boardScreen.yourId.toLowerCase()) {
+            boardScreen.yourStatusKnown = true
+            boardScreen.yourOnline = player.online || false
+            boardScreen.yourPlaying = player.playing || false
+            boardScreen.yourStreaming = player.streaming || false
+            boardScreen.yourPatron = player.patron || false
+            boardScreen.yourFlair = player.flair || ""
+            if (player.title) boardScreen.yourTitle = player.title
+        } else if (playerId === boardScreen.opponentId.toLowerCase()) {
+            boardScreen.opponentStatusKnown = true
+            boardScreen.opponentOnline = player.online || false
+            boardScreen.opponentPlaying = player.playing || false
+            boardScreen.opponentStreaming = player.streaming || false
+            boardScreen.opponentPatron = player.patron || false
+            boardScreen.opponentFlair = player.flair || ""
+            if (player.title) boardScreen.opponentTitle = player.title
+        }
+    }
+
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
             var nextLastMove = msg.last_move || null
             var nextGameId = msg.game_id || ""
+            var gameChanged = boardScreen.gameId !== nextGameId
             var positionChanged = boardScreen.liveFen !== msg.fen ||
-                boardScreen.gameId !== nextGameId
+                gameChanged
             var previewConfirmed = boardScreen.previewFen.length > 0 &&
                 boardScreen.previewFen === msg.fen &&
                 boardScreen.gameId === nextGameId
@@ -1581,6 +1692,7 @@ Rectangle {
                 boardFlashTimer.restart()
             }
             if (positionChanged) boardScreen.clearAnnotations()
+            if (gameChanged) boardScreen.resetPlayerStatuses()
             boardScreen.gameId = nextGameId
             if (positionChanged) {
                 boardScreen.liveFen = msg.fen
@@ -1632,10 +1744,18 @@ Rectangle {
             if (!boardScreen.canOfferDraw && gameActionsLoader.item) {
                 gameActionsLoader.item.resetDrawOffer()
             }
-            boardScreen.yourName = msg.your_name || ""
-            boardScreen.yourRating = msg.your_rating !== undefined ? msg.your_rating : null
-            boardScreen.opponentName = msg.opponent_name || ""
-            boardScreen.opponentRating = msg.opponent_rating !== undefined ? msg.opponent_rating : null
+            var yourPlayer = msg.your_player || {}
+            var opponentPlayer = msg.opponent_player || {}
+            boardScreen.yourName = yourPlayer.name || ""
+            boardScreen.yourRating = yourPlayer.rating !== undefined ? yourPlayer.rating : null
+            boardScreen.yourId = yourPlayer.id || ""
+            boardScreen.yourTitle = yourPlayer.title || ""
+            boardScreen.yourProvisional = yourPlayer.provisional || false
+            boardScreen.opponentName = opponentPlayer.name || ""
+            boardScreen.opponentRating = opponentPlayer.rating !== undefined ? opponentPlayer.rating : null
+            boardScreen.opponentId = opponentPlayer.id || ""
+            boardScreen.opponentTitle = opponentPlayer.title || ""
+            boardScreen.opponentProvisional = opponentPlayer.provisional || false
             boardScreen.gameDescription = msg.game_description || ""
             boardScreen.firstMoveTimeMs = msg.first_move_time_ms !== undefined
                 ? msg.first_move_time_ms
@@ -1657,6 +1777,12 @@ Rectangle {
                 boardScreen.cancelPremove()
             }
             boardScreen.executePendingPremove()
+        } else if (msg.type === "PlayerStatuses") {
+            if (msg.game_id !== boardScreen.gameId) return
+            var players = msg.players || []
+            for (var playerIndex = 0; playerIndex < players.length; playerIndex++) {
+                boardScreen.applyPlayerStatus(players[playerIndex])
+            }
         } else if (msg.type === "GameOver") {
             boardScreen.previewFen = ""
             boardScreen.returnToLive()

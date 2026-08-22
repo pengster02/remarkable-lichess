@@ -187,6 +187,32 @@ pub struct OngoingGameSummary {
     pub is_my_turn: bool,
 }
 
+// Boxed inside BoardState so rich identity stays one typed value without making
+// the whole message enum large. Alternatives were ten flat optional fields
+// (simpler JSON, larger enum) or an untyped map (smaller API, weaker guarantees).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PlayerIdentity {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub title: Option<String>,
+    pub rating: Option<u32>,
+    pub provisional: bool,
+}
+
+// Delivered separately so optional profile enrichment can never delay or enlarge
+// BoardState. Alternatives were nesting it in every BoardState (repeated bytes and
+// UI churn) or a generic JSON map (less protocol churn, but no compile-time shape).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct PlayerStatusSummary {
+    pub id: String,
+    pub title: Option<String>,
+    pub online: bool,
+    pub playing: bool,
+    pub streaming: bool,
+    pub patron: bool,
+    pub flair: Option<String>,
+}
+
 // This account's own whole-game accuracy stats from Lichess's computer
 // analysis (see lichess::models::PlayerAnalysisSummary) -- present only once
 // this specific game has actually been analyzed there, which most games
@@ -338,10 +364,8 @@ pub enum BackendMessage {
         // Confirmed against lichess-org/api's GameEventPlayer.yaml. Fixed for the
         // game's lifetime (see game::session::GameSession), unlike every field
         // above -- an AI opponent has no rating, only a name/level, hence Option.
-        your_name: Option<String>,
-        your_rating: Option<u32>,
-        opponent_name: Option<String>,
-        opponent_rating: Option<u32>,
+        your_player: Box<PlayerIdentity>,
+        opponent_player: Box<PlayerIdentity>,
         game_description: Box<str>,
         first_move_time_ms: Option<Box<u64>>,
         // Each side's starting clock allotment in ms (see
@@ -379,6 +403,7 @@ pub enum BackendMessage {
     // just shows/hides a "Claim victory" action and lets Lichess's own endpoint
     // reject an early claim, same as every other server-authoritative action here.
     OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
+    PlayerStatuses { game_id: String, players: Box<[PlayerStatusSummary]> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
     SettingsState {
         auto_queen_promotion: bool,
@@ -767,10 +792,20 @@ mod tests {
             appended_move: None,
             captured_by_white: vec!["bP".into()].into_boxed_slice(),
             captured_by_black: vec![].into_boxed_slice(),
-            your_name: Some("Alice".into()),
-            your_rating: Some(1700),
-            opponent_name: None,
-            opponent_rating: None,
+            your_player: Box::new(PlayerIdentity {
+                id: Some("alice".into()),
+                name: Some("Alice".into()),
+                title: Some("IM".into()),
+                rating: Some(1700),
+                provisional: true,
+            }),
+            opponent_player: Box::new(PlayerIdentity {
+                id: None,
+                name: None,
+                title: None,
+                rating: None,
+                provisional: false,
+            }),
             game_description: "Casual Rapid • 10+0".into(),
             first_move_time_ms: None,
             initial_clock_ms: Some(Box::new(600_000)),
@@ -780,6 +815,27 @@ mod tests {
         assert!(json.contains(r#""game_id":"g1""#));
         assert!(json.contains(r#""captured_by_white":["bP"]"#));
         assert!(json.contains(r#""fen":"startpos""#));
-        assert!(json.contains(r#""your_rating":1700"#));
+        assert!(json.contains(r#""your_player":{"id":"alice","name":"Alice","title":"IM","rating":1700,"provisional":true}"#));
+    }
+
+    #[test]
+    fn player_statuses_are_scoped_to_the_open_game() {
+        let msg = BackendMessage::PlayerStatuses {
+            game_id: "g1".into(),
+            players: vec![PlayerStatusSummary {
+                id: "alice".into(),
+                title: Some("IM".into()),
+                online: true,
+                playing: true,
+                streaming: false,
+                patron: true,
+                flair: Some("symbols.white-heart".into()),
+            }]
+            .into_boxed_slice(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"PlayerStatuses""#));
+        assert!(json.contains(r#""game_id":"g1""#));
+        assert!(json.contains(r#""patron":true"#));
     }
 }

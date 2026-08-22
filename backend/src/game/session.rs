@@ -1,6 +1,6 @@
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game};
 use crate::lichess::models::{GameFull, GameState};
-use crate::protocol::{BackendMessage, LegalMove};
+use crate::protocol::{BackendMessage, LegalMove, PlayerIdentity};
 use shakmaty::{Chess, Position};
 use std::time::Instant;
 
@@ -18,10 +18,8 @@ pub struct GameSession {
     pub captured_by_black: Vec<String>,
     // Fixed for the life of the game (unlike everything above) -- computed once
     // from gameFull, not re-derived on every gameState update.
-    pub your_name: Option<String>,
-    pub your_rating: Option<u32>,
-    pub opponent_name: Option<String>,
-    pub opponent_rating: Option<u32>,
+    pub your_player: PlayerIdentity,
+    pub opponent_player: PlayerIdentity,
     pub game_description: String,
     pub rated: bool,
     pub is_tournament: bool,
@@ -29,7 +27,7 @@ pub struct GameSession {
     pub opponent_is_human: bool,
     pub state: GameState,
     // Each side's starting allotment in ms, from GameFull.clock.initial -- fixed
-    // for the game's lifetime like opponent_name/opponent_rating above, unlike
+    // for the game's lifetime like opponent_player above, unlike
     // the live wtime/btime GameState carries every update. Needed (not just the
     // live remaining time) to compute a "low time" fraction of the *original*
     // allotment (e.g. lichess-org/mobile's own ~1/8-of-total clock warning) --
@@ -90,14 +88,16 @@ fn takeback_offered_by_you(state: &GameState, your_color: &str) -> bool {
     if your_color == "black" { state.btakeback } else { state.wtakeback }
 }
 
-fn player_display_name(player: &crate::lichess::models::Player) -> Option<String> {
-    if let Some(level) = player.ai_level {
-        return Some(format!("Stockfish level {level}"));
+fn player_identity(player: &crate::lichess::models::Player) -> PlayerIdentity {
+    PlayerIdentity {
+        id: player.id.clone(),
+        name: player.ai_level
+            .map(|level| format!("Stockfish level {level}"))
+            .or_else(|| player.name.clone()),
+        title: player.title.clone(),
+        rating: player.rating,
+        provisional: player.provisional.unwrap_or(false),
     }
-    player.name.as_ref().map(|name| match player.title.as_deref() {
-        Some(title) => format!("{title} {name}"),
-        None => name.clone(),
-    })
 }
 
 fn elapsed_whole_millis(since: Instant, now: Instant) -> u64 {
@@ -223,10 +223,8 @@ fn to_board_state(
         appended_move,
         captured_by_white: session.captured_by_white.clone().into_boxed_slice(),
         captured_by_black: session.captured_by_black.clone().into_boxed_slice(),
-        your_name: session.your_name.clone(),
-        your_rating: session.your_rating,
-        opponent_name: session.opponent_name.clone(),
-        opponent_rating: session.opponent_rating,
+        your_player: Box::new(session.your_player.clone()),
+        opponent_player: Box::new(session.opponent_player.clone()),
         game_description: session.game_description.clone().into_boxed_str(),
         first_move_time_ms: first_move_time_ms.map(Box::new),
         initial_clock_ms: session.initial_clock_ms.map(Box::new),
@@ -280,10 +278,8 @@ impl GameSession {
             position_history: replay.position_history,
             captured_by_white: replay.captured_by_white,
             captured_by_black: replay.captured_by_black,
-            your_name: player_display_name(local_player),
-            your_rating: local_player.rating,
-            opponent_name: player_display_name(opp),
-            opponent_rating: opp.rating,
+            your_player: player_identity(local_player),
+            opponent_player: player_identity(opp),
             game_description: game_description(full),
             rated: full.rated,
             is_tournament: full.tournament_id.is_some(),
@@ -743,16 +739,20 @@ mod tests {
         let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
             BackendMessage::BoardState {
-                your_name,
-                your_rating,
-                opponent_name,
-                opponent_rating,
+                your_player,
+                opponent_player,
                 ..
             } => {
-                assert_eq!(your_name, Some("MyName".to_string()));
-                assert_eq!(your_rating, Some(1500));
-                assert_eq!(opponent_name, Some("OpponentName".to_string()));
-                assert_eq!(opponent_rating, Some(1600));
+                assert_eq!(your_player.name.as_deref(), Some("MyName"));
+                assert_eq!(your_player.rating, Some(1500));
+                assert_eq!(your_player.id.as_deref(), Some("my-id"));
+                assert_eq!(your_player.title, None);
+                assert!(!your_player.provisional);
+                assert_eq!(opponent_player.name.as_deref(), Some("OpponentName"));
+                assert_eq!(opponent_player.rating, Some(1600));
+                assert_eq!(opponent_player.id.as_deref(), Some("opponent-id"));
+                assert_eq!(opponent_player.title, None);
+                assert!(!opponent_player.provisional);
             }
             _ => panic!("expected BoardState"),
         }
@@ -818,23 +818,23 @@ mod tests {
         let full = sample_full("");
         let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
-            BackendMessage::BoardState { opponent_name, opponent_rating, .. } => {
-                assert_eq!(opponent_name, None);
-                assert_eq!(opponent_rating, None);
+            BackendMessage::BoardState { opponent_player, .. } => {
+                assert_eq!(opponent_player.name, None);
+                assert_eq!(opponent_player.rating, None);
             }
             _ => panic!("expected BoardState"),
         }
     }
 
     #[test]
-    fn ai_level_and_player_title_produce_useful_opponent_names() {
+    fn ai_level_and_player_title_produce_structured_opponent_identity() {
         let mut full = sample_full("");
         full.black.ai_level = Some(3);
         full.black.id = None;
         let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
-            BackendMessage::BoardState { opponent_name, .. } => {
-                assert_eq!(opponent_name.as_deref(), Some("Stockfish level 3"));
+            BackendMessage::BoardState { opponent_player, .. } => {
+                assert_eq!(opponent_player.name.as_deref(), Some("Stockfish level 3"));
             }
             _ => panic!("expected BoardState"),
         }
@@ -842,10 +842,16 @@ mod tests {
         let mut full = sample_full("");
         full.black.name = Some("OpponentName".into());
         full.black.title = Some("GM".into());
+        full.black.provisional = Some(true);
         let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
-            BackendMessage::BoardState { opponent_name, .. } => {
-                assert_eq!(opponent_name.as_deref(), Some("GM OpponentName"));
+            BackendMessage::BoardState {
+                opponent_player,
+                ..
+            } => {
+                assert_eq!(opponent_player.name.as_deref(), Some("OpponentName"));
+                assert_eq!(opponent_player.title.as_deref(), Some("GM"));
+                assert!(opponent_player.provisional);
             }
             _ => panic!("expected BoardState"),
         }

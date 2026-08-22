@@ -64,7 +64,9 @@ a game against Stockfish levels 1–8.
 
 ### Live play
 
-Both players' names, ratings, and clocks sit above and below the board. Turn,
+Both players' names, titles, ratings, provisional markers, and clocks sit above
+and below the board. A single non-blocking profile lookup enriches the bars with
+presence, streaming, patron, and flair labels; it never polls during play. Turn,
 submission, check, premove, and connection status share one compact line that
 refreshes on its own so the rest of the screen stays still. Below the board, a
 fixed two-control strip: **Actions** and **Moves**.
@@ -125,6 +127,7 @@ resign/abort guard.
 - Games against Stockfish, levels 1–8
 - Tap or drag input, legal-target display, premoves, promotion picker
 - Optional move confirmation, clocks with first-move deadlines
+- Player titles, provisional ratings, and one-shot presence/profile metadata
 - Draw and takeback offers, abort, resign, opponent-left claims, time gifts
 - Berserk in eligible arena games
 - Reconnect and game-over handling

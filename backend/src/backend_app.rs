@@ -8,7 +8,7 @@ use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, GameAnalysisSummary,
     GameAction, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
-    MSG_TYPE_BACKEND_TO_FRONTEND,
+    PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
@@ -918,6 +918,40 @@ fn spawn_hold_connection_open(
     })
 }
 
+fn spawn_player_status_request(
+    client: LichessClient,
+    game_id: String,
+    user_ids: Vec<String>,
+    replier: BackendReplier<LichessBackend>,
+    write_lock: Arc<std::sync::Mutex<()>>,
+) {
+    tokio::spawn(async move {
+        match client.get_user_statuses(&user_ids).await {
+            Ok(rows) => {
+                let players = rows
+                    .into_iter()
+                    .map(|row| PlayerStatusSummary {
+                        id: row.id,
+                        title: row.title,
+                        online: row.online,
+                        playing: row.playing,
+                        streaming: row.streaming,
+                        patron: row.patron || row.patron_color.is_some(),
+                        flair: row.flair,
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
+                send_locked(
+                    &replier,
+                    &write_lock,
+                    &BackendMessage::PlayerStatuses { game_id, players },
+                );
+            }
+            Err(error) => log::debug!("optional player status lookup failed: {error}"),
+        }
+    });
+}
+
 fn spawn_game_stream(
     client: LichessClient,
     game_id: String,
@@ -929,6 +963,7 @@ fn spawn_game_stream(
     tokio::spawn(async move {
         let mut backoff_secs: u64 = 1;
         let mut game_over = false;
+        let mut player_status_requested = false;
         while !game_over {
             if let Ok(mut lines) = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
                 backoff_secs = 1;
@@ -936,6 +971,7 @@ fn spawn_game_stream(
                     next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
                 {
                     if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
+                            let mut status_ids = None;
                             let mut guard = session_handle.lock().await;
                             let board_msg = match msg {
                                 // Checks `full.state.status` here, not just on a later
@@ -973,6 +1009,16 @@ fn spawn_game_stream(
                                                     &full.state.winner,
                                                 ))
                                             } else {
+                                                if !player_status_requested {
+                                                    let ids = [s.your_player.id.clone(), s.opponent_player.id.clone()]
+                                                        .into_iter()
+                                                        .flatten()
+                                                        .collect::<Vec<_>>();
+                                                    if !ids.is_empty() {
+                                                        player_status_requested = true;
+                                                        status_ids = Some(ids);
+                                                    }
+                                                }
                                                 *guard = Some(s);
                                                 Some(board_msg)
                                             }
@@ -1040,6 +1086,15 @@ fn spawn_game_stream(
                             drop(guard);
                             if let Some(m) = board_msg {
                                 send_locked(&replier, &write_lock, &m);
+                            }
+                            if let Some(ids) = status_ids {
+                                spawn_player_status_request(
+                                    client.clone(),
+                                    game_id.clone(),
+                                    ids,
+                                    replier.clone(),
+                                    write_lock.clone(),
+                                );
                             }
                         if game_over {
                             break;
