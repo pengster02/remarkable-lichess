@@ -20,6 +20,8 @@ T.TextField {
     color: theme.text
     placeholderTextColor: theme.textMuted
     width: theme.textFieldWidthMedium
+    implicitHeight: theme.touchTarget
+    verticalAlignment: TextInput.AlignVCenter
     padding: theme.spacingSmall
 
     background: Rectangle {

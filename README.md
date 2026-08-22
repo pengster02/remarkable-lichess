@@ -46,7 +46,9 @@ Scan the QR code with your phone and approve on lichess.org — an OAuth PKCE fl
 that never asks you to type a token on a tablet keyboard. The redirect comes
 straight back to the device over your local network. If you have no camera
 handy, the full URL is printed underneath, and a personal access token still
-works as a fallback.
+works as a fallback. On later launches, a quiet startup screen checks the saved
+sign-in first; the sign-in screen appears only when credentials are missing or
+rejected.
 
 | Scan to sign in | Fallbacks |
 | --- | --- |
@@ -68,7 +70,9 @@ Both players' names, titles, ratings, provisional markers, and clocks sit above
 and below the board. A single non-blocking profile lookup enriches the bars with
 presence, streaming, patron, and flair labels; it never polls during play. Turn,
 submission, check, premove, and connection status share one compact line that
-refreshes on its own so the rest of the screen stays still. Below the board, a
+refreshes on its own so the rest of the screen stays still. The rated/casual,
+speed, starting minutes, and increment description remains visible beside the
+board. Below the board, a
 fixed two-control strip: **Actions** and **Moves**.
 
 | Game start | Your move | Game actions |
@@ -271,7 +275,7 @@ A new backend binary needs a full AppLoad relaunch, not just a file copy.
 
 ## Validate changes
 
-Backend — 158 tests, including `wiremock`-backed Lichess client coverage:
+Backend — 162 tests, including `wiremock`-backed Lichess client coverage:
 
 ```bash
 cd backend
@@ -289,7 +293,7 @@ build in a Linux container:
 cross check --features transport --target aarch64-unknown-linux-gnu
 ```
 
-QML lint and the 13 shared interaction test suites, using the emulator's Qt:
+QML lint and the 14 shared interaction test suites, using the emulator's Qt:
 
 ```bash
 docker exec remarkable-lichess-local sh -lc \

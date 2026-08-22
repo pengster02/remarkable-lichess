@@ -289,6 +289,10 @@ pub struct CloudEvaluationLine {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum BackendMessage {
+    // Makes startup authentication an explicit state instead of using LoginScreen
+    // as a placeholder while a saved token is still being checked. Alternatives:
+    // infer this from LoginFailed, or let the frontend start OAuth immediately.
+    AuthenticationRequired,
     TokenVerified { username: String },
     TokenInvalid { reason: String },
     // Everything the sign-in screen needs to draw itself. `authorize_url` is
@@ -806,7 +810,7 @@ mod tests {
                 rating: None,
                 provisional: false,
             }),
-            game_description: "Casual Rapid • 10+0".into(),
+            game_description: "Casual Rapid • 10 min + 0 sec/move".into(),
             first_move_time_ms: None,
             initial_clock_ms: Some(Box::new(600_000)),
         };
@@ -816,6 +820,12 @@ mod tests {
         assert!(json.contains(r#""captured_by_white":["bP"]"#));
         assert!(json.contains(r#""fen":"startpos""#));
         assert!(json.contains(r#""your_player":{"id":"alice","name":"Alice","title":"IM","rating":1700,"provisional":true}"#));
+    }
+
+    #[test]
+    fn authentication_required_is_an_explicit_startup_state() {
+        let json = serde_json::to_string(&BackendMessage::AuthenticationRequired).unwrap();
+        assert_eq!(json, r#"{"type":"AuthenticationRequired"}"#);
     }
 
     #[test]

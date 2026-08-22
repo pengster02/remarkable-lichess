@@ -123,11 +123,11 @@ fn game_description(full: &GameFull) -> String {
     if let Some(clock) = &full.clock {
         let seconds = clock.initial / 1_000;
         let initial = if seconds >= 60 && seconds % 60 == 0 {
-            (seconds / 60).to_string()
+            format!("{} min", seconds / 60)
         } else {
-            format!("{seconds}s")
+            format!("{seconds} sec")
         };
-        parts.push(format!("{initial}+{}", clock.increment / 1_000));
+        parts.push(format!("{initial} + {} sec/move", clock.increment / 1_000));
     } else if let Some(days) = full.days_per_turn {
         parts.push(format!("{days} days/move"));
     }
@@ -790,7 +790,7 @@ mod tests {
         let (_session, msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         match msg {
             BackendMessage::BoardState { game_description, .. } => {
-                assert_eq!(game_description.as_ref(), "Casual Rapid • 10+0");
+                assert_eq!(game_description.as_ref(), "Casual Rapid • 10 min + 0 sec/move");
             }
             _ => panic!("expected BoardState"),
         }

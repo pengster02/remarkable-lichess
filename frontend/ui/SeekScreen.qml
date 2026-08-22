@@ -26,6 +26,17 @@ Rectangle {
     property string pendingAction: ""
     property string formError: ""
 
+    // A plain “10 + 0” is compact but opaque on a setup form. Alternatives were
+    // unit suffixes inside editable fields, or preset-only time controls.
+    readonly property string timeControlSummary: {
+        var minutes = wholeNumber(minutesField.text)
+        var increment = wholeNumber(incrementField.text)
+        if (isNaN(minutes) || isNaN(increment)) return "Enter a time control"
+        return minutes + (minutes === 1 ? " minute" : " minutes") +
+            " + " + increment + (increment === 1 ? " second" : " seconds") +
+            " per move"
+    }
+
     function wholeNumber(text) {
         var trimmed = text.trim()
         return /^\d+$/.test(trimmed) ? Number(trimmed) : NaN
@@ -167,10 +178,21 @@ Rectangle {
             title: "Time control"
             visible: !seekScreen.waiting
 
+            Text {
+                objectName: "timeControlSummary"
+                width: parent.width
+                text: seekScreen.timeControlSummary
+                font.pixelSize: theme.fontLarge
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                color: theme.text
+            }
+
             Row {
                 width: parent.width
                 spacing: theme.spacingSmall
-                Text { text: "Minutes"; font.pixelSize: theme.fontBody; width: parent.width - minutesField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                Text { text: "Starting minutes"; font.pixelSize: theme.fontBody; width: parent.width - minutesField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
                 AppTextField {
                     id: minutesField
                     objectName: "minutesField"
@@ -185,7 +207,7 @@ Rectangle {
             Row {
                 width: parent.width
                 spacing: theme.spacingSmall
-                Text { text: "Increment"; font.pixelSize: theme.fontBody; width: parent.width - incrementField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
+                Text { text: "Seconds added per move"; font.pixelSize: theme.fontBody; width: parent.width - incrementField.width - parent.spacing; anchors.verticalCenter: parent.verticalCenter; color: theme.text }
                 AppTextField {
                     id: incrementField
                     objectName: "incrementField"

@@ -55,6 +55,7 @@ TestCase {
         board.opponentId = ""
         board.opponentTitle = ""
         board.opponentProvisional = false
+        board.gameDescription = ""
         board.resetPlayerStatuses()
     }
 
@@ -99,6 +100,16 @@ TestCase {
         compare(topPlayerBar.width, board.width - theme.pageSideMargin * 2)
         compare(boardToolbar.width, topPlayerBar.width)
         compare(topPlayerBar.y, 0)
+    }
+
+    function test_timeControlDescriptionIsVisibleBesideTheBoard() {
+        var description = findChild(board, "gameDescriptionText")
+        verify(description !== null)
+        compare(board.hasGameDescription, false)
+
+        board.gameDescription = "Casual Rapid • 10 min + 0 sec/move"
+        compare(board.hasGameDescription, true)
+        compare(description.text, "Casual Rapid • 10 min + 0 sec/move")
     }
 
     function test_opponentIdentityStaysBold() {

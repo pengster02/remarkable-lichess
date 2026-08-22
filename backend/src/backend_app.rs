@@ -1149,13 +1149,17 @@ impl AppLoadBackend for LichessBackend {
                     Ok(saved_token) => {
                         let saved_token = saved_token.trim().to_string();
                         if saved_token.is_empty() {
-                            log::info!("NEW_COORDINATOR: token file empty, staying on Setup");
+                            log::info!("NEW_COORDINATOR: token file empty, requesting sign-in");
+                            self.send(replier, &BackendMessage::AuthenticationRequired);
                         } else {
                             log::info!("NEW_COORDINATOR: no client yet, retrying saved token");
                             self.activate_token(replier, saved_token).await;
                         }
                     }
-                    Err(e) => log::info!("NEW_COORDINATOR: no saved token ({e}), staying on Setup"),
+                    Err(e) => {
+                        log::info!("NEW_COORDINATOR: no saved token ({e}), requesting sign-in");
+                        self.send(replier, &BackendMessage::AuthenticationRequired);
+                    }
                 }
             } else if let Some(username) = self.username.clone() {
                 // The backend process outlives a frontend reload (see deploy.sh's own

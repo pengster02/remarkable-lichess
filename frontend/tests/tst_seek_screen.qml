@@ -43,6 +43,18 @@ TestCase {
         compare(pager.pageCount, 2)
     }
 
+    function test_timeControlUsesExplicitUnits() {
+        var summary = findChild(seek, "timeControlSummary")
+        verify(summary !== null)
+        compare(summary.text, "10 minutes + 0 seconds per move")
+
+        findChild(seek, "minutesField").text = "1"
+        findChild(seek, "incrementField").text = "1"
+        compare(summary.text, "1 minute + 1 second per move")
+        verify(findChild(seek, "minutesField").height >= 96)
+        verify(findChild(seek, "incrementField").height >= 96)
+    }
+
     function test_invalidTimeNeverLeavesTheDevice() {
         findChild(seek, "minutesField").text = "ten"
         seek.submitSeek()

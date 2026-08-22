@@ -134,6 +134,7 @@ Rectangle {
     property bool opponentPatron: false
     property string opponentFlair: ""
     property string gameDescription: ""
+    readonly property bool hasGameDescription: gameDescription.length > 0
     property var firstMoveTimeMs: null
     // Pushed from main.qml's root state (see settings.rs / SettingsScreen.qml) --
     // when on, a queen promotion is sent immediately instead of opening the
@@ -897,6 +898,22 @@ Rectangle {
             statusEmphasized: !boardScreen.gameOver &&
                 boardScreen.turn === boardScreen.yourColor
             pieceSet: boardScreen.pieceSet
+        }
+
+        // Keeps the server-confirmed time control in view without shrinking the
+        // board. Alternatives were putting it in a player name or the toolbar.
+        Text {
+            objectName: "gameDescriptionText"
+            width: parent.width
+            height: theme.fontSmall + theme.spacingXs
+            text: boardScreen.gameDescription
+            visible: boardScreen.hasGameDescription
+            font.pixelSize: theme.fontSmall
+            font.bold: true
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            color: theme.textMuted
         }
 
         Row {

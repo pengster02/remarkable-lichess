@@ -13,6 +13,9 @@ Rectangle {
     Theme { id: theme; darkMode: root.darkMode }
 
     property bool hasToken: false
+    // Explicitly models startup so LoginScreen never flashes while a saved token
+    // is being verified. Alternatives: a timer-delayed login, or a blank Loader.
+    property string authenticationState: "checking"
     property string username: ""
     property bool darkMode: false
     // Persisted server-side (see backend/src/settings.rs) -- pushed into any
@@ -254,9 +257,15 @@ Rectangle {
             var msg = JSON.parse(contents)
             if (msg.type === "TokenVerified") {
                 root.hasToken = true
+                root.authenticationState = "authenticated"
                 root.username = msg.username || ""
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestSettings"}))
                 screenLoader.source = "HomeScreen.qml"
+            } else if (msg.type === "AuthenticationRequired") {
+                root.hasToken = false
+                root.authenticationState = "required"
+                root.expectedHomeGameId = ""
+                screenLoader.source = "LoginScreen.qml"
             } else if (msg.type === "SettingsState") {
                 // Updates root state (not just forwarded to the current screen)
                 // since it needs to persist across navigation, same as darkMode --
@@ -279,6 +288,7 @@ Rectangle {
                 }
             } else if (msg.type === "TokenInvalid") {
                 root.hasToken = false
+                root.authenticationState = "required"
                 root.expectedHomeGameId = ""
                 screenLoader.source = "LoginScreen.qml"
                 if (screenLoader.item && screenLoader.item.handleMessage) {
@@ -394,7 +404,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        source: "LoginScreen.qml"
+        source: "StartupScreen.qml"
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend
