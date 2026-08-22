@@ -708,8 +708,22 @@ impl LichessBackend {
         };
         match result {
             Ok((uci, game_id, expected_moves, preview)) => {
+                let submitted_at = Instant::now();
                 self.send(replier, &preview);
-                match client.make_move(&game_id, &uci).await {
+                let response = client.make_move(&game_id, &uci).await;
+                let elapsed = submitted_at.elapsed();
+                if elapsed >= Duration::from_millis(750) {
+                    log::warn!(
+                        "make_move {game_id} {uci} took {}ms",
+                        elapsed.as_millis()
+                    );
+                } else {
+                    log::debug!(
+                        "make_move {game_id} {uci} took {}ms",
+                        elapsed.as_millis()
+                    );
+                }
+                match response {
                     Ok(()) => {
                         self.send(
                             replier,

@@ -358,7 +358,7 @@ TestCase {
         compare(board.statusText, "Move rejected: network error")
     }
 
-    function test_reconnectRollsBackUnconfirmedMovePreview() {
+    function test_reconnectKeepsUnconfirmedMovePreview() {
         var liveFen = "8/8/8/8/8/8/4P3/4K2k w - - 0 1"
         var previewFen = "8/8/8/8/4P3/8/8/4K2k b - - 0 1"
         board.handleMessage({
@@ -385,12 +385,12 @@ TestCase {
             in_check: false
         })
         board.handleMessage({type: "GameStreamReconnecting"})
-        compare(board.previewFen, "")
-        compare(board.fen, liveFen)
-        compare(board.turn, "white")
-        compare(board.whiteTimeMs, 60000)
+        compare(board.previewFen, previewFen)
+        compare(board.fen, previewFen)
+        compare(board.turn, "black")
+        compare(board.whiteTimeMs, 59000)
         compare(board.statusText, "")
-        compare(board.topStatusText(), "Your move")
+        compare(board.topStatusText(), "Waiting for opponent")
 
         board.liveFen = ""
         board.handleMessage({type: "GameStreamReconnecting"})

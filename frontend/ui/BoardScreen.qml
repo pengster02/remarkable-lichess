@@ -1849,10 +1849,12 @@ Rectangle {
             boardScreen.selectedSquare = ""
             moveRequestGate.clear()
         } else if (msg.type === "GameStreamReconnecting") {
-            boardScreen.rollbackMovePreview()
-            // A cached authoritative board remains playable while the stream
-            // reconnects. Alternatives were overwriting “Your move” on every
-            // retry, or hiding reconnects even before the first snapshot.
+            // The move POST and game stream are independent connections. Rolling
+            // back here made a valid optimistic move snap back whenever only the
+            // stream dropped; MoveRejected or the next BoardState are authoritative.
+            // Alternatives were disabling optimistic moves during reconnects, or
+            // waiting for every POST before moving a piece, both making slow links
+            // directly visible in gameplay.
             if (boardScreen.liveFen.length === 0) {
                 boardScreen.statusText = "Reconnecting..."
             }
