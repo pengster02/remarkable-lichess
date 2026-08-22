@@ -7,6 +7,13 @@ T.TextField {
     id: control
     property bool darkMode: nearestDarkMode(parent)
 
+    // reMarkable's numeric keyboard does not always expose a dismiss key.
+    // A page-wide tap catcher or trusting the OS affordance were the alternatives.
+    function dismissKeyboard() {
+        control.focus = false
+        Qt.inputMethod.hide()
+    }
+
     function nearestDarkMode(item) {
         while (item) {
             if (item.hasOwnProperty("darkMode")) return item.darkMode
@@ -23,6 +30,7 @@ T.TextField {
     implicitHeight: theme.touchTarget
     verticalAlignment: TextInput.AlignVCenter
     padding: theme.spacingSmall
+    onAccepted: control.dismissKeyboard()
 
     background: Rectangle {
         radius: theme.controlRadius

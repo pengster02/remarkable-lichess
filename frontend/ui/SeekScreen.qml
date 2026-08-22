@@ -25,6 +25,9 @@ Rectangle {
     property var openChallengeUrls: null
     property string pendingAction: ""
     property string formError: ""
+    readonly property bool keyboardActive: minutesField.activeFocus ||
+        incrementField.activeFocus || usernameField.activeFocus ||
+        aiLevelField.activeFocus
 
     // A plain “10 + 0” is compact but opaque on a setup form. Alternatives were
     // unit suffixes inside editable fields, or preset-only time controls.
@@ -59,10 +62,20 @@ Rectangle {
         return formError.length === 0
     }
 
+    function dismissKeyboard() {
+        minutesField.focus = false
+        incrementField.focus = false
+        usernameField.focus = false
+        aiLevelField.focus = false
+        seekScreen.forceActiveFocus()
+        Qt.inputMethod.hide()
+    }
+
     function submitSeek() {
         // Lichess permits 180s on seeks but only 60s on challenges; one global
         // 60s cap hides valid seeks, while separate duplicate forms add drift.
         if (pendingAction.length > 0 || !validateTimeControl(180)) return
+        dismissKeyboard()
         pendingAction = "seek"
         backendSender({
             type: "CreateSeek",
@@ -80,6 +93,7 @@ Rectangle {
             formError = "Enter the Lichess username you want to challenge."
             return
         }
+        dismissKeyboard()
         pendingAction = "challenge"
         backendSender({
             type: "CreateChallenge",
@@ -93,6 +107,7 @@ Rectangle {
 
     function submitOpenChallenge() {
         if (pendingAction.length > 0 || !validateTimeControl(60)) return
+        dismissKeyboard()
         pendingAction = "open"
         backendSender({
             type: "CreateOpenChallenge",
@@ -109,6 +124,7 @@ Rectangle {
             formError = "Computer level must be a whole number from 1 to 8."
             return
         }
+        dismissKeyboard()
         pendingAction = "computer"
         backendSender({
             type: "ChallengeAi",
@@ -129,6 +145,7 @@ Rectangle {
         enabled: seekScreen.pendingAction.length === 0 || seekScreen.waiting
         text: "Back to Home"
         onClicked: {
+            seekScreen.dismissKeyboard()
             if (seekScreen.waiting) seekScreen.backendSender({type: "CancelSeek"})
             seekScreen.navigateTo("HomeScreen.qml")
         }
@@ -154,6 +171,7 @@ Rectangle {
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: seekColumn.height
+        onPageNavigationRequested: seekScreen.dismissKeyboard()
         pageStops: seekScreen.waiting
             ? [0]
             : [0, playerChallengeSection.y]
@@ -217,6 +235,13 @@ Rectangle {
                     inputMethodHints: Qt.ImhDigitsOnly
                     onTextChanged: seekScreen.formError = ""
                 }
+            }
+
+            KeyboardDismissButton {
+                objectName: "timeKeyboardDoneButton"
+                width: parent.width
+                editing: minutesField.activeFocus || incrementField.activeFocus
+                onDismissRequested: seekScreen.dismissKeyboard()
             }
         }
 
@@ -301,6 +326,12 @@ Rectangle {
                 width: parent.width
                 onTextChanged: seekScreen.formError = ""
             }
+            KeyboardDismissButton {
+                objectName: "usernameKeyboardDoneButton"
+                width: parent.width
+                editing: usernameField.activeFocus
+                onDismissRequested: seekScreen.dismissKeyboard()
+            }
             AppButton {
                 objectName: "challengePlayerButton"
                 width: parent.width
@@ -376,6 +407,12 @@ Rectangle {
                     inputMethodHints: Qt.ImhDigitsOnly
                     onTextChanged: seekScreen.formError = ""
                 }
+            }
+            KeyboardDismissButton {
+                objectName: "computerKeyboardDoneButton"
+                width: parent.width
+                editing: aiLevelField.activeFocus
+                onDismissRequested: seekScreen.dismissKeyboard()
             }
             AppButton {
                 objectName: "computerGameButton"

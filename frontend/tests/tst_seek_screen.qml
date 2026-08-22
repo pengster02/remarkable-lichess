@@ -28,6 +28,31 @@ TestCase {
         findChild(seek, "incrementField").text = "0"
         findChild(seek, "usernameField").text = ""
         findChild(seek, "aiLevelField").text = "3"
+        seek.dismissKeyboard()
+    }
+
+    function test_doneTypingClearsFieldFocus() {
+        var minutes = findChild(seek, "minutesField")
+        var done = findChild(seek, "timeKeyboardDoneButton")
+        verify(minutes !== null)
+        verify(done !== null)
+
+        minutes.forceActiveFocus()
+        verify(seek.keyboardActive)
+        verify(done.editing)
+        done.clicked()
+
+        verify(!minutes.activeFocus)
+        verify(!seek.keyboardActive)
+    }
+
+    function test_pageNavigationDismissesTheKeyboard() {
+        var username = findChild(seek, "usernameField")
+        var pager = findChild(seek, "seekFlickable")
+        username.forceActiveFocus()
+        verify(seek.keyboardActive)
+        pager.pageUp()
+        verify(!seek.keyboardActive)
     }
 
     function test_secondPageBeginsAtPlayerChallenge() {

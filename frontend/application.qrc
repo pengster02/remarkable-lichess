@@ -16,6 +16,7 @@
         <file>ui/MoveListCell.qml</file>
         <file>ui/MoveListRow.qml</file>
         <file>ui/AppTextField.qml</file>
+        <file>ui/KeyboardDismissButton.qml</file>
         <file>ui/PromotionDialog.qml</file>
         <file>ui/SectionCard.qml</file>
         <file>ui/SettingsToggle.qml</file>

@@ -11,6 +11,7 @@ Item {
     property alias contentY: viewport.contentY
     property bool darkMode: nearestDarkMode(parent)
     property var pageStops: []
+    signal pageNavigationRequested()
     // Raw content height breaks the page-bar visibility loop. Always reserving
     // the bar and deferring the check were the alternatives, but each wastes
     // space or creates a second layout pass.
@@ -94,6 +95,7 @@ Item {
     }
 
     function pageUp() {
+        pager.pageNavigationRequested()
         if (!usesPageStops) {
             moveTo(viewport.contentY - pager.pageStep)
             return
@@ -104,6 +106,7 @@ Item {
     }
 
     function pageDown() {
+        pager.pageNavigationRequested()
         if (!usesPageStops) {
             moveTo(viewport.contentY + pager.pageStep)
             return

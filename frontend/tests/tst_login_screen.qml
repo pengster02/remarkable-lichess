@@ -183,6 +183,21 @@ TestCase {
         verify(!login.showingQr)
     }
 
+    function test_doneTypingDismissesManualTokenKeyboard() {
+        login.showManualEntry()
+        sent = []
+        var token = findChild(login, "tokenField")
+        var done = findChild(login, "tokenKeyboardDoneButton")
+        verify(token !== null)
+        verify(done !== null)
+
+        token.forceActiveFocus()
+        verify(login.keyboardActive)
+        verify(done.editing)
+        done.clicked()
+        verify(!login.keyboardActive)
+    }
+
     function test_rejectedTokenSurfacesTheReason() {
         login.handleMessage({type: "TokenInvalid", reason: "Unauthorized"})
         compare(login.phase, "failed")

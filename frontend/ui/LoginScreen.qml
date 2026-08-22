@@ -27,6 +27,13 @@ Rectangle {
     readonly property bool showingRetry: !manualEntry && (phase === "failed" || phase === "ready")
     readonly property bool showingUrl: showingQr && authorizeUrl.length > 0
     readonly property bool showingTokenEntry: manualEntry
+    readonly property bool keyboardActive: tokenField.activeFocus
+
+    function dismissKeyboard() {
+        tokenField.focus = false
+        loginScreen.forceActiveFocus()
+        Qt.inputMethod.hide()
+    }
 
     // Not Component.onCompleted: backendSender isn't assigned yet at that point
     // (main.qml's Loader.onLoaded runs after the item is constructed -- see
@@ -43,6 +50,7 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
         contentHeight: loginColumn.height
+        onPageNavigationRequested: loginScreen.dismissKeyboard()
 
         Column {
             id: loginColumn
@@ -148,11 +156,19 @@ Rectangle {
 
                 AppTextField {
                     id: tokenField
+                    objectName: "tokenField"
                     width: parent.width
                     font.pixelSize: theme.fontLarge
                     placeholderText: "lip_..."
                     Keys.onReturnPressed: loginScreen.saveToken()
                     Keys.onEnterPressed: loginScreen.saveToken()
+                }
+
+                KeyboardDismissButton {
+                    objectName: "tokenKeyboardDoneButton"
+                    width: parent.width
+                    editing: tokenField.activeFocus
+                    onDismissRequested: loginScreen.dismissKeyboard()
                 }
 
                 Text {
@@ -193,6 +209,7 @@ Rectangle {
         if (!loginScreen.backendSender) {
             return
         }
+        loginScreen.dismissKeyboard()
         loginScreen.manualEntry = false
         loginScreen.phase = "starting"
         loginScreen.errorMessage = ""
@@ -205,12 +222,14 @@ Rectangle {
     // Stops the backend holding its callback port open for a sign-in nobody is
     // going to finish.
     function showManualEntry() {
+        loginScreen.dismissKeyboard()
         loginScreen.backendSender({type: "CancelLogin"})
         loginScreen.errorMessage = ""
         loginScreen.manualEntry = true
     }
 
     function saveToken() {
+        loginScreen.dismissKeyboard()
         loginScreen.errorMessage = ""
         loginScreen.backendSender({type: "SaveToken", token: tokenField.text})
     }
