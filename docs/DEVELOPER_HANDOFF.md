@@ -192,6 +192,8 @@ Minimum emulator smoke test:
 - Abort, draw offer, resignation, and Berserk use `ConfirmAction`; keep their
   confirmation and cancel behavior shared instead of duplicating armed-state
   button pairs.
+  Keep an armed action through clock-only snapshots while it remains
+  eligible. A changed board or a hidden control requires a new confirmation.
 - Accepting or claiming a draw and gifting clock time also use
   `ConfirmAction`. Critical confirmations use the shared dark full-fill state;
   do not add screen-local warning colors.
@@ -207,6 +209,9 @@ Minimum emulator smoke test:
   While a move preview is visible, keep its clocks and receipt time together.
   Same-position frames update the live snapshot used for rollback, including its
   receipt time and first-move deadline.
+  A new position or rewritten line cancels unsent move and promotion prompts.
+  A queued premove can execute after the opponent adds one ply to the same line,
+  including through a full reconnect snapshot. Takebacks cancel the queue.
 - One-shot Lichess requests have a 20-second total deadline so move and action
   gates cannot remain pending forever after a dropped response. Held-open event,
   game, seek, and challenge streams use the separate unbounded stream path.
