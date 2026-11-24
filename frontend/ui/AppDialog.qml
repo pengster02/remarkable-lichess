@@ -1,4 +1,4 @@
-import QtQuick 2.5
+import QtQuick 2.9
 
 Item {
     id: dialog
@@ -7,6 +7,8 @@ Item {
     property bool dismissOnBackground: true
     property int maximumWidth: 840
     property bool denseActions: true
+    property bool pageByRow: false
+    property Component footer: null
     default property alias content: dialogContent.data
     signal dismissed()
 
@@ -29,7 +31,8 @@ Item {
         width: Math.min(parent.width - theme.pageSideMargin * 2, dialog.maximumWidth)
         height: Math.min(
             parent.height - theme.pageTopMargin - theme.pageBottomMargin,
-            dialogContent.height + theme.spacingSmall * 2
+            dialogContent.height + theme.spacingSmall * 2 +
+                (footerLoader.active ? footerLoader.height + theme.spacingXs : 0)
         )
         color: theme.background
         border.width: 3
@@ -54,14 +57,25 @@ Item {
 
         EinkPagedFlickable {
             id: dialogFlickable
-            anchors.fill: parent
+            objectName: "dialogPager"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: footerLoader.active ? footerLoader.top : parent.bottom
             anchors.margins: theme.spacingSmall
+            anchors.bottomMargin: footerLoader.active ? theme.spacingXs : theme.spacingSmall
             contentHeight: dialogContent.height
+            onPageHeightChanged: updatePageStops()
+
+            function updatePageStops() {
+                if (dialog.pageByRow && dialogContent) pageStops = rowPageStops(dialogContent.children)
+            }
 
             Column {
                 id: dialogContent
                 width: dialogFlickable.width
                 spacing: theme.spacingXs
+                onPositioningComplete: dialogFlickable.updatePageStops()
 
                 Text {
                     width: parent.width
@@ -73,6 +87,16 @@ Item {
                     color: theme.text
                 }
             }
+        }
+
+        Loader {
+            id: footerLoader
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: theme.spacingSmall
+            active: dialog.footer !== null
+            sourceComponent: dialog.footer
         }
     }
 }

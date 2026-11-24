@@ -90,10 +90,17 @@ Rectangle {
     // Keep each position's state. One pending FEN forgets earlier work, and a
     // global busy flag prevents requesting another position while browsing.
     property var cloudEvaluationByFen: ({})
-    readonly property var currentCloudState: gameReviewScreen.cloudEvaluationByFen[gameReviewScreen.currentFen()] || null
+    readonly property string cloudFen: currentFen()
+    readonly property var currentCloudState: cloudEvaluationByFen[cloudFen] || null
     readonly property string cloudEvaluationPhase: currentCloudState ? currentCloudState.phase : ""
-    readonly property bool canRequestCloudEvaluation: gameReviewScreen.currentFen().length > 0 &&
+    readonly property bool canRequestCloudEvaluation: cloudFen.length > 0 &&
         (cloudEvaluationPhase === "" || cloudEvaluationPhase === "failed")
+    readonly property var cloudBestMoves: {
+        var evaluation = currentCloudEvaluation()
+        return evaluation && evaluation.best_line || []
+    }
+    property bool showCloudLine: false
+    onCloudFenChanged: showCloudLine = false
     readonly property int coordinateGutter: 52
 
     Component.onDestruction: {
@@ -465,15 +472,9 @@ Rectangle {
             " · " + gameReviewScreen.formatCloudNodes(evaluation.knodes)
     }
 
-    function cloudBestLineLabel() {
-        var evaluation = gameReviewScreen.currentCloudEvaluation()
-        if (!evaluation || !evaluation.best_line || evaluation.best_line.length === 0) return ""
-        return "Best line: " + evaluation.best_line.join(" ")
-    }
-
     function requestCloudEvaluation() {
         if (!gameReviewScreen.canRequestCloudEvaluation) return
-        var fen = gameReviewScreen.currentFen()
+        var fen = gameReviewScreen.cloudFen
         var requestId = gameReviewScreen.nextRequestId()
         gameReviewScreen.setCloudState(fen, {phase: "pending", requestId: requestId})
         gameReviewScreen.backendSender({type: "RequestCloudEvaluation", fen: fen, request_id: requestId,
@@ -661,13 +662,12 @@ Rectangle {
                 : theme.textMuted
         }
 
-        Text {
-            visible: gameReviewScreen.cloudBestLineLabel().length > 0
-            text: gameReviewScreen.cloudBestLineLabel()
-            font.pixelSize: theme.fontSmall
-            width: parent.width
-            elide: Text.ElideRight
-            color: theme.text
+        AppButton {
+            objectName: "cloudBestLineButton"
+            visible: gameReviewScreen.cloudBestMoves.length > 0
+            compact: true
+            text: "Cloud best line"
+            onClicked: gameReviewScreen.showCloudLine = true
         }
 
         Item {
@@ -1018,6 +1018,46 @@ Rectangle {
                     blackMove: modelData.black
                     currentIndex: gameReviewScreen.currentIndex
                     onMoveSelected: (fenIndex) => gameReviewScreen.currentIndex = fenIndex
+                }
+            }
+        }
+    }
+
+    // A paged dialog keeps long lines off the board. A wrapped header moves
+    // the board, and mixing cloud rows into the score sheet pushes game moves back.
+    Loader {
+        anchors.fill: parent
+        active: gameReviewScreen.showCloudLine && gameReviewScreen.cloudBestMoves.length > 0
+        z: 100
+        sourceComponent: Component {
+            AppDialog {
+                objectName: "cloudBestLineDialog"
+                darkMode: gameReviewScreen.darkMode
+                title: "Cloud best line"
+                pageByRow: true
+                onDismissed: gameReviewScreen.showCloudLine = false
+
+                Repeater {
+                    model: chessDisplay.moveRows(gameReviewScreen.cloudBestMoves, [], [],
+                                                 gameReviewScreen.cloudFen)
+                    MoveListRow {
+                        required property var modelData
+                        objectName: "cloudMoveRow"
+                        selectionEnabled: false
+                        width: parent.width
+                        darkMode: gameReviewScreen.darkMode
+                        moveNumber: modelData.number
+                        whiteMove: modelData.white
+                        blackMove: modelData.black
+                    }
+                }
+
+                footer: AppButton {
+                    objectName: "closeCloudBestLineButton"
+                    darkMode: gameReviewScreen.darkMode
+                    compact: true
+                    text: "Close"
+                    onClicked: gameReviewScreen.showCloudLine = false
                 }
             }
         }

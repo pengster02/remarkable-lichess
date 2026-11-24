@@ -347,12 +347,12 @@ TestCase {
         compare(cloud.fen, afterE5)
         endpoint.reply({type: "CloudEvaluation", request_id: cloud.request_id, requested_fen: cloud.fen,
                         evaluation: {depth: 24, knodes: 50, eval_cp: 10, best_line: ["Nf3"]}})
-        compare(review.cloudBestLineLabel(), "Best line: Nf3")
+        compare(review.cloudBestMoves, ["Nf3"])
         verify(!judgment.visible)
 
         review.undoExplorationMove()
         loadBase(afterE4)
-        compare(review.cloudBestLineLabel(), "")
+        compare(review.cloudBestMoves, [])
         playE5()
         review.rebaseExploration()
         loadBase(archiveE4)
@@ -374,7 +374,7 @@ TestCase {
         compare(review.variationMoves, [])
         verify(judgment.visible)
         compare(judgment.text, e5Comment)
-        compare(review.cloudBestLineLabel(), "Best line: Nf3")
+        compare(review.cloudBestMoves, ["Nf3"])
     }
 
     function test_exploreRefreshCoversFootprintAndOverlappingPulses_data() {
@@ -988,6 +988,94 @@ TestCase {
         compare(review.cloudEvaluationPhase, "pending")
         endpoint.reply({type: "CloudEvaluationUnavailable", requested_fen: afterE4, request_id: retry.request_id})
         compare(review.cloudEvaluationPhase, "unavailable")
+    }
+
+    function test_cloudLinePagesEveryMoveWithoutChangingTheBoard_data() {
+        return [
+            {tag: "Paper Pro Move", width: 954, height: 1696},
+            {tag: "Paper Pro", width: 1620, height: 2160}
+        ]
+    }
+
+    function test_cloudLinePagesEveryMoveWithoutChangingTheBoard(data) {
+        width = data.width
+        height = data.height
+        var base = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 37"
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 38"
+        var requestId = choose("paged-cloud-line")
+        endpoint.reply({type: "GameMoves", request_id: requestId, fens: [base, afterE5], moves: ["e5"]})
+        var review = screen.item
+        var open = findChild(review, "cloudBestLineButton")
+        verify(!open.visible)
+        review.requestCloudEvaluation()
+        var cloud = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        var moves = []
+        for (var index = 0; index < 12; index++) moves = moves.concat(["Nc6", "Nf3", "Nb8", "Ng1"])
+        endpoint.reply({type: "CloudEvaluation", request_id: cloud.request_id, requested_fen: cloud.fen,
+                        evaluation: {depth: 38, knodes: 42000, eval_cp: 55, best_line: moves}})
+        verify(open.visible)
+        verify(waitForRendering(review))
+        var square = findChild(review, "boardSquare-a8")
+        var boardOrigin = square.mapToItem(review, 0, 0)
+        mouseClick(open, open.width / 2, open.height / 2)
+        var dialog = findChild(review, "cloudBestLineDialog")
+        verify(dialog && dialog.visible)
+        var pager = findChild(dialog, "dialogPager")
+        var close = findChild(dialog, "closeCloudBestLineButton")
+        tryVerify(function() { return pager.pageCount > 1 })
+        compare(pager.currentPage, 1)
+        var seen = {}
+        var rows = []
+        function collectRows(item) {
+            if (item.objectName === "cloudMoveRow") rows.push(item)
+            for (var i = 0; i < item.children.length; i++) collectRows(item.children[i])
+        }
+        collectRows(pager)
+        compare(rows.length, 25)
+        var next = findChild(pager, "pageDownButton")
+        for (var page = 1; page <= pager.pageCount; page++) {
+            verify(close.visible)
+            var closeY = close.mapToItem(review, 0, 0).y
+            verify(closeY >= 0 && closeY + close.height <= review.height)
+            for (var row = 0; row < rows.length; row++) {
+                var item = rows[row]
+                var y = item.mapToItem(pager, 0, 0).y
+                if (y < -0.5 || y + item.height > pager.pageHeight + 0.5) continue
+                compare(item.moveNumber, 37 + row)
+                var white = moves[row * 2 - 1]
+                var black = moves[row * 2]
+                if (white) compare(item.whiteMove.san, white)
+                else compare(item.whiteMove, null)
+                if (black) compare(item.blackMove.san, black)
+                else compare(item.blackMove, null)
+                verify(!item.selectionEnabled)
+                seen[row] = true
+            }
+            if (page < pager.pageCount) mouseClick(next, next.width / 2, next.height / 2)
+        }
+        compare(Object.keys(seen).length, rows.length)
+        compare(pager.currentPage, pager.pageCount)
+        mouseClick(close, close.width / 2, close.height / 2)
+        tryVerify(function() { return findChild(review, "cloudBestLineDialog") === null })
+        compare(review.currentFen(), base)
+        compare(square.mapToItem(review, 0, 0), boardOrigin)
+
+        mouseClick(open, open.width / 2, open.height / 2)
+        dialog = findChild(review, "cloudBestLineDialog")
+        compare(findChild(dialog, "dialogPager").currentPage, 1)
+        review.goNext()
+        compare(review.currentFen(), afterE5)
+        verify(!open.visible)
+        tryVerify(function() { return findChild(review, "cloudBestLineDialog") === null })
+        review.requestCloudEvaluation()
+        cloud = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply({type: "CloudEvaluation", request_id: cloud.request_id, requested_fen: cloud.fen,
+                        evaluation: {depth: 19, knodes: 50, eval_cp: 10, best_line: []}})
+        compare(review.cloudEvaluationPhase, "ready")
+        verify(!open.visible)
+        review.goPrev()
+        verify(open.visible)
+        verify(!review.showCloudLine)
     }
 
     function test_boardOnlyOpensFromAScreenThatExpectsPlay() {
