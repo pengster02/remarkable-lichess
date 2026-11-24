@@ -1,7 +1,7 @@
 use crate::protocol::{HistoryCapture, LegalMove};
 use anyhow::{Context, Result};
 use shakmaty::{
-    fen::Fen, san::SanPlus, uci::UciMove, CastlingMode, Chess, Color, EnPassantMode, Position, Role,
+    fen::Fen, san::SanPlus, uci::UciMove, CastlingMode, Chess, Color, EnPassantMode, Move, Position,
 };
 
 pub struct GameReplay {
@@ -122,24 +122,27 @@ pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
 }
 
 pub fn advance_uci_game(pos: &Chess, uci_str: &str) -> Result<GameAdvance> {
-    let uci: UciMove = uci_str.parse().context("parsing UCI move")?;
-    let m = uci.to_move(pos).context("resolving UCI move against position")?;
+    let m = resolve_uci_move(pos, uci_str)?;
     let mover = pos.turn();
     let san = SanPlus::from_move(pos.clone(), m).to_string();
-    let captured_piece = m.capture().map(|role| captured_piece_code(mover.other(), role));
+    let captured_piece = captured_piece_code(mover, m);
     let mut position = pos.clone();
     position.play_unchecked(m);
     let fen = Fen::from_position(&position, EnPassantMode::Legal).to_string();
     Ok(GameAdvance { position, san, fen, captured_piece, mover })
 }
 
-fn captured_piece_code(color: Color, role: Role) -> String {
-    format!("{}{}", color.char(), role.upper_char())
+pub(super) fn captured_piece_code(mover: Color, m: Move) -> Option<String> {
+    m.capture().map(|role| format!("{}{}", mover.other().char(), role.upper_char()))
+}
+
+pub(super) fn resolve_uci_move(pos: &Chess, uci_str: &str) -> Result<Move> {
+    let uci: UciMove = uci_str.parse().context("parsing UCI move")?;
+    uci.to_move(pos).context("resolving UCI move against position")
 }
 
 pub fn apply_uci_move(pos: &Chess, uci_str: &str) -> Result<Chess> {
-    let uci: UciMove = uci_str.parse().context("parsing UCI move")?;
-    let m = uci.to_move(pos).context("resolving UCI move against position")?;
+    let m = resolve_uci_move(pos, uci_str)?;
     let mut new_pos = pos.clone();
     new_pos.play_unchecked(m);
     Ok(new_pos)

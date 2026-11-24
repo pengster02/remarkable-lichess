@@ -584,6 +584,9 @@ pub enum BackendMessage {
         black_time_ms: u64,
         last_move: Option<Box<(String, String)>>,
         in_check: bool,
+        // A single victim fits one pending move. Full trays repeat confirmed totals, while FEN diffs need special-move rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        captured_piece: Option<String>,
     },
     MoveSubmitted {
         game_id: String,

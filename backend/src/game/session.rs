@@ -1,5 +1,8 @@
 use crate::game::outcome::outcome;
-use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
+use crate::game::rules::{
+    advance_uci_game, apply_uci_move, captured_piece_code, legal_moves, replay_uci_game,
+    resolve_uci_move, supports_variant,
+};
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{
     BackendMessage, CaptureHistoryUpdate, GameAction, GameActionRequest, HistoryCapture,
@@ -605,7 +608,10 @@ impl GameSession {
 
     fn preview_move(&self, uci: &str, request_id: Option<u32>) -> anyhow::Result<BackendMessage> {
         anyhow::ensure!(self.state.status == "started", "game is not active");
-        let position = apply_uci_move(&self.position, uci)?;
+        let chess_move = resolve_uci_move(&self.position, uci)?;
+        let captured_piece = captured_piece_code(self.position.turn(), chess_move);
+        let mut position = self.position.clone();
+        position.play_unchecked(chess_move);
         let (white_time_ms, black_time_ms) = self.predicted_move_clocks();
         Ok(BackendMessage::MovePreview {
             game_id: self.game_id.clone(),
@@ -620,6 +626,7 @@ impl GameSession {
             black_time_ms,
             last_move: last_move_from_uci_list(uci).map(Box::new),
             in_check: position.is_check(),
+            captured_piece,
         })
     }
 
@@ -1108,6 +1115,7 @@ mod tests {
         let full = sample_full("");
         let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         let preview = session.preview_move("e2e4", None).unwrap();
+        assert!(serde_json::to_value(&preview).unwrap().get("captured_piece").is_none());
         match preview {
             BackendMessage::MovePreview { turn, last_move, .. } => {
                 assert_eq!(turn, "black");
@@ -1118,6 +1126,38 @@ mod tests {
         assert!(session.state.moves.is_empty());
         assert!(session.move_history.is_empty());
         assert_eq!(session.position_history.len(), 1);
+    }
+
+    #[test]
+    fn move_preview_and_confirmation_identify_the_same_capture() {
+        for (initial, moves, uci, victim, color) in [
+            ("startpos", "e2e4 d7d5", "e4d5", "bP", "white"),
+            ("startpos", "e2e4 d7d5 e4d5", "d8d5", "wP", "black"),
+            ("startpos", "e2e4 a7a6 e4e5 d7d5", "e5d6", "bP", "white"),
+            ("k5rr/6P1/8/8/8/8/8/4K3 w - - 0 1", "", "g7h8n", "bR", "white"),
+        ] {
+            let mut full = sample_full(moves);
+            full.initial_fen = initial.into();
+            let (mut session, board) = GameSession::from_game_full(&full, "my-id").unwrap();
+            let tray = format!("captured_by_{color}");
+            let board = serde_json::to_value(board).unwrap();
+            let confirmed = board[&tray].as_array().unwrap();
+            let (preview, _canceled) = session.begin_move(uci, Some(42)).unwrap();
+            let preview = serde_json::to_value(preview).unwrap();
+            assert_eq!(preview["captured_piece"], victim);
+            assert_eq!(preview["request_id"], 42);
+            assert_eq!(session.state.moves, moves);
+            assert_eq!(session.capture_history.len(), board["capture_history"].as_array().unwrap().len());
+
+            let accepted = session.apply_accepted_move(moves, uci).unwrap().unwrap();
+            let accepted = serde_json::to_value(accepted).unwrap();
+            assert_eq!(accepted["fen"], preview["fen"]);
+            assert_eq!(accepted["appended_capture"], victim);
+            assert_eq!(accepted["resolved_move_request_id"], 42);
+            let mut expected = confirmed.clone();
+            expected.push(serde_json::json!(victim));
+            assert_eq!(accepted[&tray], serde_json::json!(expected));
+        }
     }
 
     #[test]
