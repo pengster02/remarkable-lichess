@@ -47,9 +47,9 @@ Rectangle {
     // way GameReviewScreen's header gets to show who was played and how it
     // ended, not just a bare, contextless board.
     property var reviewGame: null
-    // A sequence ID distinguishes retries of the same game. A game ID alone would
-    // accept old retries, and blocking all taps would prevent changing selection.
-    property int reviewRequestSequence: 0
+    // A shared sequence survives screen changes. Per-screen counters can repeat
+    // IDs after navigation, and timestamps can collide across rapid requests.
+    property int requestSequence: 0
     property var pendingReview: null
 
     // Connectivity lives at the root (not per-screen) so the persistent top bar
@@ -80,10 +80,14 @@ Rectangle {
 
     function openGameReview(gameId, game) {
         if (root.pendingReview && root.pendingReview.gameId === gameId) return
-        root.reviewRequestSequence += 1
-        root.pendingReview = {id: root.reviewRequestSequence, gameId: gameId, game: game || null}
+        root.pendingReview = {id: root.nextRequestId(), gameId: gameId, game: game || null}
         root.sendToBackend({type: "RequestGameMoves", game_id: gameId,
                             request_id: root.pendingReview.id})
+    }
+
+    function nextRequestId() {
+        root.requestSequence += 1
+        return root.requestSequence
     }
 
     function expectNextGame(gameId) {
@@ -363,7 +367,7 @@ Rectangle {
                     root.reviewAnalysis = msg.analysis || []
                     screenLoader.source = "GameReviewScreen.qml"
                 }
-            } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" ||
+            } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" || msg.type === "AnalysisFailed" ||
                        msg.type === "CloudEvaluation" ||
                        msg.type === "CloudEvaluationUnavailable" ||
                        msg.type === "CloudEvaluationFailed") {
@@ -540,6 +544,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGameReview")) {
                 item.openGameReview = root.openGameReview
+            }
+            if (item.hasOwnProperty("nextRequestId")) {
+                item.nextRequestId = root.nextRequestId
             }
             if (item.hasOwnProperty("openingReview")) {
                 item.openingReview = Qt.binding(function() { return root.pendingReview !== null })

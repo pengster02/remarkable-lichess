@@ -147,12 +147,13 @@ pub enum FrontendMessage {
         request_id: Option<u32>,
     },
     RequestCloudEvaluation { fen: String },
-    RequestAnalysisPosition { fen: String },
+    RequestAnalysisPosition { fen: String, request_id: Option<u32> },
     MakeAnalysisMove {
         fen: String,
         from: String,
         to: String,
         promotion: Option<String>,
+        request_id: Option<u32>,
     },
 }
 
@@ -485,6 +486,8 @@ pub enum BackendMessage {
     CloudEvaluationUnavailable { requested_fen: String },
     CloudEvaluationFailed { requested_fen: String, message: String },
     AnalysisPosition {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
         requested_fen: String,
         fen: String,
         legal_moves: Box<[LegalMove]>,
@@ -492,6 +495,8 @@ pub enum BackendMessage {
         status: String,
     },
     AnalysisMove {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
         from_fen: String,
         fen: String,
         san: String,
@@ -499,6 +504,7 @@ pub enum BackendMessage {
         in_check: bool,
         status: String,
     },
+    AnalysisFailed { request_id: u32, message: String },
     // Sent when the account event stream's `gameFinish` (see
     // lichess::models::GameFinishInfo) can arrive before or after the final board,
     // whose stream carries no rating change.
@@ -544,11 +550,11 @@ mod tests {
                 r#"{"type":"RequestAnalysisPosition","fen":"startpos"}"#
             )
             .unwrap(),
-            FrontendMessage::RequestAnalysisPosition { fen: "startpos".into() }
+            FrontendMessage::RequestAnalysisPosition { fen: "startpos".into(), request_id: None }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
-                r#"{"type":"MakeAnalysisMove","fen":"startpos","from":"e2","to":"e4","promotion":null}"#
+                r#"{"type":"MakeAnalysisMove","fen":"startpos","from":"e2","to":"e4","promotion":null,"request_id":7}"#
             )
             .unwrap(),
             FrontendMessage::MakeAnalysisMove {
@@ -556,9 +562,11 @@ mod tests {
                 from: "e2".into(),
                 to: "e4".into(),
                 promotion: None,
+                request_id: Some(7),
             }
         );
         let json = serde_json::to_string(&BackendMessage::AnalysisMove {
+            request_id: Some(7),
             from_fen: "startpos".into(),
             fen: "after-e4".into(),
             san: "e4".into(),
@@ -573,8 +581,10 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""type":"AnalysisMove""#));
+        assert!(json.contains(r#""request_id":7"#));
         assert!(json.contains(r#""san":"e4""#));
         let position_json = serde_json::to_string(&BackendMessage::AnalysisPosition {
+            request_id: None,
             requested_fen: "startpos".into(),
             fen: "normalized".into(),
             legal_moves: vec![].into_boxed_slice(),

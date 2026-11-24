@@ -101,6 +101,40 @@ TestCase {
         compare(screen.item.fens[screen.item.currentIndex], afterBlack)
     }
 
+    function test_exploreResetRejectsALateMoveFromTheSamePosition() {
+        var reviewId = choose("explore-game")
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [startFen]})
+        var review = screen.item
+        var legal = [{from: "e2", to: "e4"}, {from: "d2", to: "d4"}]
+        review.beginExploration()
+        var initial = review.pendingAnalysisRequestId
+        endpoint.reply({type: "AnalysisPosition", request_id: initial, requested_fen: startFen,
+                        fen: startFen, legal_moves: legal})
+        verify(review.requestExplorationMove("e2", "e4"))
+        var delayedMove = review.pendingAnalysisRequestId
+        verify(!review.requestExplorationMove("d2", "d4"))
+
+        review.rebaseExploration()
+        var reset = review.pendingAnalysisRequestId
+        verify(reset !== delayedMove)
+        endpoint.reply({type: "AnalysisMove", request_id: delayedMove, from_fen: startFen,
+                        fen: "stale position", san: "e4"})
+        compare(review.exploreFen, startFen)
+        compare(review.variationMoves.length, 0)
+        compare(review.pendingAnalysisRequestId, reset)
+
+        endpoint.reply({type: "AnalysisPosition", request_id: reset, requested_fen: startFen,
+                        fen: startFen, legal_moves: legal})
+        verify(review.requestExplorationMove("d2", "d4"))
+        var currentMove = review.pendingAnalysisRequestId
+        endpoint.reply({type: "AnalysisFailed", request_id: delayedMove, message: "old failure"})
+        compare(review.pendingAnalysisRequestId, currentMove)
+        endpoint.reply({type: "AnalysisFailed", request_id: currentMove, message: "Retry this move"})
+        compare(review.pendingAnalysisRequestId, 0)
+        compare(review.exploreStatus, "Retry this move")
+        verify(review.requestExplorationMove("d2", "d4"))
+    }
+
     function test_boardOnlyOpensFromAScreenThatExpectsPlay() {
         choose("selected-review")
         endpoint.reply(boardState("background"))
