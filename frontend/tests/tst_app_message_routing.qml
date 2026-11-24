@@ -211,6 +211,9 @@ TestCase {
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length
+        screen.item.selectGameForReview({game_id: "unavailable", review_supported: false})
+        compare(endpoint.sentMessages.length, messageCount)
+        verify(screen.item.openingReview)
         compare(choose("first"), first)
         compare(endpoint.sentMessages.length, messageCount)
         var second = choose("second")
@@ -419,13 +422,22 @@ TestCase {
     }
 
     function test_customReviewStartsFromTheExportedPosition() {
-        var request = choose("custom-start")
+        endpoint.reply({type: "GameHistory", request_id: screen.item.pendingHistoryRequest,
+                        games: [{game_id: "custom-start", variant: "fromPosition",
+                                 review_supported: true, rated: false, speed: "rapid"}]})
+        var card = findChild(screen.item, "historyGameRow")
+        verify(card && waitForRendering(card))
+        mouseClick(card, card.width / 2, card.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "RequestGameMoves")
+        compare(request.game_id, "custom-start")
         var base = "4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17"
         var afterBlack = "4k3/8/8/4p3/8/8/P7/4K3 w - - 0 18"
         var afterWhite = "4k3/8/8/4p3/P7/8/8/4K3 b - - 0 18"
-        endpoint.reply({type: "GameMoves", request_id: request,
+        endpoint.reply({type: "GameMoves", request_id: request.request_id,
                         moves: ["e5", "a4"], fens: [base, afterBlack, afterWhite]})
         verify(String(screen.source).endsWith("GameReviewScreen.qml"))
+        compare(screen.item.gameDetailsLabel(), "Casual · Rapid · Custom position")
         compare(screen.item.fens[0], base)
         var rows = screen.item.moveRows()
         compare(rows[0].number, 17)

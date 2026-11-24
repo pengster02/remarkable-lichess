@@ -254,6 +254,8 @@ Rectangle {
                 objectName: "historyGameRow"
                 required property var modelData
                 readonly property var analysis: modelData.your_analysis || null
+                readonly property bool canReview: modelData.review_supported !== false
+                readonly property string variantLabel: chessDisplay.variantLabel(modelData.variant)
                 width: parent.width
                 // Never thinner than the shared list-row touch floor, however
                 // little text a row happens to have.
@@ -274,6 +276,7 @@ Rectangle {
 
                 MouseArea {
                     anchors.fill: parent
+                    enabled: gameCard.canReview
                     onClicked: {
                         gameHistoryScreen.errorMessage = ""
                         gameHistoryScreen.selectGameForReview(modelData)
@@ -355,8 +358,10 @@ Rectangle {
                     }
 
                     Text {
+                        objectName: "historyGameDetails"
                         text: (modelData.rated ? "Rated" : "Casual") +
                               (modelData.speed ? " · " + chessDisplay.speedLabel(modelData.speed) : "") +
+                              (gameCard.variantLabel ? " · " + gameCard.variantLabel : "") +
                               (modelData.termination ? " · " + chessDisplay.terminationLabel(modelData.termination) : "") +
                               (modelData.opening_name ? " · " + modelData.opening_name : "") +
                               (modelData.created_at_ms ? " · " + new Date(modelData.created_at_ms).toLocaleDateString() : "")
@@ -383,6 +388,16 @@ Rectangle {
                         font.pixelSize: theme.fontSmall
                         wrapMode: Text.WordWrap
                         width: rowContent.width
+                        color: theme.textMuted
+                    }
+
+                    Text {
+                        objectName: "historyReviewUnavailable"
+                        visible: !gameCard.canReview
+                        text: "Review unavailable"
+                        font.pixelSize: theme.fontSmall
+                        width: rowContent.width
+                        wrapMode: Text.WordWrap
                         color: theme.textMuted
                     }
                 }

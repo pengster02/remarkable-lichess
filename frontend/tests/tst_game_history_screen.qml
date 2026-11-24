@@ -176,6 +176,36 @@ TestCase {
         verify(!findChild(row, "historyOpponentRating").visible)
     }
 
+    function test_variantLabelAndReviewAvailability_data() {
+        return [
+            {tag: "standard", fields: {variant: "standard", review_supported: true},
+                label: "", canReview: true},
+            {tag: "custom starting position", fields: {variant: "fromPosition", review_supported: true},
+                label: "Custom position", canReview: true},
+            {tag: "no variant metadata", fields: {variant: null, review_supported: null},
+                label: "", canReview: true},
+            {tag: "older backend", fields: {}, label: "", canReview: true},
+            {tag: "known unsupported variant", fields: {variant: "crazyhouse", review_supported: false},
+                label: "Crazyhouse", canReview: false},
+            {tag: "unknown variant", fields: {variant: "futureVariant", review_supported: false},
+                label: "Future Variant", canReview: false}
+        ]
+    }
+
+    function test_variantLabelAndReviewAvailability(data) {
+        width = 620
+        var row = showGame(data.fields)
+        var details = findChild(row, "historyGameDetails")
+        var unavailable = findChild(row, "historyReviewUnavailable")
+        compare(details.text, "Rated · Rapid" + (data.label ? " · " + data.label : "") + " · Resignation")
+        compare(unavailable.visible, !data.canReview)
+        if (!data.canReview) compare(unavailable.text, "Review unavailable")
+
+        mouseClick(row, row.width / 2, row.height / 2)
+        if (data.canReview) compare(selectedGame.game_id, "selected")
+        else compare(selectedGame, null)
+    }
+
     function gamesForPaging(count, mixed, oversized) {
         var games = []
         for (var i = 0; i < count; i++) {
@@ -185,7 +215,8 @@ TestCase {
             if (mixed && i % 2 === 1) {
                 game.opponent_name = "WWWWWWWWWWWWWWWWWWWW"
                 game.result = "noStart"
-                game.opening_name = "Queen's Gambit Declined: Orthodox Defense, Main Line"
+                game.variant = "crazyhouse"
+                game.review_supported = false
                 game.your_analysis = {accuracy: 91, blunders: 0, mistakes: 3}
             }
             if (oversized && (i === 4 || i === count - 1))

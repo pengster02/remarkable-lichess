@@ -87,6 +87,7 @@ Rectangle {
     }
 
     function openGameReview(gameId, game) {
+        if (game && game.review_supported === false) return
         if (root.pendingReview && root.pendingReview.gameId === gameId) return
         root.pendingReview = {id: root.nextRequestId(), gameId: gameId, game: game || null}
         root.sendToBackend({type: "RequestGameMoves", game_id: gameId,

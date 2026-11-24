@@ -41,15 +41,17 @@ QtObject {
         if (speed === "rapid") return "Rapid"
         if (speed === "classical") return "Classical"
         if (speed === "correspondence") return "Correspondence"
-        if (speed === "chess960") return "Chess960"
-        if (speed === "crazyhouse") return "Crazyhouse"
-        if (speed === "antichess") return "Antichess"
-        if (speed === "atomic") return "Atomic"
-        if (speed === "horde") return "Horde"
-        if (speed === "kingOfTheHill") return "King of the Hill"
-        if (speed === "racingKings") return "Racing Kings"
-        if (speed === "threeCheck") return "Three-check"
-        return humanizeIdentifier(speed)
+        return variantLabel(speed) || humanizeIdentifier(speed)
+    }
+
+    function variantLabel(variant) {
+        if (!variant || variant === "standard") return ""
+        if (variant === "chess960") return "Chess960"
+        if (variant === "kingOfTheHill") return "King of the Hill"
+        if (variant === "racingKings") return "Racing Kings"
+        if (variant === "threeCheck") return "Three-check"
+        if (variant === "fromPosition") return "Custom position"
+        return humanizeIdentifier(variant)
     }
 
     function formatClock(ms) {
