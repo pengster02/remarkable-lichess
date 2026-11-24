@@ -77,8 +77,9 @@ pub enum FrontendMessage {
         username: String, minutes: u32, increment: u32, rated: bool, color: String,
         request_id: Option<u32>,
     },
-    ChallengeAi { level: u8, minutes: u32, increment: u32 },
-    CancelSeek { request_id: Option<u32> },
+    ChallengeAi { level: u8, minutes: u32, increment: u32, request_id: Option<u32> },
+    #[serde(alias = "CancelSeek")]
+    CancelMatch { request_id: Option<u32> },
     MakeMove { from: String, to: String, promotion: Option<String>, request_id: Option<u32> },
     Resign { request_id: Option<u32> },
     // `accept: true` offers a draw/takeback when none is pending, or accepts the
@@ -140,7 +141,7 @@ pub enum FrontendMessage {
     // the same minutes/increment/rated fields as CreateSeek/CreateChallenge; no
     // `color` field since the *joiner* picks color by which of urlWhite/urlBlack
     // they open, not the creator (see BackendMessage::OpenChallengeCreated).
-    CreateOpenChallenge { minutes: u32, increment: u32, rated: bool },
+    CreateOpenChallenge { minutes: u32, increment: u32, rated: bool, request_id: Option<u32> },
     // Sent when GameHistoryScreen's user taps a finished game's row -- backend
     // fetches its full move list and replays it once (see game::replay), so
     // GameReviewScreen can navigate purely by array indexing, no chess logic
@@ -417,7 +418,12 @@ pub enum BackendMessage {
         request_id: Option<u32>,
     },
     ChallengeActionFailed { challenge_id: String, request_id: u32, message: String },
-    ComputerGameCreated { game_id: String },
+    ComputerGameCreated {
+        game_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
+    MatchCreationFailed { request_id: u32, message: String },
     // An account event cannot select a board. Alternatives were one stream per
     // account game, or silently replacing the current stream on every gameStart.
     GameStarted { game_id: String, from_realtime_lobby: bool },
@@ -559,7 +565,14 @@ pub enum BackendMessage {
     // to a color-choice/random assignment, `url_white`/`url_black` claim that
     // color outright. Shown as plain text on SeekScreen for the user to read/
     // share manually (this app has no clipboard/share-sheet integration).
-    OpenChallengeCreated { game_id: String, url: String, url_white: String, url_black: String },
+    OpenChallengeCreated {
+        game_id: String,
+        url: String,
+        url_white: String,
+        url_black: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
     // `fens[0]` is the starting position, `fens[i]` is the position after SAN
     // move `moves[i-1]` -- always `fens.len() == moves.len() + 1` (see
     // game::replay::fens_for_export). Sent once per RequestGameMoves, not
@@ -873,17 +886,19 @@ mod tests {
                 r#"{"type":"CreateOpenChallenge","minutes":10,"increment":0,"rated":false}"#
             )
             .unwrap(),
-            FrontendMessage::CreateOpenChallenge { minutes: 10, increment: 0, rated: false }
+            FrontendMessage::CreateOpenChallenge { minutes: 10, increment: 0, rated: false, request_id: None }
         );
         let json = serde_json::to_string(&BackendMessage::OpenChallengeCreated {
             game_id: "ovdODEHx".into(),
             url: "https://lichess.org/abc".into(),
             url_white: "https://lichess.org/abc?color=white".into(),
             url_black: "https://lichess.org/abc?color=black".into(),
+            request_id: Some(12),
         })
         .unwrap();
         assert!(json.contains(r#""type":"OpenChallengeCreated""#));
         assert!(json.contains("color=white"));
+        assert!(json.contains(r#""request_id":12"#));
     }
 
     #[test]

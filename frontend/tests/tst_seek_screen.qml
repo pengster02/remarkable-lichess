@@ -25,6 +25,7 @@ TestCase {
         sentMessages = []
         seek.pendingAction = ""
         seek.formError = ""
+        seek.openChallengeUrls = null
         seek.clearWaiting()
         seek.seekEnded = false
         findChild(seek, "minutesField").text = "10"
@@ -132,11 +133,20 @@ TestCase {
         compare(findChild(seek, "findOpponentButton").enabled, true)
     }
 
+    function test_endedSeekCanStartAgain() {
+        seek.seekEnded = true
+        findChild(seek, "findOpponentButton").clicked()
+        compare(sentMessages.length, 1)
+        compare(sentMessages[0].type, "CreateSeek")
+        verify(!seek.seekEnded)
+    }
+
     function test_openChallengeReplyClearsPendingAndShowsLinks() {
         seek.submitOpenChallenge()
         compare(seek.pendingAction, "open")
         seek.handleMessage({
             type: "OpenChallengeCreated",
+            request_id: sentMessages[0].request_id,
             url: "https://lichess.org/open",
             url_white: "https://lichess.org/white",
             url_black: "https://lichess.org/black"

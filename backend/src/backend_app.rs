@@ -70,29 +70,58 @@ struct GameRequest {
     task: tokio::task::JoinHandle<()>,
 }
 
-enum MatchOpponent {
-    Random,
-    User(String),
+enum MatchKind {
+    Seek { rated: bool, color: String },
+    Direct { username: String, rated: bool, color: String },
+    Computer { level: u8 },
+    Open { rated: bool },
 }
 
-// Setup and response share a connection. Two tasks leave setup uncancellable,
-// while independent seek and challenge slots could keep both searches alive.
+// A single slot prevents competing attempts. Separate slots can start two matches,
+// and a queue can submit an abandoned request.
+struct MatchJob {
+    request_id: Option<u32>,
+    task: tokio::task::JoinHandle<()>,
+    // A one-shot POST can create a server-side game before returning. Keep its
+    // slot busy until the reply or an explicit departure from this screen.
+    creation_in_flight: Option<oneshot::Receiver<()>>,
+}
+
 struct MatchRequest {
-    opponent: MatchOpponent,
+    kind: MatchKind,
     minutes: u32,
     increment: u32,
-    rated: bool,
-    color: String,
     request_id: Option<u32>,
 }
 
 impl MatchRequest {
+    fn is_creation(&self) -> bool {
+        matches!(self.kind, MatchKind::Computer { .. } | MatchKind::Open { .. })
+    }
+
+    fn validate(&self) -> Result<(), &'static str> {
+        let max_increment = if matches!(self.kind, MatchKind::Seek { .. }) { 180 } else { 60 };
+        if self.minutes > 180 || self.increment > max_increment {
+            return Err("Time control is outside the allowed range.");
+        }
+        if self.minutes == 0 && self.increment == 0 {
+            return Err("Choose some starting time or an increment.");
+        }
+        if let MatchKind::Computer { level } = self.kind {
+            if !(1..=8).contains(&level) {
+                return Err("Computer level must be a whole number from 1 to 8.");
+            }
+        }
+        Ok(())
+    }
+
     fn failure(&self, message: String) -> BackendMessage {
-        match (self.request_id, &self.opponent) {
-            (Some(request_id), MatchOpponent::Random) => BackendMessage::SeekFailed { request_id, message },
-            (Some(request_id), MatchOpponent::User(_)) => {
+        match (self.request_id, &self.kind) {
+            (Some(request_id), MatchKind::Seek { .. }) => BackendMessage::SeekFailed { request_id, message },
+            (Some(request_id), MatchKind::Direct { .. }) => {
                 BackendMessage::ChallengeCreateFailed { request_id, message }
             }
+            (Some(request_id), _) => BackendMessage::MatchCreationFailed { request_id, message },
             (None, _) => BackendMessage::ErrorMsg { message },
         }
     }
@@ -195,9 +224,7 @@ pub struct LichessBackend {
     // TokenVerified without an extra get_account() round trip (see handle_message).
     username: Option<String>,
     session: Arc<Mutex<Option<GameSession>>>,
-    // Lichess keeps the seek or direct challenge alive while this task holds
-    // its response open. Closing the response cancels the outstanding request.
-    pending_seek: Option<GameRequest>,
+    pending_match: Option<MatchJob>,
     account_stream: Option<AccountStream>,
     home_refresh: Option<tokio::task::JoinHandle<()>>,
     history_load: Option<GameRequest>,
@@ -235,7 +262,7 @@ impl LichessBackend {
             my_id: None,
             username: None,
             session: Arc::new(Mutex::new(None)),
-            pending_seek: None,
+            pending_match: None,
             account_stream: None,
             home_refresh: None,
             history_load: None,
@@ -670,28 +697,6 @@ impl LichessBackend {
         }
     }
 
-    async fn handle_create_open_challenge(
-        &mut self,
-        replier: &BackendReplier<Self>,
-        minutes: u32,
-        increment: u32,
-        rated: bool,
-    ) {
-        let Some(client) = &self.client else { return };
-        match client.create_open_challenge(minutes, increment, rated).await {
-            Ok(challenge) => self.send(
-                replier,
-                &BackendMessage::OpenChallengeCreated {
-                    game_id: challenge.id,
-                    url: challenge.url,
-                    url_white: challenge.url_white,
-                    url_black: challenge.url_black,
-                },
-            ),
-            Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
-        }
-    }
-
     async fn start_match_request(
         &mut self,
         replier: &BackendReplier<Self>,
@@ -701,12 +706,42 @@ impl LichessBackend {
             self.send(replier, &request.failure("Sign in to Lichess to find an opponent.".into()));
             return;
         };
-        stop_game_request(&mut self.pending_seek).await;
+        if let Err(message) = request.validate() {
+            self.send(replier, &request.failure(message.into()));
+            return;
+        }
+        if let Some(pending) = self.pending_match.as_mut() {
+            if request.request_id.is_some() && request.request_id == pending.request_id {
+                return;
+            }
+            if pending.creation_in_flight.as_mut().is_some_and(|completion| {
+                completion.try_recv() == Err(oneshot::error::TryRecvError::Empty)
+            }) {
+                self.send(replier, &request.failure("Another game or link is being created.".into()));
+                return;
+            }
+        }
+        self.stop_match_request(None).await;
         let request_id = request.request_id;
+        let (creation_done, creation_in_flight) = if request.is_creation() {
+            let (done, in_flight) = oneshot::channel();
+            (Some(done), Some(in_flight))
+        } else {
+            (None, None)
+        };
         let task = tokio::spawn(run_match_request(
-            client, replier.clone(), self.write_lock.clone(), request,
+            client, replier.clone(), self.write_lock.clone(), request, creation_done,
         ));
-        self.pending_seek = Some(GameRequest { request_id, task });
+        self.pending_match = Some(MatchJob { request_id, task, creation_in_flight });
+    }
+
+    async fn stop_match_request(&mut self, request_id: Option<u32>) {
+        if let Some(pending) = self.pending_match.as_mut()
+            .filter(|pending| request_id.is_none() || request_id == pending.request_id)
+        {
+            abort_task(&mut pending.task).await;
+            self.pending_match = None;
+        }
     }
 
     fn handle_request_settings(&self, replier: &BackendReplier<Self>) {
@@ -841,7 +876,7 @@ impl LichessBackend {
         stop_game_request(&mut self.history_load).await;
         stop_game_request(&mut self.review_export).await;
         self.stop_cloud_evaluations().await;
-        stop_game_request(&mut self.pending_seek).await;
+        self.stop_match_request(None).await;
         if let Some(account) = self.account_stream.as_mut() {
             abort_task(&mut account.task).await;
             self.account_stream = None;
@@ -1283,10 +1318,11 @@ async fn run_match_request(
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
     request: MatchRequest,
+    creation_done: Option<oneshot::Sender<()>>,
 ) {
-    let MatchRequest { minutes, increment, rated, ref color, request_id, .. } = request;
-    let reply = match &request.opponent {
-        MatchOpponent::Random => match client.create_seek(minutes, increment, rated, color).await {
+    let MatchRequest { minutes, increment, request_id, .. } = request;
+    let reply = match &request.kind {
+        MatchKind::Seek { rated, color } => match client.create_seek(minutes, increment, *rated, color).await {
             Ok(mut lines) => {
                 send_locked(&replier, &write_lock, &BackendMessage::SeekCreated { request_id });
                 while let Ok(Some(_)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {}
@@ -1294,8 +1330,8 @@ async fn run_match_request(
             }
             Err(error) => request.failure(error.to_string()),
         },
-        MatchOpponent::User(username) => match client.create_challenge(
-            username, minutes, increment, rated, color,
+        MatchKind::Direct { username, rated, color } => match client.create_challenge(
+            username, minutes, increment, *rated, color,
         ).await {
             Ok((game_id, lines)) => {
                 send_locked(&replier, &write_lock, &BackendMessage::ChallengeCreated {
@@ -1307,7 +1343,22 @@ async fn run_match_request(
             }
             Err(error) => request.failure(error.to_string()),
         },
+        MatchKind::Computer { level } => match client.challenge_ai(*level, minutes, increment).await {
+            Ok(game_id) => BackendMessage::ComputerGameCreated { game_id, request_id },
+            Err(error) => request.failure(error.to_string()),
+        },
+        MatchKind::Open { rated } => match client.create_open_challenge(minutes, increment, *rated).await {
+            Ok(challenge) => BackendMessage::OpenChallengeCreated {
+                game_id: challenge.id,
+                url: challenge.url,
+                url_white: challenge.url_white,
+                url_black: challenge.url_black,
+                request_id,
+            },
+            Err(error) => request.failure(error.to_string()),
+        },
     };
+    drop(creation_done);
     send_locked(&replier, &write_lock, &reply);
 }
 
@@ -1626,7 +1677,7 @@ impl AppLoadBackend for LichessBackend {
             stop_game_request(&mut self.history_load).await;
             stop_game_request(&mut self.review_export).await;
             self.stop_cloud_evaluations().await;
-            stop_game_request(&mut self.pending_seek).await;
+            self.stop_match_request(None).await;
             stop_task(&mut self.move_submission).await;
             stop_task(&mut self.game_action).await;
             if let Some(session) = self.session.lock().await.as_mut() {
@@ -1674,26 +1725,21 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
             FrontendMessage::CreateSeek { minutes, increment, rated, color, request_id } => {
                 self.start_match_request(replier, MatchRequest {
-                    opponent: MatchOpponent::Random, minutes, increment, rated, color, request_id,
+                    kind: MatchKind::Seek { rated, color }, minutes, increment, request_id,
                 }).await;
             }
             FrontendMessage::CreateChallenge { username, minutes, increment, rated, color, request_id } => {
                 self.start_match_request(replier, MatchRequest {
-                    opponent: MatchOpponent::User(username), minutes, increment, rated, color, request_id,
+                    kind: MatchKind::Direct { username, rated, color }, minutes, increment, request_id,
                 }).await;
             }
-            FrontendMessage::ChallengeAi { level, minutes, increment } => {
-                let Some(client) = &self.client else { return };
-                match client.challenge_ai(level, minutes, increment).await {
-                    Ok(game_id) => self.send(replier, &BackendMessage::ComputerGameCreated { game_id }),
-                    Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
-                }
+            FrontendMessage::ChallengeAi { level, minutes, increment, request_id } => {
+                self.start_match_request(replier, MatchRequest {
+                    kind: MatchKind::Computer { level }, minutes, increment, request_id,
+                }).await;
             }
-            FrontendMessage::CancelSeek { request_id: Some(request_id) } => {
-                cancel_game_request(&mut self.pending_seek, request_id).await;
-            }
-            FrontendMessage::CancelSeek { request_id: None } => {
-                stop_game_request(&mut self.pending_seek).await;
+            FrontendMessage::CancelMatch { request_id } => {
+                self.stop_match_request(request_id).await;
             }
             FrontendMessage::MakeMove { from, to, promotion, request_id } => {
                 self.handle_make_move(replier, expected_game_id, from, to, promotion, request_id).await
@@ -1799,8 +1845,10 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::CancelGameHistory { request_id } => {
                 cancel_game_request(&mut self.history_load, request_id).await;
             }
-            FrontendMessage::CreateOpenChallenge { minutes, increment, rated } => {
-                self.handle_create_open_challenge(replier, minutes, increment, rated).await
+            FrontendMessage::CreateOpenChallenge { minutes, increment, rated, request_id } => {
+                self.start_match_request(replier, MatchRequest {
+                    kind: MatchKind::Open { rated }, minutes, increment, request_id,
+                }).await;
             }
             FrontendMessage::RequestGameMoves { game_id, request_id } => {
                 self.start_game_review_export(replier, game_id, request_id).await

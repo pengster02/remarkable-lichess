@@ -374,6 +374,7 @@ Rectangle {
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "ChallengeCreateFailed" ||
                        msg.type === "GameStarted" || msg.type === "ComputerGameCreated" ||
+                       msg.type === "MatchCreationFailed" ||
                        msg.type === "ChallengeResolved" || msg.type === "ChallengeAccepted" ||
                        msg.type === "ChallengeDeclined" || msg.type === "ChallengeActionFailed" ||
                        msg.type === "OpenChallengeCreated" ||
