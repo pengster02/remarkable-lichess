@@ -60,6 +60,13 @@ struct AccountStream {
     challenge_refresh: mpsc::Sender<()>,
 }
 
+// A request owns its export. Inline dispatch delays unrelated boards, and a
+// detached task keeps working after the frontend abandons the review.
+struct GameReviewExport {
+    request_id: Option<u32>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 // Startup retries can reuse the saved sign-in. Sending every failure to OAuth
 // forces needless sign-ins, and a second verifier can drift from token activation.
 enum TokenCheck {
@@ -128,6 +135,7 @@ pub struct LichessBackend {
     pending_seek: Option<tokio::task::JoinHandle<()>>,
     account_stream: Option<AccountStream>,
     home_refresh: Option<tokio::task::JoinHandle<()>>,
+    review_export: Option<GameReviewExport>,
     // The detached task waiting on the OAuth callback (see handle_start_login).
     // Held so CancelLogin -- and any restart of the flow -- can drop it, which
     // closes the listening port with it. Detached rather than awaited inline
@@ -160,6 +168,7 @@ impl LichessBackend {
             pending_seek: None,
             account_stream: None,
             home_refresh: None,
+            review_export: None,
             login_handle: None,
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
@@ -392,14 +401,42 @@ impl LichessBackend {
         }
     }
 
-    /// Fetches a finished game's move list and replays it once via
-    /// `game::replay::fens_for_export` -- a pure, stateless operation
-    /// independent of `self.session` (which models the *live*, currently
-    /// in-progress game, if any) so reviewing an old game can never disturb
-    /// whatever's actually being played right now.
-    async fn handle_request_game_moves(
-        &self,
+    async fn start_game_review_export(
+        &mut self,
         replier: &BackendReplier<Self>,
+        game_id: String,
+        request_id: Option<u32>,
+    ) {
+        let Some(client) = self.client.clone() else {
+            let reply = match request_id {
+                Some(request_id) => BackendMessage::GameMovesFailed {
+                    request_id, message: "Not signed in to Lichess".into(),
+                },
+                None => BackendMessage::TokenInvalid { reason: "no token saved".into() },
+            };
+            self.send(replier, &reply);
+            return;
+        };
+        self.stop_game_review_export().await;
+        let task = tokio::spawn(Self::fetch_game_review(
+            client, self.my_id.clone(), replier.clone(), self.write_lock.clone(),
+            game_id, request_id,
+        ));
+        self.review_export = Some(GameReviewExport { request_id, task });
+    }
+
+    async fn stop_game_review_export(&mut self) {
+        if let Some(export) = self.review_export.as_mut() {
+            abort_task(&mut export.task).await;
+            self.review_export = None;
+        }
+    }
+
+    async fn fetch_game_review(
+        client: LichessClient,
+        my_id: Option<String>,
+        replier: BackendReplier<Self>,
+        write_lock: Arc<std::sync::Mutex<()>>,
         game_id: String,
         request_id: Option<u32>,
     ) {
@@ -408,15 +445,7 @@ impl LichessBackend {
                 Some(request_id) => BackendMessage::GameMovesFailed { request_id, message },
                 None => BackendMessage::ErrorMsg { message },
             };
-            self.send(replier, &reply);
-        };
-        let Some(client) = self.client.clone() else {
-            if request_id.is_some() {
-                fail("Not signed in to Lichess".into());
-            } else {
-                self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
-            }
-            return;
+            send_locked(&replier, &write_lock, &reply);
         };
         let export = match client.export_game(&game_id).await {
             Ok(export) => export,
@@ -425,7 +454,7 @@ impl LichessBackend {
                 return;
             }
         };
-        let rating_diff = self.my_id.as_deref().and_then(|my_id| {
+        let rating_diff = my_id.as_deref().and_then(|my_id| {
             let players = export.players.as_ref()?;
             [&players.white, &players.black]
                 .into_iter()
@@ -456,7 +485,7 @@ impl LichessBackend {
                 judgment_comment: a.judgment.map(|j| j.comment),
             })
             .collect();
-        self.send(replier, &BackendMessage::GameMoves {
+        send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
             request_id, moves, fens, clock_ms, analysis, rating_diff,
         });
     }
@@ -732,6 +761,7 @@ impl LichessBackend {
 
     async fn stop_authenticated_activity(&mut self) {
         stop_task(&mut self.home_refresh).await;
+        self.stop_game_review_export().await;
         stop_task(&mut self.pending_seek).await;
         if let Some(account) = self.account_stream.as_mut() {
             abort_task(&mut account.task).await;
@@ -1431,6 +1461,7 @@ impl AppLoadBackend for LichessBackend {
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             // The new frontend starts its request sequence over.
             stop_task(&mut self.home_refresh).await;
+            self.stop_game_review_export().await;
             if self.client.is_none() {
                 self.check_saved_sign_in(replier).await;
             } else if let Some(username) = self.username.clone() {
@@ -1603,7 +1634,12 @@ impl AppLoadBackend for LichessBackend {
                 self.handle_create_open_challenge(replier, minutes, increment, rated).await
             }
             FrontendMessage::RequestGameMoves { game_id, request_id } => {
-                self.handle_request_game_moves(replier, game_id, request_id).await
+                self.start_game_review_export(replier, game_id, request_id).await
+            }
+            FrontendMessage::CancelGameReview { request_id } => {
+                if self.review_export.as_ref().is_some_and(|export| export.request_id == Some(request_id)) {
+                    self.stop_game_review_export().await;
+                }
             }
             FrontendMessage::RequestCloudEvaluation { fen, request_id } => {
                 self.handle_request_cloud_evaluation(replier, fen, request_id).await

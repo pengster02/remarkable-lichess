@@ -94,6 +94,13 @@ Rectangle {
         return root.requestSequence
     }
 
+    function cancelPendingReview() {
+        var request = root.pendingReview
+        if (!request) return
+        root.pendingReview = null
+        root.sendToBackend({type: "CancelGameReview", request_id: request.id})
+    }
+
     function applyConnectivity(msg) {
         root.connectivityKnown = true
         root.online = msg.online || false
@@ -465,7 +472,7 @@ Rectangle {
         anchors.bottom: parent.bottom
         source: "StartupScreen.qml"
         onSourceChanged: {
-            root.pendingReview = null
+            root.cancelPendingReview()
             root.selectedGameId = ""
         }
         onLoaded: {
