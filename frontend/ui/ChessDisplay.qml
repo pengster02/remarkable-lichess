@@ -24,6 +24,35 @@ QtObject {
         return ""
     }
 
+    function changedPiecesForSide(pieces, other, white) {
+        var squares = []
+        for (var square in pieces) {
+            var piece = pieces[square]
+            if (piece !== other[square] && (piece === piece.toUpperCase()) === white) {
+                squares.push(square)
+            }
+        }
+        return squares
+    }
+
+    function moveEndpoints(previousFen, previousPieces, pieces) {
+        if (!previousFen) return []
+        // The validated positions identify the mover even on older packets. Wire coordinates grow the history, and SAN special cases duplicate notation rules.
+        var white = sideToMove(previousFen) === "white"
+        var origins = changedPiecesForSide(previousPieces, pieces, white)
+        var destinations = changedPiecesForSide(pieces, previousPieces, white)
+        if (origins.length === 1 && destinations.length === 1) {
+            return [origins[0], destinations[0]]
+        }
+        if (origins.length === 2 && destinations.length === 2) {
+            var king = white ? "K" : "k"
+            var from = origins.find(function(square) { return previousPieces[square] === king })
+            var to = destinations.find(function(square) { return pieces[square] === king })
+            if (from && to) return [from, to]
+        }
+        return []
+    }
+
     function humanizeIdentifier(value) {
         if (value === null || value === undefined || String(value).length === 0) return "Unknown"
         var text = String(value)
