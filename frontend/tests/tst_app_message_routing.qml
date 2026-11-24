@@ -269,7 +269,7 @@ TestCase {
     function test_seekIgnoresAnUnrelatedChallengeAndOpensItsMatch() {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitSeek()
-        endpoint.reply({type: "SeekCreated"})
+        endpoint.reply({type: "SeekCreated", request_id: screen.item.seekRequestId})
         verify(screen.item.waiting)
         endpoint.reply({type: "GameStarted", game_id: "challenge", from_realtime_lobby: false})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
@@ -284,14 +284,51 @@ TestCase {
         screen.item.submitSeek()
         endpoint.reply({type: "GameStarted", game_id: "old-match", from_realtime_lobby: true})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
-        endpoint.reply({type: "ErrorMsg", message: "Could not create seek"})
+        endpoint.reply({type: "SeekFailed", request_id: screen.item.seekRequestId,
+                        message: "Could not create seek"})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
 
         screen.item.submitSeek()
         endpoint.reply({type: "GameStarted", game_id: "new-match", from_realtime_lobby: true})
-        endpoint.reply({type: "SeekCreated"})
+        endpoint.reply({type: "SeekCreated", request_id: screen.item.seekRequestId})
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "new-match"})
+    }
+
+    function test_seekEndsAndCanBeRestartedWithoutAStaleReply() {
+        app.navigateTo("SeekScreen.qml")
+        screen.item.submitSeek()
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        endpoint.reply({type: "SeekCreated", request_id: first})
+        endpoint.reply({type: "SeekEnded", request_id: first})
+        compare(screen.item.waitingLabel, "Checking for a match...")
+        tryCompare(screen.item, "waiting", false, 6500)
+        verify(findChild(screen.item, "seekEndedNotice").visible)
+        var pager = findChild(screen.item, "seekFlickable")
+        var retry = findChild(screen.item, "findOpponentButton")
+        tryVerify(function() { return retry.mapToItem(pager, 0, retry.height).y <= pager.pageHeight })
+        compare(retry.text, "Search again")
+        verify(findChild(screen.item, "editSeekSetupButton").visible)
+
+        retry.clicked()
+        var second = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        verify(first !== second)
+        endpoint.reply({type: "SeekCreated", request_id: second})
+        endpoint.reply({type: "SeekEnded", request_id: first})
+        compare(screen.item.waitingLabel, "Waiting for an opponent...")
+        verify(screen.item.waiting)
+    }
+
+    function test_seekCanOpenAMatchAnnouncedAfterTheConnectionCloses() {
+        app.navigateTo("SeekScreen.qml")
+        screen.item.submitSeek()
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        endpoint.reply({type: "SeekCreated", request_id: request})
+        endpoint.reply({type: "SeekEnded", request_id: request})
+        compare(screen.item.waitingLabel, "Checking for a match...")
+        endpoint.reply({type: "GameStarted", game_id: "late-match", from_realtime_lobby: true})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "late-match"})
     }
 
     function test_directChallengeOpensOnlyItsAcceptedGame() {

@@ -112,11 +112,8 @@ pub struct LichessBackend {
     // TokenVerified without an extra get_account() round trip (see handle_message).
     username: Option<String>,
     session: Arc<Mutex<Option<GameSession>>>,
-    // The held-open long-poll connection backing an outstanding seek or outgoing
-    // challenge (see spawn_hold_connection_open's comment on why holding it open
-    // is what keeps the seek/challenge alive on Lichess's side). Dropping/aborting
-    // this task closes that connection, which is exactly how a real Lichess client
-    // cancels a pending seek -- there's no separate "cancel" REST endpoint.
+    // Lichess keeps the seek or direct challenge alive while this task holds
+    // its response open. Closing the response cancels the outstanding request.
     pending_seek: Option<tokio::task::JoinHandle<()>>,
     account_stream_handle: Option<tokio::task::JoinHandle<()>>,
     // The detached task waiting on the OAuth callback (see handle_start_login).
@@ -590,14 +587,27 @@ impl LichessBackend {
         increment: u32,
         rated: bool,
         color: String,
+        request_id: Option<u32>,
     ) {
-        let Some(client) = &self.client else { return };
-        match client.create_seek(minutes, increment, rated, &color).await {
+        let result = match &self.client {
+            Some(client) => client.create_seek(minutes, increment, rated, &color).await,
+            None => Err(anyhow::anyhow!("Sign in to Lichess to find an opponent.")),
+        };
+        match result {
             Ok(lines) => {
-                self.send(replier, &BackendMessage::SeekCreated);
-                self.replace_pending_seek(spawn_hold_connection_open(lines));
+                self.send(replier, &BackendMessage::SeekCreated { request_id });
+                self.replace_pending_seek(spawn_seek_response(
+                    lines, request_id, replier.clone(), self.write_lock.clone(),
+                ));
             }
-            Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
+            Err(error) => {
+                let message = error.to_string();
+                let failure = match request_id {
+                    Some(request_id) => BackendMessage::SeekFailed { request_id, message },
+                    None => BackendMessage::ErrorMsg { message },
+                };
+                self.send(replier, &failure);
+            }
         }
     }
 
@@ -1019,12 +1029,16 @@ async fn next_stream_line(
     tokio::time::timeout(idle_timeout, lines.next()).await
 }
 
-fn spawn_hold_connection_open(
-    mut lines: std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>,
+fn spawn_seek_response(
+    mut lines: LineStream,
+    request_id: Option<u32>,
+    replier: BackendReplier<LichessBackend>,
+    write_lock: Arc<std::sync::Mutex<()>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        use futures_util::StreamExt;
-        while lines.next().await.is_some() {}
+        while let Ok(Some(_)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {}
+        drop(lines);
+        send_locked(&replier, &write_lock, &BackendMessage::SeekEnded { request_id });
     })
 }
 
@@ -1344,8 +1358,8 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::SaveToken { token } => self.handle_save_token(replier, token).await,
             FrontendMessage::RequestHome => self.handle_request_home(replier).await,
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
-            FrontendMessage::CreateSeek { minutes, increment, rated, color } => {
-                self.handle_create_seek(replier, minutes, increment, rated, color).await
+            FrontendMessage::CreateSeek { minutes, increment, rated, color, request_id } => {
+                self.handle_create_seek(replier, minutes, increment, rated, color, request_id).await
             }
             FrontendMessage::CreateChallenge { username, minutes, increment, rated, color } => {
                 let Some(client) = &self.client else { return };

@@ -348,7 +348,8 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "HomeState" || msg.type === "HomeLoadFailed" ||
-                       msg.type === "SeekCreated" || msg.type === "ChallengeCreated" ||
+                       msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
+                       msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "GameStarted" || msg.type === "ComputerGameCreated" ||
                        msg.type === "ChallengeResolved" || msg.type === "ChallengeAccepted" ||
                        msg.type === "OpenChallengeCreated" ||
