@@ -280,6 +280,52 @@ TestCase {
         compare(screen.item.topStatusText(), "Your move")
     }
 
+    function test_cachedOpponentDepartureRestoresClaimsAndRespectsTheServerCountdown() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        var snapshot = boardState("selected")
+        snapshot.game_stream_connected = true
+        snapshot.opponent_departure = {claim_win_in_seconds: 12}
+        endpoint.reply(snapshot)
+        compare(screen.item.gameActionsLabel(), "Opponent left")
+        screen.item.showGameActions = true
+        var claim = findChild(screen.item, "claimVictoryButton")
+        var draw = findChild(screen.item, "claimDrawAction")
+        verify(claim.visible)
+        verify(!claim.enabled)
+        compare(claim.text, "Claim victory (~12s)")
+        verify(!draw.visible)
+
+        endpoint.reply({type: "OpponentGone", game_id: "other", gone: true,
+                        claim_win_in_seconds: 0})
+        verify(!claim.enabled)
+        endpoint.reply({type: "OpponentGone", game_id: "selected", gone: true,
+                        claim_win_in_seconds: 0})
+        verify(claim.enabled)
+        verify(draw.visible)
+        endpoint.reply({type: "OpponentGone", game_id: "selected", gone: false})
+        verify(!claim.visible)
+        verify(!draw.visible)
+
+        endpoint.reply({type: "OpponentGone", game_id: "selected", gone: true,
+                        claim_win_in_seconds: 0})
+        verify(claim.enabled)
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "selected"})
+        verify(!claim.visible)
+        verify(!draw.visible)
+        snapshot.opponent_departure = null
+        endpoint.reply(snapshot)
+        verify(!claim.visible)
+        verify(!draw.visible)
+
+        snapshot.opponent_departure = {claim_win_in_seconds: 0}
+        endpoint.reply(snapshot)
+        verify(claim.enabled)
+        snapshot.outcome = {result: "white", reason: "Opponent resigned"}
+        endpoint.reply(snapshot)
+        verify(!screen.item.opponentGone)
+    }
+
     function test_seekIgnoresAnUnrelatedChallengeAndOpensItsMatch() {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitSeek()

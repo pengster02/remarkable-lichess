@@ -235,6 +235,11 @@ pub struct PlayerStatusSummary {
     pub flair: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct OpponentDeparture {
+    pub claim_win_in_seconds: Option<u64>,
+}
+
 // This account's own whole-game accuracy stats from Lichess's computer
 // analysis (see lichess::models::PlayerAnalysisSummary) -- present only once
 // this specific game has actually been analyzed there, which most games
@@ -373,6 +378,11 @@ pub enum BackendMessage {
     BoardState {
         game_id: String,
         game_stream_connected: bool,
+        // Include the latest departure in the same snapshot as the position.
+        // A separate resume event can arrive late, while inferring it from
+        // profile presence can expose claim buttons without a game event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opponent_departure: Option<Box<OpponentDeparture>>,
         fen: String,
         turn: String,
         white_time_ms: u64,
@@ -465,12 +475,8 @@ pub enum BackendMessage {
     GameStreamReconnecting { game_id: String },
     GameStreamFailed { game_id: String, message: String },
     ErrorMsg { message: String },
-    // Sent whenever Lichess's own `opponentGone` stream event fires (confirmed
-    // against OpponentGoneEvent.yaml). `claim_win_in_seconds` is only meaningful
-    // while `gone` is true. We don't run a local countdown off this -- same
-    // no-idle-redraw reasoning as the clock (see BoardScreen.qml) -- the frontend
-    // just shows/hides a "Claim victory" action and lets Lichess's own endpoint
-    // reject an early claim, same as every other server-authoritative action here.
+    // Lichess refreshes the countdown in these events. Zero enables the claim
+    // controls without a local timer, and the endpoint still verifies the claim.
     OpponentGone { game_id: String, gone: bool, claim_win_in_seconds: Option<u64> },
     PlayerStatuses { game_id: String, players: Box<[PlayerStatusSummary]> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
@@ -908,6 +914,7 @@ mod tests {
         let msg = BackendMessage::BoardState {
             game_id: "g1".into(),
             game_stream_connected: false,
+            opponent_departure: None,
             fen: "startpos".into(),
             turn: "white".into(),
             white_time_ms: 600_000,

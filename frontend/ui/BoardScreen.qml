@@ -98,10 +98,12 @@ Rectangle {
     property bool canOfferDraw: false
     property bool canOfferTakeback: false
     property bool canGiveTime: false
-    // Set from the backend's OpponentGone message. Lichess's claim-victory
-    // endpoint remains authoritative and rejects an early claim.
-    property bool opponentGone: false
-    property int claimWinInSeconds: 0
+    property var opponentDeparture: null
+    readonly property bool opponentGone: boardScreen.opponentDeparture !== null &&
+        !boardScreen.gameOver && !boardScreen.streamReconnecting && boardScreen.streamError.length === 0
+    readonly property var claimWinInSeconds: boardScreen.opponentGone
+        ? boardScreen.opponentDeparture.claim_win_in_seconds : null
+    readonly property bool canClaimDeparture: boardScreen.claimWinInSeconds === 0
     // User-controlled override, independent of yourColor -- XORed with the
     // yourColor-based orientation below, same as every reference client's
     // "flip board" action.
@@ -1372,18 +1374,23 @@ Rectangle {
                 {type: "AddTime", seconds: 15}, "AddTime")
         }
         AppButton {
+            objectName: "claimVictoryButton"
             width: parent.width
             text: "Claim victory" +
                 (boardScreen.claimWinInSeconds > 0
                     ? " (~" + boardScreen.claimWinInSeconds + "s)"
                     : "")
             highlighted: true
-            visible: !boardScreen.gameOver && boardScreen.opponentGone
-            onClicked: boardScreen.requestGameAction(
-                {type: "ClaimVictory"}, "ClaimVictory")
+            visible: boardScreen.opponentGone
+            enabled: boardScreen.canClaimDeparture
+            onClicked: {
+                if (boardScreen.canClaimDeparture)
+                    boardScreen.requestGameAction({type: "ClaimVictory"}, "ClaimVictory")
+            }
         }
         ConfirmAction {
             id: claimDrawAction
+            objectName: "claimDrawAction"
             width: parent.width
             actionText: "Claim draw"
             confirmText: "Confirm draw claim"
@@ -1391,9 +1398,11 @@ Rectangle {
             busyText: "Claiming draw"
             busy: boardScreen.pendingGameAction === "ClaimDraw"
             critical: true
-            visible: !boardScreen.gameOver && boardScreen.opponentGone
-            onConfirmed: boardScreen.requestGameAction(
-                {type: "ClaimDraw"}, "ClaimDraw")
+            visible: boardScreen.canClaimDeparture
+            onConfirmed: {
+                if (boardScreen.canClaimDeparture)
+                    boardScreen.requestGameAction({type: "ClaimDraw"}, "ClaimDraw")
+            }
         }
         AppButton {
             width: parent.width
@@ -1779,10 +1788,9 @@ Rectangle {
                     boardScreen.gameRatingChange = null
                 }
                 boardScreen.pendingGameAction = ""
-                boardScreen.opponentGone = false
-                boardScreen.claimWinInSeconds = 0
             }
             boardScreen.gameId = nextGameId
+            boardScreen.opponentDeparture = msg.opponent_departure || null
             if (boardChanged) {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
@@ -1939,6 +1947,7 @@ Rectangle {
             // waiting for every POST before moving a piece, both making slow links
             // directly visible in gameplay.
             boardScreen.streamReconnecting = true
+            boardScreen.opponentDeparture = null
         } else if (msg.type === "GameStreamFailed") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
                     boardScreen.gameOver) return
@@ -1954,8 +1963,9 @@ Rectangle {
             boardScreen.streamError = msg.message || "Could not load this game."
         } else if (msg.type === "OpponentGone") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
-            boardScreen.opponentGone = msg.gone
-            boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
+            boardScreen.opponentDeparture = msg.gone
+                ? {claim_win_in_seconds: msg.claim_win_in_seconds}
+                : null
         } else if (msg.type === "GameMovesFailed") {
             boardScreen.statusMessage = msg.message
         } else if (msg.type === "ErrorMsg") {
