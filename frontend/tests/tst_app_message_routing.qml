@@ -45,6 +45,111 @@ TestCase {
         }
     }
 
+    function firstCoordinateLabel(container) {
+        for (var i = 0; i < container.children.length; i += 1) {
+            var child = container.children[i]
+            if (typeof child.text === "string") return child
+        }
+        return null
+    }
+
+    function verifyBoardLabels(board, flipped) {
+        var corner = findChild(board, flipped ? "boardSquare-h1" : "boardSquare-a8")
+        var origin = corner.mapToItem(board, 0, 0)
+        var files = findChild(board, "boardFileLabels")
+        var ranks = findChild(board, "boardRankLabels")
+        verify(files.visible && ranks.visible)
+        var firstFile = firstCoordinateLabel(files)
+        var firstRank = firstCoordinateLabel(ranks)
+        verify(firstFile && firstRank)
+        compare(firstFile.text, flipped ? "h" : "a")
+        compare(firstRank.text, flipped ? "1" : "8")
+        fuzzyCompare(firstFile.mapToItem(board, 0, 0).x, origin.x, 0.5)
+        fuzzyCompare(firstRank.mapToItem(board, 0, 0).y, origin.y, 0.5)
+        fuzzyCompare(firstFile.width, corner.width, 0.5)
+        fuzzyCompare(firstRank.height, corner.height, 0.5)
+        return origin.x
+    }
+
+    function test_liveBoardKeepsItsPositionAndHitTargetsWhenCoordinatesAreHidden_data() {
+        return [
+            {tag: "Paper Pro", width: 1620, height: 2160, flipped: false},
+            {tag: "Paper Pro Move flipped", width: 954, height: 1696, flipped: true}
+        ]
+    }
+
+    function test_liveBoardKeepsItsPositionAndHitTargetsWhenCoordinatesAreHidden(data) {
+        width = data.width
+        height = data.height
+        app.openGame("active")
+        var snapshot = boardState("active")
+        snapshot.legal_moves = [{from: "e2", to: "e4"}]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.manualFlip = data.flipped
+        verify(waitForRendering(board))
+        var left = verifyBoardLabels(board, data.flipped)
+        var from = findChild(board, "boardSquare-e2")
+        var to = findChild(board, "boardSquare-e4")
+        var squareSize = from.width
+        if (data.flipped) {
+            fuzzyCompare(left, 122, 0.5)
+            fuzzyCompare(squareSize * 8, 786, 0.5)
+        } else {
+            fuzzyCompare(left + squareSize * 4, width / 2, 0.5)
+        }
+
+        var start = from.mapToItem(board, from.width / 2, from.height / 2)
+        var end = to.mapToItem(board, to.width / 2, to.height / 2)
+        app.setShowCoordinates(false)
+        verify(!findChild(board, "boardFileLabels").visible)
+        verify(!findChild(board, "boardRankLabels").visible)
+        compare(from.mapToItem(board, from.width / 2, from.height / 2), start)
+        compare(to.mapToItem(board, to.width / 2, to.height / 2), end)
+        compare(from.width, squareSize)
+
+        if (data.flipped) {
+            mouseDrag(board, start.x, start.y, end.x - start.x, end.y - start.y)
+        } else {
+            mouseClick(board, start.x, start.y)
+            compare(board.selectedSquare, "e2")
+            mouseClick(board, end.x, end.y)
+        }
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "MakeMove")
+        compare(request.from, "e2")
+        compare(request.to, "e4")
+    }
+
+    function test_reviewAndExploreShareTheCenteredGrid() {
+        width = 1620
+        height = 2160
+        var requestId = choose("geometry")
+        endpoint.reply({type: "GameMoves", request_id: requestId, fens: [startFen], moves: []})
+        var review = screen.item
+        verify(waitForRendering(review))
+        var left = verifyBoardLabels(review, false)
+        var from = findChild(review, "boardSquare-e2")
+        fuzzyCompare(left + from.width * 4, width / 2, 0.5)
+
+        review.manualFlip = true
+        review.beginExploration()
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: startFen, fen: startFen,
+                        legal_moves: [{from: "e2", to: "e4"}]})
+        verify(review.exploreMode)
+        fuzzyCompare(verifyBoardLabels(review, true), left, 0.5)
+        from = findChild(review, "boardSquare-e2")
+        var to = findChild(review, "boardSquare-e4")
+        mouseClick(from, from.width / 2, from.height / 2)
+        compare(review.selectedSquare, "e2")
+        mouseClick(to, to.width / 2, to.height / 2)
+        var move = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(move.type, "MakeAnalysisMove")
+        compare(move.from, "e2")
+        compare(move.to, "e4")
+    }
+
     function latestHomeRequest() {
         var messages = endpoint.sentMessages.filter(function(message) {
             return message.type === "RequestHome"

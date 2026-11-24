@@ -975,19 +975,22 @@ Rectangle {
             color: theme.textMuted
         }
 
-        Row {
-            spacing: theme.spacingXs
+        Item {
+            width: parent.width
+            height: grid.height
 
             Column {
                 id: rankLabels
-                // Hidden but keeps its width, so toggling coordinates doesn't
-                // resize/shift the board (grid width keys off rankLabels.width).
+                objectName: "boardRankLabels"
+                width: 64
+                anchors.right: boardSurface.left
+                anchors.rightMargin: theme.spacingXs
                 visible: boardScreen.showCoordinates
                 Repeater {
                     model: 8
                     Text {
                         required property int index
-                        width: 64
+                        width: rankLabels.width
                         height: grid.height / 8
                         verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
@@ -999,6 +1002,8 @@ Rectangle {
             }
 
             Item {
+                id: boardSurface
+                x: chessDisplay.boardLeft(parent.width, width, rankLabels.width + theme.spacingXs)
                 width: grid.width
                 height: grid.height
 
@@ -1006,10 +1011,10 @@ Rectangle {
                     id: grid
                     columns: 8
                     rows: 8
-                    // Width-driven on the real (portrait) panel; the height
-                    // cap only exists so a shorter/landscape host (the PC
-                    // emulator) still gets a usable, non-overflowing board.
-                    width: Math.min(boardColumn.width - rankLabels.width - theme.spacingXs, boardScreen.height * 0.5)
+                    width: Math.max(0, Math.min(
+                        boardColumn.width - rankLabels.width - theme.spacingXs,
+                        boardScreen.height * 0.5
+                    ))
                     height: width
 
                     Repeater {
@@ -1181,21 +1186,19 @@ Rectangle {
         }
 
         Row {
-            spacing: theme.spacingXs
+            objectName: "boardFileLabels"
+            x: boardSurface.x
+            width: grid.width
             visible: boardScreen.showCoordinates
-            Item { width: 64; height: 1 }
-            Row {
-                width: grid.width
-                Repeater {
-                    model: 8
-                    Text {
-                        required property int index
-                        width: grid.width / 8
-                        horizontalAlignment: Text.AlignHCenter
-                        text: boardScreen.fr.files[index]
-                        font.pixelSize: theme.fontSmall
-                        color: theme.text
-                    }
+            Repeater {
+                model: 8
+                Text {
+                    required property int index
+                    width: grid.width / 8
+                    horizontalAlignment: Text.AlignHCenter
+                    text: boardScreen.fr.files[index]
+                    font.pixelSize: theme.fontSmall
+                    color: theme.text
                 }
             }
         }

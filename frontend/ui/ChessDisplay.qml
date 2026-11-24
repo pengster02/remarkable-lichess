@@ -1,6 +1,11 @@
 import QtQuick 2.5
 
 QtObject {
+    function boardLeft(availableWidth, boardWidth, coordinateInset) {
+        // Center when the gutter fits. Fixed symmetric gutters shrink narrow boards, and left alignment wastes wide space.
+        return Math.max(coordinateInset, (availableWidth - boardWidth) / 2)
+    }
+
     function humanizeIdentifier(value) {
         if (value === null || value === undefined || String(value).length === 0) return "Unknown"
         var text = String(value)

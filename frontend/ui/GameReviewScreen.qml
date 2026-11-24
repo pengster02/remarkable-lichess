@@ -693,16 +693,21 @@ Rectangle {
             color: theme.text
         }
 
-        Row {
-            spacing: theme.spacingXs
+        Item {
+            width: parent.width
+            height: grid.height
 
             Column {
                 id: rankLabels
+                objectName: "boardRankLabels"
+                width: gameReviewScreen.coordinateGutter
+                anchors.right: boardSurface.left
+                anchors.rightMargin: theme.spacingXs
                 Repeater {
                     model: 8
                     Text {
                         required property int index
-                        width: gameReviewScreen.coordinateGutter
+                        width: rankLabels.width
                         height: grid.height / 8
                         verticalAlignment: Text.AlignVCenter
                         horizontalAlignment: Text.AlignHCenter
@@ -714,6 +719,8 @@ Rectangle {
             }
 
             Item {
+                id: boardSurface
+                x: chessDisplay.boardLeft(parent.width, width, rankLabels.width + theme.spacingXs)
                 width: grid.width
                 height: grid.height
 
@@ -721,16 +728,17 @@ Rectangle {
                 id: grid
                 columns: 8
                 rows: 8
-                width: Math.min(
+                width: Math.max(0, Math.min(
                     boardArea.width - rankLabels.width - theme.spacingXs,
                     gameReviewScreen.height * 0.42
-                )
+                ))
                 height: width
 
                 Repeater {
                     model: 64
                     BoardSquare {
                         required property int index
+                        objectName: "boardSquare-" + squareName
                         width: grid.width / 8
                         height: grid.height / 8
                         property int fileIdx: index % 8
@@ -792,20 +800,18 @@ Rectangle {
         }
 
         Row {
-            spacing: theme.spacingXs
-            Item { width: gameReviewScreen.coordinateGutter; height: 1 }
-            Row {
-                width: grid.width
-                Repeater {
-                    model: 8
-                    Text {
-                        required property int index
-                        width: grid.width / 8
-                        horizontalAlignment: Text.AlignHCenter
-                        text: gameReviewScreen.fr.files[index]
-                        font.pixelSize: theme.fontSmall
-                        color: theme.text
-                    }
+            objectName: "boardFileLabels"
+            x: boardSurface.x
+            width: grid.width
+            Repeater {
+                model: 8
+                Text {
+                    required property int index
+                    width: grid.width / 8
+                    horizontalAlignment: Text.AlignHCenter
+                    text: gameReviewScreen.fr.files[index]
+                    font.pixelSize: theme.fontSmall
+                    color: theme.text
                 }
             }
         }
