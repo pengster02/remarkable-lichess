@@ -1,6 +1,6 @@
 use appload_client::AppLoad;
 use backend::backend_app::LichessBackend;
-use std::path::PathBuf;
+use backend::credentials;
 
 // Only the `production` build installs a logger (see Cargo.toml). Quiet by
 // default -- warnings and errors -- but RUST_LOG can raise it to debug on-device
@@ -14,7 +14,9 @@ fn init_logging() {
 #[tokio::main]
 async fn main() {
     init_logging();
-    let token_path = PathBuf::from("/home/root/.config/remarkable-lichess/token");
+    // One directory keeps settings alongside the token across AppLoad and Docker.
+    // A token-only override would split their defaults, and HOME differs by launcher.
+    let token_path = credentials::token_path(std::env::var_os("REMARKABLE_LICHESS_CONFIG_DIR"));
     if let Some(parent) = token_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

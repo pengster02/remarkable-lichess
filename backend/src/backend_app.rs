@@ -1,3 +1,4 @@
+use crate::credentials;
 use crate::game::outcome::{outcome, termination_label};
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
@@ -144,7 +145,9 @@ impl LichessBackend {
                 // while a QR sign-in is still waiting on its redirect.
                 stop_task(&mut self.login_handle).await;
                 self.stop_game_activity().await;
-                let _ = std::fs::write(&self.token_path, &token);
+                if let Err(error) = credentials::save(&self.token_path, &token) {
+                    log::warn!("could not persist verified sign-in: {error}");
+                }
                 self.client = Some(client);
                 self.my_id = Some(account.id.clone());
                 self.username = Some(account.username.clone());
@@ -229,7 +232,7 @@ impl LichessBackend {
         self.login_handle = Some(tokio::spawn(async move {
             let outcome = tokio::time::timeout(oauth::LOGIN_TIMEOUT, pending.complete(LICHESS_BASE_URL)).await;
             let message = match outcome {
-                Ok(Ok(token)) => match std::fs::write(&token_path, &token) {
+                Ok(Ok(token)) => match credentials::save(&token_path, &token) {
                     Ok(()) => BackendMessage::LoginCompleted,
                     Err(e) => BackendMessage::LoginFailed {
                         reason: format!("couldn't save the token on this device: {e}"),
@@ -1184,12 +1187,19 @@ impl AppLoadBackend for LichessBackend {
             }
             return;
         }
-        let Ok(frontend_msg) = serde_json::from_str::<FrontendMessage>(&message.contents) else {
-            log::warn!("malformed message from frontend: {}", message.contents);
-            self.send(replier, &BackendMessage::ErrorMsg { message: "malformed message from frontend".into() });
-            return;
+        let frontend_msg = match serde_json::from_str::<FrontendMessage>(&message.contents) {
+            Ok(message) => message,
+            Err(error) => {
+                log::warn!("malformed frontend message at {}:{}", error.line(), error.column());
+                self.send(replier, &BackendMessage::ErrorMsg { message: "malformed message from frontend".into() });
+                return;
+            }
         };
-        log::debug!("frontend message: {frontend_msg:?}");
+        if matches!(&frontend_msg, FrontendMessage::SaveToken { .. }) {
+            log::debug!("frontend message: SaveToken");
+        } else {
+            log::debug!("frontend message: {frontend_msg:?}");
+        }
         match frontend_msg {
             FrontendMessage::StartLogin => self.handle_start_login(replier).await,
             FrontendMessage::CancelLogin => self.handle_cancel_login(),
