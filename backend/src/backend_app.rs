@@ -12,7 +12,7 @@ use crate::protocol::{
     GameAction, GameActionRequest, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
     OpponentDeparture, PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
 };
-use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
+use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::future::Future;
@@ -155,11 +155,68 @@ struct CloudEvaluationQueue {
     task: tokio::task::JoinHandle<()>,
 }
 
-// Startup retries can reuse the saved sign-in. Sending every failure to OAuth
-// forces needless sign-ins, and a second verifier can drift from token activation.
-enum TokenCheck {
-    Startup,
-    SignIn,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SignInMethod {
+    Saved,
+    Qr,
+    Token,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SignInRequest {
+    method: SignInMethod,
+    request_id: Option<u32>,
+}
+
+struct VerifiedSignIn {
+    token: String,
+    client: LichessClient,
+    my_id: String,
+    username: String,
+}
+
+// Keep verified credentials in memory until the screen confirms. Saving first
+// can restore an abandoned login; keeping both stages alive retains old secrets.
+enum SignInAttempt {
+    Working { request: SignInRequest, task: tokio::task::JoinHandle<()> },
+    Ready { request: SignInRequest, verified: VerifiedSignIn },
+}
+
+impl SignInAttempt {
+    fn request(&self) -> SignInRequest {
+        match self {
+            Self::Working { request, .. } | Self::Ready { request, .. } => *request,
+        }
+    }
+}
+
+enum SignInError {
+    Account(anyhow::Error),
+    Qr(String),
+}
+
+impl SignInRequest {
+    fn failure(self, error: SignInError) -> BackendMessage {
+        let reason = match error {
+            SignInError::Qr(reason) => reason,
+            SignInError::Account(error) if is_auth_rejection(&error) => {
+                if self.method == SignInMethod::Saved || self.request_id.is_none() {
+                    return BackendMessage::TokenInvalid { reason: "Lichess rejected the sign-in.".into() };
+                }
+                "Lichess rejected this sign-in. Check the token and its permissions.".into()
+            }
+            SignInError::Account(_) if self.method == SignInMethod::Saved => {
+                return BackendMessage::AuthenticationCheckFailed {
+                    message: "Could not verify your saved Lichess sign-in. Check your connection and try again.".into(),
+                };
+            }
+            SignInError::Account(_) if self.request_id.is_none() && self.method == SignInMethod::Token => {
+                return BackendMessage::TokenInvalid { reason: "Could not verify the token.".into() };
+            }
+            SignInError::Account(_) => "Could not verify your sign-in. Check your connection and try again.".into(),
+        };
+        BackendMessage::LoginFailed { reason, request_id: self.request_id }
+    }
 }
 
 enum ChallengeAction {
@@ -254,13 +311,7 @@ pub struct LichessBackend {
     review_export: Option<GameRequest>,
     cloud_evaluations: Option<CloudEvaluationQueue>,
     cloud_retry_after: Arc<Mutex<Option<Instant>>>,
-    // The detached task waiting on the OAuth callback (see handle_start_login).
-    // Held so CancelLogin -- and any restart of the flow -- can drop it, which
-    // closes the listening port with it. Detached rather than awaited inline
-    // because handle_message is the backend's only entry point: blocking it for
-    // the whole five-minute sign-in window would leave Cancel and the
-    // paste-a-token fallback queued behind it, unable to run.
-    login_handle: Option<tokio::task::JoinHandle<()>>,
+    pending_sign_in: Option<SignInAttempt>,
     move_submission: Option<tokio::task::JoinHandle<()>>,
     game_action: Option<tokio::task::JoinHandle<()>>,
     game_stream: Option<GameStream>,
@@ -293,7 +344,7 @@ impl LichessBackend {
             review_export: None,
             cloud_evaluations: None,
             cloud_retry_after: Arc::new(Mutex::new(None)),
-            login_handle: None,
+            pending_sign_in: None,
             move_submission: None,
             game_action: None,
             game_stream: None,
@@ -305,45 +356,97 @@ impl LichessBackend {
         send_locked(replier, &self.write_lock, msg);
     }
 
-    async fn activate_token(&mut self, replier: &BackendReplier<Self>, token: String, check: TokenCheck) {
-        log::info!("activate_token: verifying token via get_account");
-        let client = LichessClient::new(token.clone());
-        match client.get_account().await {
-            Ok(account) => {
-                log::info!("activate_token: verified, username={}", account.username);
-                // Releases the callback port when a token arrives some other
-                // way (a pasted token, or a restart picking up the saved file)
-                // while a QR sign-in is still waiting on its redirect.
-                stop_task(&mut self.login_handle).await;
-                self.stop_authenticated_activity().await;
-                if let Err(error) = credentials::save(&self.token_path, &token) {
-                    log::warn!("could not persist verified sign-in: {error}");
-                }
-                self.client = Some(client);
-                self.my_id = Some(account.id.clone());
-                self.username = Some(account.username.clone());
-                // Needed so GameSession can work out which color the local account is
-                // playing (see game::session::resolve_your_color) and orient the board
-                // accordingly, instead of always assuming white.
-                self.send(replier, &BackendMessage::TokenVerified { username: account.username });
-                self.spawn_account_stream(replier.clone());
+    fn spawn_sign_in(
+        &mut self,
+        replier: &BackendReplier<Self>,
+        request: SignInRequest,
+        verify: impl Future<Output = Result<VerifiedSignIn, SignInError>> + Send + 'static,
+    ) {
+        let replier = replier.clone();
+        let task = tokio::spawn(async move {
+            let result = verify.await;
+            // AppLoad also uses this mutex for incoming commands. A worker
+            // waits for it only after network I/O, so stop_sign_in can abort it
+            // while it waits, and completion cannot overtake account teardown.
+            let mut backend = replier.backend.lock().await;
+            backend.sign_in_finished(&replier, request, result).await;
+        });
+        self.pending_sign_in = Some(SignInAttempt::Working { request, task });
+    }
+
+    async fn sign_in_finished(
+        &mut self,
+        replier: &BackendReplier<Self>,
+        request: SignInRequest,
+        result: Result<VerifiedSignIn, SignInError>,
+    ) {
+        if !matches!(&self.pending_sign_in, Some(SignInAttempt::Working { request: active, .. }) if *active == request) {
+            return;
+        }
+        self.pending_sign_in = None;
+        match (result, request.request_id) {
+            (Ok(verified), Some(request_id)) => {
+                self.pending_sign_in = Some(SignInAttempt::Ready { request, verified });
+                self.send(replier, &BackendMessage::SignInReady { request_id });
             }
-            Err(e) => {
-                log::warn!("activate_token: verification failed: {e}");
-                let reply = if matches!(check, TokenCheck::Startup) && !is_auth_rejection(&e) {
-                    BackendMessage::AuthenticationCheckFailed {
-                        message: "Could not verify your saved Lichess sign-in. Check your connection and try again.".into(),
-                    }
-                } else {
-                    BackendMessage::TokenInvalid { reason: e.to_string() }
-                };
-                self.send(replier, &reply);
-            }
+            (Ok(verified), None) => self.install_sign_in(replier, request, verified).await,
+            (Err(error), _) => self.send(replier, &request.failure(error)),
         }
     }
 
-    async fn handle_save_token(&mut self, replier: &BackendReplier<Self>, token: String) {
-        self.activate_token(replier, token, TokenCheck::SignIn).await;
+    async fn complete_sign_in(&mut self, replier: &BackendReplier<Self>, request_id: u32) {
+        if !matches!(&self.pending_sign_in,
+            Some(SignInAttempt::Ready { request, .. }) if request.request_id == Some(request_id))
+        {
+            return;
+        }
+        if let Some(SignInAttempt::Ready { request, verified }) = self.pending_sign_in.take() {
+            self.install_sign_in(replier, request, verified).await;
+        }
+    }
+
+    async fn install_sign_in(&mut self, replier: &BackendReplier<Self>, request: SignInRequest, verified: VerifiedSignIn) {
+        let VerifiedSignIn { token, client, my_id, username } = verified;
+        if let Err(error) = credentials::save(&self.token_path, &token) {
+            log::warn!("could not persist verified sign-in: {error}");
+            if request.request_id.is_some() {
+                self.send(replier, &BackendMessage::LoginFailed {
+                    request_id: request.request_id,
+                    reason: "Could not save the verified sign-in on this device.".into(),
+                });
+                return;
+            }
+        }
+        self.stop_authenticated_activity().await;
+        self.client = Some(client);
+        self.my_id = Some(my_id);
+        self.username = Some(username.clone());
+        self.send(replier, &BackendMessage::TokenVerified {
+            username, request_id: request.request_id,
+        });
+        self.spawn_account_stream(replier.clone());
+    }
+
+    fn is_current_sign_in(&self, request: SignInRequest) -> bool {
+        self.pending_sign_in.as_ref().is_some_and(|pending| pending.request() == request)
+    }
+
+    async fn start_token_sign_in(&mut self, replier: &BackendReplier<Self>, mut token: String, request_id: Option<u32>) {
+        let request = SignInRequest { method: SignInMethod::Token, request_id };
+        if self.is_current_sign_in(request) {
+            return;
+        }
+        self.stop_sign_in(None).await;
+        if token.trim() != token {
+            token = token.trim().to_owned();
+        }
+        if token.is_empty() {
+            self.send(replier, &BackendMessage::LoginFailed {
+                request_id, reason: "Enter a personal access token.".into(),
+            });
+            return;
+        }
+        self.spawn_sign_in(replier, request, verify_sign_in(token));
     }
 
     /// The top status bar is on every screen, but every other connectivity
@@ -375,14 +478,18 @@ impl LichessBackend {
         });
     }
 
-    async fn handle_start_login(&mut self, replier: &BackendReplier<Self>) {
-        self.handle_cancel_login();
+    async fn start_qr_sign_in(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>) {
+        let request = SignInRequest { method: SignInMethod::Qr, request_id };
+        if request_id.is_some() && self.is_current_sign_in(request) {
+            return;
+        }
+        self.stop_sign_in(None).await;
         self.spawn_connectivity_report(replier);
         let pending = match oauth::begin(LICHESS_BASE_URL).await {
             Ok(pending) => pending,
             Err(e) => {
                 log::warn!("start_login: {e}");
-                self.send(replier, &BackendMessage::LoginFailed { reason: e.to_string() });
+                self.send(replier, &BackendMessage::LoginFailed { request_id, reason: e.to_string() });
                 return;
             }
         };
@@ -390,7 +497,7 @@ impl LichessBackend {
             Ok(qr) => qr,
             Err(e) => {
                 log::warn!("start_login: {e}");
-                self.send(replier, &BackendMessage::LoginFailed { reason: e.to_string() });
+                self.send(replier, &BackendMessage::LoginFailed { request_id, reason: e.to_string() });
                 return;
             }
         };
@@ -401,51 +508,46 @@ impl LichessBackend {
                 qr_size,
                 qr_rows,
                 expires_in_secs: oauth::LOGIN_TIMEOUT.as_secs(),
+                request_id,
             },
         );
 
-        let replier = replier.clone();
+        let progress_replier = replier.clone();
         let write_lock = Arc::clone(&self.write_lock);
-        let token_path = self.token_path.clone();
-        self.login_handle = Some(tokio::spawn(async move {
-            let outcome = tokio::time::timeout(oauth::LOGIN_TIMEOUT, pending.complete(LICHESS_BASE_URL)).await;
-            let message = match outcome {
-                Ok(Ok(token)) => match credentials::save(&token_path, &token) {
-                    Ok(()) => BackendMessage::LoginCompleted,
-                    Err(e) => BackendMessage::LoginFailed {
-                        reason: format!("couldn't save the token on this device: {e}"),
-                    },
-                },
-                Ok(Err(e)) => BackendMessage::LoginFailed { reason: e.to_string() },
-                Err(_) => BackendMessage::LoginFailed {
-                    reason: "the sign-in code expired -- start again".to_owned(),
-                },
+        self.spawn_sign_in(replier, request, async move {
+            let token = match tokio::time::timeout(oauth::LOGIN_TIMEOUT, pending.complete(LICHESS_BASE_URL)).await {
+                Ok(Ok(token)) => token,
+                Ok(Err(error)) => return Err(SignInError::Qr(error.to_string())),
+                Err(_) => return Err(SignInError::Qr("The sign-in code expired. Start again.".into())),
             };
-            send_locked(&replier, &write_lock, &message);
-        }));
+            drop(pending);
+            if let Some(request_id) = request_id {
+                send_locked(&progress_replier, &write_lock, &BackendMessage::LoginVerifying { request_id });
+            }
+            verify_sign_in(token).await
+        });
     }
 
-    fn handle_cancel_login(&mut self) {
-        if let Some(handle) = self.login_handle.take() {
-            handle.abort();
-        }
-    }
-
-    async fn handle_activate_saved_token(&mut self, replier: &BackendReplier<Self>) {
-        let token = std::fs::read_to_string(&self.token_path)
-            .map(|t| t.trim().to_owned())
-            .unwrap_or_default();
-        if token.is_empty() {
-            self.send(replier, &BackendMessage::LoginFailed { reason: "no token saved".into() });
+    async fn stop_sign_in(&mut self, request_id: Option<u32>) {
+        if request_id.is_some() &&
+            !self.pending_sign_in.as_ref().is_some_and(|pending| pending.request().request_id == request_id)
+        {
             return;
         }
-        self.activate_token(replier, token, TokenCheck::SignIn).await;
+        if let Some(SignInAttempt::Working { task, .. }) = self.pending_sign_in.as_mut() {
+            abort_task(task).await;
+        }
+        self.pending_sign_in = None;
     }
 
-    async fn check_saved_sign_in(&mut self, replier: &BackendReplier<Self>) {
+    fn check_saved_sign_in(&mut self, replier: &BackendReplier<Self>) {
+        if self.pending_sign_in.is_some() {
+            return;
+        }
         match std::fs::read_to_string(&self.token_path) {
             Ok(token) if !token.trim().is_empty() => {
-                self.activate_token(replier, token.trim().to_owned(), TokenCheck::Startup).await;
+                let request = SignInRequest { method: SignInMethod::Saved, request_id: None };
+                self.spawn_sign_in(replier, request, verify_sign_in(token.trim().to_owned()));
             }
             Ok(_) => self.send(replier, &BackendMessage::AuthenticationRequired),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -868,7 +970,7 @@ impl LichessBackend {
     }
 
     async fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
-        stop_task(&mut self.login_handle).await;
+        self.stop_sign_in(None).await;
         if let Err(error) = std::fs::remove_file(&self.token_path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 self.send(replier, &BackendMessage::LogoutFailed {
@@ -1114,6 +1216,12 @@ impl LichessBackend {
         });
         self.pending_challenge_action = Some(GameRequest { request_id, task, completion: Some(completion) });
     }
+}
+
+async fn verify_sign_in(token: String) -> Result<VerifiedSignIn, SignInError> {
+    let client = LichessClient::new(token.clone());
+    let account = client.get_account().await.map_err(SignInError::Account)?;
+    Ok(VerifiedSignIn { token, client, my_id: account.id, username: account.username })
 }
 
 async fn read_account_events(
@@ -1701,8 +1809,14 @@ mod stream_watchdog_tests {
 #[async_trait]
 impl AppLoadBackend for LichessBackend {
     async fn handle_message(&mut self, replier: &BackendReplier<Self>, message: Message) {
+        if message.msg_type == MSG_SYSTEM_TERMINATE {
+            self.stop_sign_in(None).await;
+            self.stop_authenticated_activity().await;
+            return;
+        }
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             // The new frontend starts its request sequence over.
+            self.stop_sign_in(None).await;
             stop_task(&mut self.home_refresh).await;
             stop_game_request(&mut self.history_load).await;
             stop_game_request(&mut self.review_export).await;
@@ -1716,7 +1830,7 @@ impl AppLoadBackend for LichessBackend {
                 session.cancel_game_action();
             }
             if self.client.is_none() {
-                self.check_saved_sign_in(replier).await;
+                self.check_saved_sign_in(replier);
             } else if let Some(username) = self.username.clone() {
                 // The backend process outlives a frontend reload (see deploy.sh's own
                 // note on backend/entry being a long-lived binary): without this, a
@@ -1724,7 +1838,7 @@ impl AppLoadBackend for LichessBackend {
                 // nothing to move it past the token prompt, since TokenVerified is the
                 // only message that navigates it to Home (see main.qml).
                 log::info!("NEW_COORDINATOR: already logged in as {username}, resending TokenVerified");
-                self.send(replier, &BackendMessage::TokenVerified { username });
+                self.send(replier, &BackendMessage::TokenVerified { username, request_id: None });
             }
             return;
         }
@@ -1743,15 +1857,15 @@ impl AppLoadBackend for LichessBackend {
             log::debug!("frontend message: {frontend_msg:?}");
         }
         match frontend_msg {
-            FrontendMessage::StartLogin => self.handle_start_login(replier).await,
-            FrontendMessage::CancelLogin => self.handle_cancel_login(),
-            FrontendMessage::ActivateSavedToken => self.handle_activate_saved_token(replier).await,
+            FrontendMessage::StartLogin { request_id } => self.start_qr_sign_in(replier, request_id).await,
+            FrontendMessage::CancelLogin { request_id } => self.stop_sign_in(request_id).await,
+            FrontendMessage::CompleteSignIn { request_id } => self.complete_sign_in(replier, request_id).await,
             FrontendMessage::RetryAuthentication => {
                 if self.client.is_none() {
-                    self.check_saved_sign_in(replier).await;
+                    self.check_saved_sign_in(replier);
                 }
             }
-            FrontendMessage::SaveToken { token } => self.handle_save_token(replier, token).await,
+            FrontendMessage::SaveToken { token, request_id } => self.start_token_sign_in(replier, token, request_id).await,
             FrontendMessage::RequestHome { request_id } => self.start_home_refresh(replier, request_id).await,
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
             FrontendMessage::CreateSeek { minutes, increment, rated, color, request_id } => {

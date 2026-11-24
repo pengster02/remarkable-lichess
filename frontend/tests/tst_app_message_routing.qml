@@ -868,6 +868,34 @@ TestCase {
         verify(String(startup.source).endsWith("HomeScreen.qml"))
     }
 
+    function test_onlyTheCurrentSignInCanBeCommitted() {
+        endpoint.reply({type: "AuthenticationRequired"})
+        var login = screen.item
+        var qr = login.signInRequestId
+        verify(qr > 0)
+        endpoint.reply({type: "LoginChallenge", request_id: qr, qr_size: 1, qr_rows: ["1"]})
+        endpoint.reply({type: "LoginVerifying", request_id: qr})
+        login.showManualEntry()
+        var count = endpoint.sentMessages.length
+        endpoint.reply({type: "LoginCompleted"})
+        endpoint.reply({type: "SignInReady", request_id: qr})
+        compare(endpoint.sentMessages.length, count)
+        verify(login.manualEntry)
+
+        findChild(login, "tokenField").text = "synthetic-fixture-token"
+        login.saveToken()
+        var manual = login.signInRequestId
+        verify(manual > qr)
+        endpoint.reply({type: "SignInReady", request_id: manual})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "CompleteSignIn", request_id: manual})
+        endpoint.reply({type: "TokenVerified", username: "old", request_id: qr})
+        verify(String(screen.source).endsWith("LoginScreen.qml"))
+        endpoint.reply({type: "TokenVerified", username: "player", request_id: manual})
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+        compare(app.username, "player")
+    }
+
     function test_logoutDiscardsOldGameRepliesAndClearsAccountData() {
         var abandoned = choose("private-game")
         app.username = "previous-player"

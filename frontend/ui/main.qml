@@ -343,6 +343,9 @@ Rectangle {
         onMessageReceived: (type, contents) => {
             var msg = JSON.parse(contents)
             if (msg.type === "TokenVerified") {
+                var login = screenLoader.item
+                if (typeof msg.request_id === "number" &&
+                        (!login || !login.acceptsCommittedSignIn || !login.acceptsCommittedSignIn(msg))) return
                 if (root.username !== (msg.username || "")) {
                     root.resolvedChallengeIds = []
                     root.pendingInvitation = null
@@ -383,18 +386,10 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "LoginCompleted") {
-                if (root.authenticationState !== "required") return
-                // The backend's sign-in task only got as far as saving the
-                // token; asking for it to be activated has to come from here
-                // because that task can't touch the backend's own state (see
-                // protocol.rs's ActivateSavedToken).
-                root.sendToBackend({type: "ActivateSavedToken"})
-                if (screenLoader.item && screenLoader.item.handleMessage) {
-                    screenLoader.item.handleMessage(msg)
-                }
-            } else if (msg.type === "LoginChallenge" || msg.type === "LoginFailed") {
-                if (screenLoader.item && screenLoader.item.handleMessage) {
+            } else if (msg.type === "LoginChallenge" || msg.type === "LoginVerifying" ||
+                       msg.type === "SignInReady" || msg.type === "LoginFailed") {
+                if (root.authenticationState === "required" && screenLoader.item &&
+                        screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "ConnectivityState") {

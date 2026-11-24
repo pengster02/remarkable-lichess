@@ -123,7 +123,7 @@ impl PendingLogin {
                     respond(
                         &mut stream,
                         "200 OK",
-                        "Signed in. You can close this tab and go back to your reMarkable.",
+                        "You can close this tab and go back to your reMarkable to finish signing in.",
                     )
                     .await;
                     return Ok(code);
