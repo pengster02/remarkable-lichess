@@ -303,6 +303,7 @@ pub enum BackendMessage {
     // as a placeholder while a saved token is still being checked. Alternatives:
     // infer this from LoginFailed, or let the frontend start OAuth immediately.
     AuthenticationRequired,
+    LogoutFailed { message: String },
     TokenVerified { username: String },
     TokenInvalid { reason: String },
     // Everything the sign-in screen needs to draw itself. `authorize_url` is

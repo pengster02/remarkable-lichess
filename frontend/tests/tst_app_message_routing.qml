@@ -19,6 +19,7 @@ TestCase {
         verify(app)
         endpoint = findChild(app, "testAppLoadEndpoint")
         screen = findChild(app, "screenLoader")
+        endpoint.reply({type: "TokenVerified", username: "player"})
         app.navigateTo("GameHistoryScreen.qml")
     }
 
@@ -70,6 +71,24 @@ TestCase {
     function test_terminalNoticeCannotNavAwayFromHistory() {
         endpoint.reply({type: "GameOver", game_id: "other", result: "draw", reason: "Draw"})
         verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
+    }
+
+    function test_logoutDiscardsOldGameRepliesAndClearsAccountData() {
+        var abandoned = choose("private-game")
+        app.username = "previous-player"
+        app.reviewGame = {game_id: "previous-review"}
+        app.reviewMoves = ["d4"]
+        app.reviewFens = [startFen]
+
+        endpoint.reply({type: "AuthenticationRequired"})
+        endpoint.reply({type: "BoardState", game_id: "private-game", fen: startFen})
+        replyWithMoves(abandoned, "e4")
+        verify(String(screen.source).endsWith("LoginScreen.qml"))
+        compare(app.username, "")
+        compare(app.reviewGame, null)
+        compare(app.reviewMoves.length, 0)
+        compare(app.reviewFens.length, 0)
+        compare(screen.item.errorMessage, "")
     }
 
     function test_finalBoardOpensWithTheLastMoveAndFrozenClocks() {

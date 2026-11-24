@@ -142,7 +142,8 @@ impl LichessBackend {
                 // Releases the callback port when a token arrives some other
                 // way (a pasted token, or a restart picking up the saved file)
                 // while a QR sign-in is still waiting on its redirect.
-                self.handle_cancel_login();
+                stop_task(&mut self.login_handle).await;
+                self.stop_game_activity().await;
                 let _ = std::fs::write(&self.token_path, &token);
                 self.client = Some(client);
                 self.my_id = Some(account.id.clone());
@@ -150,8 +151,8 @@ impl LichessBackend {
                 // Needed so GameSession can work out which color the local account is
                 // playing (see game::session::resolve_your_color) and orient the board
                 // accordingly, instead of always assuming white.
-                self.spawn_streams(replier.clone(), account.id.clone());
                 self.send(replier, &BackendMessage::TokenVerified { username: account.username });
+                self.spawn_streams(replier.clone(), account.id);
             }
             Err(e) => {
                 log::warn!("activate_token: rejected: {e}");
@@ -346,8 +347,9 @@ impl LichessBackend {
             return;
         }
         let Some(my_id) = self.my_id.clone() else { return };
-        let handle = spawn_game_stream(client, game_id, replier.clone(), self.session.clone(), my_id, self.write_lock.clone());
-        replace_game_stream_handle(&self.game_stream_handle, handle).await;
+        replace_game_stream_handle(&self.game_stream_handle, || {
+            spawn_game_stream(client, game_id, replier.clone(), self.session.clone(), my_id, self.write_lock.clone())
+        }).await;
     }
 
     async fn handle_request_game_history(
@@ -642,22 +644,29 @@ impl LichessBackend {
         );
     }
 
-    /// There was previously no in-app way to do this at all -- switching
-    /// accounts or recovering from a revoked token meant editing files on the
-    /// device directly. Reuses TokenInvalid to drive the frontend back to
-    /// LoginScreen, same message it already handles for a rejected token.
-    fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
-        let _ = std::fs::remove_file(&self.token_path);
+    async fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
+        stop_task(&mut self.login_handle).await;
+        if let Err(error) = std::fs::remove_file(&self.token_path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                self.send(replier, &BackendMessage::LogoutFailed {
+                    message: format!("Could not remove the saved sign-in: {error}"),
+                });
+                return;
+            }
+        }
+        self.stop_game_activity().await;
         self.client = None;
         self.my_id = None;
-        self.handle_cancel_seek();
-        // Otherwise the account event stream's reconnect loop keeps running
-        // with the now-revoked token, spamming Reconnecting forever (see
-        // account_stream_handle's own comment).
-        if let Some(handle) = self.account_stream_handle.take() {
-            handle.abort();
-        }
-        self.send(replier, &BackendMessage::TokenInvalid { reason: "logged out".into() });
+        self.username = None;
+        self.send(replier, &BackendMessage::AuthenticationRequired);
+    }
+
+    async fn stop_game_activity(&mut self) {
+        stop_task(&mut self.pending_seek).await;
+        stop_task(&mut self.account_stream_handle).await;
+        let mut game_stream = self.game_stream_handle.lock().await;
+        stop_task(&mut game_stream).await;
+        *self.session.lock().await = None;
     }
 
     /// Shared by every in-game action (resign/draw/takeback/abort/claim-victory) --
@@ -774,18 +783,11 @@ impl LichessBackend {
         }
     }
 
-    pub fn spawn_streams(&mut self, replier: BackendReplier<Self>, my_id: String) {
+    fn spawn_streams(&mut self, replier: BackendReplier<Self>, my_id: String) {
         let Some(client) = self.client.clone() else { return };
         let session_handle = self.session.clone();
         let write_lock = self.write_lock.clone();
         let game_stream_handle = self.game_stream_handle.clone();
-        // Abort whatever account event stream was already running before
-        // starting a new one -- otherwise a second call here (e.g. logging
-        // in again without an intervening logout) would leak the first one
-        // exactly like the leak this field exists to prevent on logout.
-        if let Some(old) = self.account_stream_handle.take() {
-            old.abort();
-        }
         let handle = tokio::spawn(async move {
             let mut backoff_secs: u64 = 1;
             loop {
@@ -797,15 +799,12 @@ impl LichessBackend {
                         match parse_ndjson_line::<EventStreamMessage>(&line) {
                                 Some(EventStreamMessage::GameStart { game }) => {
                                     log::info!("GameStart: {}", game.id);
-                                    let handle = spawn_game_stream(
-                                        client.clone(),
-                                        game.id,
-                                        replier.clone(),
-                                        session_handle.clone(),
-                                        my_id.clone(),
-                                        write_lock.clone(),
-                                    );
-                                    replace_game_stream_handle(&game_stream_handle, handle).await;
+                                    replace_game_stream_handle(&game_stream_handle, || {
+                                        spawn_game_stream(
+                                            client.clone(), game.id, replier.clone(),
+                                            session_handle.clone(), my_id.clone(), write_lock.clone(),
+                                        )
+                                    }).await;
                                 }
                                 Some(EventStreamMessage::Challenge)
                                 | Some(EventStreamMessage::ChallengeCanceled)
@@ -889,13 +888,21 @@ async fn send_pending_challenges(
 /// start, so only one is ever alive regardless of which path triggered it.
 async fn replace_game_stream_handle(
     slot: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    new_handle: tokio::task::JoinHandle<()>,
+    spawn: impl FnOnce() -> tokio::task::JoinHandle<()>,
 ) {
     let mut guard = slot.lock().await;
-    if let Some(old) = guard.take() {
-        old.abort();
+    stop_task(&mut guard).await;
+    *guard = Some(spawn());
+}
+
+async fn stop_task(slot: &mut Option<tokio::task::JoinHandle<()>>) {
+    if let Some(handle) = slot.as_mut() {
+        // Keep the handle in the slot if this wait is cancelled. Aborting without
+        // joining can leak an in-flight update, and taking first loses the handle.
+        handle.abort();
+        let _ = handle.await;
+        *slot = None;
     }
-    *guard = Some(new_handle);
 }
 
 async fn next_stream_line(
@@ -1101,8 +1108,33 @@ fn spawn_game_stream(
 
 #[cfg(test)]
 mod stream_watchdog_tests {
-    use super::{next_stream_line, LineStream};
+    use super::{next_stream_line, replace_game_stream_handle, stop_task, LineStream};
+    use std::sync::Arc;
     use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn stream_replacement_waits_for_the_old_task_to_stop() {
+        let owner = Arc::new(());
+        let old_stream = tokio::spawn({
+            let owner = Arc::clone(&owner);
+            async move {
+                std::future::pending::<()>().await;
+                drop(owner);
+            }
+        });
+        let slot = Arc::new(Mutex::new(Some(old_stream)));
+
+        replace_game_stream_handle(&slot, || {
+            assert_eq!(Arc::strong_count(&owner), 1);
+            tokio::spawn(std::future::pending())
+        }).await;
+
+        let mut handle = slot.lock().await;
+        assert!(handle.is_some());
+        stop_task(&mut handle).await;
+        assert!(handle.is_none());
+    }
 
     #[tokio::test]
     async fn idle_stream_times_out_so_the_reconnect_loop_can_run() {
@@ -1302,7 +1334,7 @@ impl AppLoadBackend for LichessBackend {
                     },
                 )
             }
-            FrontendMessage::LogOut => self.handle_log_out(replier),
+            FrontendMessage::LogOut => self.handle_log_out(replier).await,
             FrontendMessage::RequestGameHistory { rated, speed, color } => {
                 self.handle_request_game_history(replier, rated, speed, color).await
             }

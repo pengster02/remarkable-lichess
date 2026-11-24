@@ -90,6 +90,20 @@ Rectangle {
         root.expectedHomeGameId = gameId
     }
 
+    function requireAuthentication() {
+        root.hasToken = false
+        root.authenticationState = "required"
+        root.username = ""
+        root.expectedHomeGameId = ""
+        root.pendingReview = null
+        root.reviewGame = null
+        root.reviewMoves = []
+        root.reviewFens = []
+        root.reviewClockMs = []
+        root.reviewAnalysis = []
+        screenLoader.source = "LoginScreen.qml"
+    }
+
     function toggleDarkMode() {
         root.darkMode = !root.darkMode
     }
@@ -269,10 +283,7 @@ Rectangle {
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestSettings"}))
                 screenLoader.source = "HomeScreen.qml"
             } else if (msg.type === "AuthenticationRequired") {
-                root.hasToken = false
-                root.authenticationState = "required"
-                root.expectedHomeGameId = ""
-                screenLoader.source = "LoginScreen.qml"
+                root.requireAuthentication()
             } else if (msg.type === "SettingsState") {
                 // Updates root state (not just forwarded to the current screen)
                 // since it needs to persist across navigation, same as darkMode --
@@ -294,14 +305,12 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "TokenInvalid") {
-                root.hasToken = false
-                root.authenticationState = "required"
-                root.expectedHomeGameId = ""
-                screenLoader.source = "LoginScreen.qml"
+                root.requireAuthentication()
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "LoginCompleted") {
+                if (root.authenticationState !== "required") return
                 // The backend's sign-in task only got as far as saving the
                 // token; asking for it to be activated has to come from here
                 // because that task can't touch the backend's own state (see
@@ -358,6 +367,7 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "BoardState") {
+                if (!root.hasToken) return
                 // Never force-navigate away from Home: a user who explicitly went
                 // back to Home (or never left it yet) should stay there even if a
                 // still-running per-game stream keeps delivering messages -- this
@@ -381,7 +391,8 @@ Rectangle {
                         screenLoader.item.handleMessage(msg)
                     }
                 }
-            } else if (msg.type === "GameOver" || msg.type === "MoveRejected" ||
+            } else if (msg.type === "LogoutFailed" ||
+                       msg.type === "GameOver" || msg.type === "MoveRejected" ||
                        msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
                        msg.type === "RatingDiff" || msg.type === "GameActionCompleted" ||
                        msg.type === "MovePreview" || msg.type === "MoveSubmitted") {

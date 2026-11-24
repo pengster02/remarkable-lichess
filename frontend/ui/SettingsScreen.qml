@@ -38,6 +38,8 @@ Rectangle {
     // clears the saved token entirely (see backend_app.rs's handle_log_out), not
     // something a single mistaken tap should be able to do.
     property bool logOutArmed: false
+    property bool logOutPending: false
+    property string logOutError: ""
     property string saveError: ""
     property bool rollbackRequested: false
 
@@ -302,15 +304,28 @@ Rectangle {
                 AppButton {
                     width: parent.width
                     compact: true
-                    text: settingsScreen.logOutArmed ? "Tap again to log out" : "Log out"
+                    enabled: !settingsScreen.logOutPending
+                    text: settingsScreen.logOutPending ? "Logging out…"
+                        : (settingsScreen.logOutArmed ? "Tap again to log out" : "Log out")
                     onClicked: {
                         if (settingsScreen.logOutArmed) {
-                            settingsScreen.backendSender({type: "LogOut"})
                             settingsScreen.logOutArmed = false
+                            settingsScreen.logOutError = ""
+                            settingsScreen.logOutPending = true
+                            settingsScreen.backendSender({type: "LogOut"})
                         } else {
                             settingsScreen.logOutArmed = true
                         }
                     }
+                }
+
+                Text {
+                    width: parent.width
+                    visible: text.length > 0
+                    text: settingsScreen.logOutError
+                    font.pixelSize: theme.fontBody
+                    color: theme.errorText
+                    wrapMode: Text.WordWrap
                 }
             }
 
@@ -328,6 +343,9 @@ Rectangle {
             }
         } else if (msg.type === "SettingsState") {
             settingsScreen.rollbackRequested = false
+        } else if (msg.type === "LogoutFailed") {
+            settingsScreen.logOutPending = false
+            settingsScreen.logOutError = msg.message
         }
     }
 }
