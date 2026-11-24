@@ -769,6 +769,90 @@ TestCase {
         compare(board.flashSquares, [])
     }
 
+    function test_liveCapturePreviewUsesOnlyTheDisplayedPosition_data() {
+        return [{tag: "confirmation", action: "confirm"},
+                {tag: "rejection", action: "reject"},
+                {tag: "history", action: "history"},
+                {tag: "game switch", action: "switch"}]
+    }
+
+    function test_liveCapturePreviewUsesOnlyTheDisplayedPosition(data) {
+        var before = "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2"
+        var live = "rnbqkbnr/ppppp2p/5pp1/7Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3"
+        var after = "rnbqkbnr/ppppp2p/5pQ1/8/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 0 3"
+        var snapshot = boardState("capture-preview")
+        snapshot.fen = live
+        snapshot.position_history = [before, live]
+        snapshot.move_history = ["g6"]
+        snapshot.capture_history = []
+        snapshot.legal_moves = [{from: "h5", to: "g6"}]
+        app.openGame(snapshot.game_id)
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.manualFlip = (data.action === "confirm")
+        var white = findChild(board, board.manualFlip ? "topPlayerBar" : "bottomPlayerBar")
+        var black = findChild(board, board.manualFlip ? "bottomPlayerBar" : "topPlayerBar")
+        board.requestMove("h5", "g6", null)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "MakeMove")
+        var preview = {type: "MovePreview", game_id: snapshot.game_id, request_id: request.request_id,
+                       fen: after, turn: "black", last_move: ["h5", "g6"], in_check: true,
+                       white_time_ms: 590000, black_time_ms: 600000, captured_piece: "bP"}
+        var reject = {type: "MoveRejected", game_id: snapshot.game_id, request_id: request.request_id,
+                      reason: "Capture refused"}
+        endpoint.reply(preview)
+        compare(white.capturedPieces, ["bP"])
+        compare(black.capturedPieces, [])
+        compare(white.materialText, "+1")
+        compare(board.capturedByWhite, [])
+        tryVerify(function() { return board.flashSquares.length === 0 })
+
+        endpoint.reply(Object.assign({}, reject, {request_id: request.request_id + 1}))
+        endpoint.reply({type: "GameStreamReconnecting", game_id: snapshot.game_id})
+        endpoint.reply(Object.assign({}, snapshot, {game_stream_connected: true, white_time_ms: 591000}))
+        compare(board.fen, after)
+        compare(white.capturedPieces, ["bP"])
+
+        if (data.action === "confirm") {
+            endpoint.reply(Object.assign({}, snapshot, {
+                fen: after, turn: "black", last_move: ["h5", "g6"], in_check: true,
+                position_history: null, move_history: null, capture_history: null,
+                appended_move: "Qxg6+", appended_capture: "bP", captured_by_white: ["bP"],
+                resolved_move_request_id: request.request_id
+            }))
+            endpoint.reply(reject)
+            compare(board.fen, after)
+            compare(board.flashSquares, [])
+            compare(white.capturedPieces, ["bP"])
+            compare(board.capturedByWhite, ["bP"])
+        } else if (data.action === "history") {
+            board.showHistoryPosition(0)
+            endpoint.reply(preview)
+            endpoint.reply(reject)
+            compare(board.fen, before)
+            compare(white.capturedPieces, [])
+            board.returnToLive()
+            compare(board.fen, live)
+            compare(white.capturedPieces, [])
+        } else if (data.action === "switch") {
+            app.openGame("next-game")
+            endpoint.reply(boardState("next-game"))
+            endpoint.reply(preview)
+            endpoint.reply(reject)
+            compare(screen.item.fen, startFen)
+            compare(findChild(screen.item, "bottomPlayerBar").capturedPieces, [])
+        } else {
+            app.setShowCapturedPieces(false)
+            compare(white.capturedPieces, [])
+            app.setShowCapturedPieces(true)
+            compare(white.capturedPieces, ["bP"])
+            endpoint.reply(reject)
+            compare(board.fen, live)
+            compare(white.capturedPieces, [])
+            compare(white.materialText, "")
+        }
+    }
+
     function test_liveHistoryClearsThePreviewWithoutReintroducingItOnRejection() {
         var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
         var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"

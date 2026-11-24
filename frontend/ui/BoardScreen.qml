@@ -39,6 +39,7 @@ Rectangle {
     property string liveFen: ""
     property var livePositionId
     property string previewFen: ""
+    property string previewCapturedPiece: ""
     property string turn: "white"
     property string liveTurn: "white"
     readonly property string activeTurnColor: boardScreen.gameOver || boardScreen.awaitingBoard ||
@@ -274,6 +275,7 @@ Rectangle {
         if (boardScreen.previewFen.length === 0) return
         var previous = deferRefresh ? null : boardScreen.captureBoardAppearance()
         boardScreen.previewFen = ""
+        boardScreen.previewCapturedPiece = ""
         boardScreen.fen = boardScreen.liveFen
         boardScreen.turn = boardScreen.liveTurn
         boardScreen.previewClock = null
@@ -738,11 +740,15 @@ Rectangle {
     }
 
     function capturedPiecesFor(color) {
-        if (!boardScreen.viewingHistory)
-            return color === "white" ? boardScreen.capturedByWhite : boardScreen.capturedByBlack
+        var capturedColor = color === "white" ? "b" : "w"
+        if (!boardScreen.viewingHistory) {
+            var confirmed = color === "white" ? boardScreen.capturedByWhite : boardScreen.capturedByBlack
+            var preview = boardScreen.previewCapturedPiece
+            // Mutating live totals would require undo, and cached preview totals could miss new snapshots.
+            return preview.charAt(0) === capturedColor ? confirmed.concat([preview]) : confirmed
+        }
         var pieces = []
         if (boardScreen.captureHistory === null) return pieces
-        var capturedColor = color === "white" ? "b" : "w"
         for (var i = 0; i < boardScreen.captureHistory.length; i++) {
             var capture = boardScreen.captureHistory[i]
             if (capture.ply > boardScreen.historyIndex) break
@@ -1906,6 +1912,7 @@ Rectangle {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
+                boardScreen.previewCapturedPiece = ""
                 boardScreen.previewClock = null
                 // Full sync (game load/resume/takeback) carries the whole line and
                 // replaces our copy; a normal one-move advance sends neither array,
@@ -2021,6 +2028,7 @@ Rectangle {
             if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
             var previousPreview = boardScreen.captureBoardAppearance()
             boardScreen.previewFen = msg.fen
+            boardScreen.previewCapturedPiece = msg.captured_piece || ""
             boardScreen.fen = msg.fen
             boardScreen.turn = msg.turn
             boardScreen.previewClock = {
