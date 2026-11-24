@@ -36,6 +36,7 @@ Rectangle {
     // Loader-created screen has no other way to receive this reply's payload.
     property var reviewMoves: []
     property var reviewFens: []
+    property bool reviewInitialInCheck: false
     // Aligned with reviewMoves (not reviewFens), and each may be shorter than
     // it or empty entirely -- Lichess only has clock data for timed games and
     // only has analysis for a game that's actually been through its computer
@@ -170,6 +171,7 @@ Rectangle {
         root.reviewRequestId = 0
         root.reviewMoves = []
         root.reviewFens = []
+        root.reviewInitialInCheck = false
         root.reviewClockMs = []
         root.reviewAnalysis = []
         screenLoader.source = "LoginScreen.qml"
@@ -453,6 +455,7 @@ Rectangle {
                     root.reviewRequestId = request.id
                     root.reviewMoves = msg.moves || []
                     root.reviewFens = msg.fens || []
+                    root.reviewInitialInCheck = msg.initial_in_check === true
                     root.reviewClockMs = msg.clock_ms || []
                     root.reviewAnalysis = msg.analysis || []
                     var sourceScreen = screenLoader.item
@@ -617,6 +620,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("moves")) {
                 item.moves = root.reviewMoves
+            }
+            if (item.hasOwnProperty("initialInCheck")) {
+                item.initialInCheck = root.reviewInitialInCheck
             }
             if (item.hasOwnProperty("fens")) {
                 item.fens = root.reviewFens

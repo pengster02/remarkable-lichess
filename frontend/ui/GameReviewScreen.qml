@@ -32,6 +32,7 @@ Rectangle {
     property var moves: []
     // fens[0] is the starting position; fens[i] is the position after moves[i-1].
     property var fens: []
+    property bool initialInCheck: false
     // Aligned with `moves` (ply index i describes moves[i]), each possibly
     // shorter than `moves` or empty entirely (see protocol.rs's GameMoves
     // comment) -- untimed/never-analyzed games just show nothing extra.
@@ -53,6 +54,7 @@ Rectangle {
     property var boardAppearance: ({fen: "", previousFen: "", pieces: {}, previousPieces: {},
                                     lastMove: {}, checkedKing: ""})
     onFensChanged: gameReviewScreen.boardAppearance = gameReviewScreen.buildBoardAppearance()
+    onInitialInCheckChanged: gameReviewScreen.refreshBoard()
     onMovesChanged: gameReviewScreen.refreshBoard()
     onCurrentIndexChanged: {
         if (gameReviewScreen.exploreMode) gameReviewScreen.rebaseExploration()
@@ -286,13 +288,19 @@ Rectangle {
         return lookup
     }
 
+    function displayedPositionInCheck() {
+        if (gameReviewScreen.exploreMode) {
+            if (gameReviewScreen.exploreInCheck !== null) return gameReviewScreen.exploreInCheck
+            var candidate = gameReviewScreen.variationMoves
+            if (candidate.length > 0) return chessDisplay.moveGivesCheck(candidate[candidate.length - 1])
+        }
+        if (gameReviewScreen.currentIndex === 0) return gameReviewScreen.initialInCheck
+        return chessDisplay.moveGivesCheck(gameReviewScreen.moves[gameReviewScreen.currentIndex - 1])
+    }
+
     function checkedKingSquare(fen, pieces) {
-        var san = gameReviewScreen.exploreMode && gameReviewScreen.variationMoves.length > 0
-            ? gameReviewScreen.variationMoves[gameReviewScreen.variationMoves.length - 1]
-            : gameReviewScreen.moves[gameReviewScreen.currentIndex - 1]
-        var inCheck = gameReviewScreen.exploreMode && gameReviewScreen.exploreInCheck !== null
-            ? gameReviewScreen.exploreInCheck : chessDisplay.moveGivesCheck(san)
-        return inCheck ? chessDisplay.kingSquare(pieces, chessDisplay.sideToMove(fen)) : ""
+        return gameReviewScreen.displayedPositionInCheck()
+            ? chessDisplay.kingSquare(pieces, chessDisplay.sideToMove(fen)) : ""
     }
 
     function explorationPrompt() {

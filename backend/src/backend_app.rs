@@ -708,10 +708,10 @@ impl LichessBackend {
                 .and_then(|side| side.rating_diff)
         });
         let moves: Vec<String> = export.moves.split_whitespace().map(str::to_string).collect();
-        let fens = match crate::game::replay::fens_for_export(
+        let replay = match crate::game::replay::replay_export(
             export.variant.as_deref(), export.initial_fen.as_deref(), &moves,
         ) {
-            Ok(fens) => fens,
+            Ok(replay) => replay,
             Err(e) => {
                 fail(format!("Could not replay this game: {e}"));
                 return;
@@ -732,7 +732,8 @@ impl LichessBackend {
             })
             .collect();
         send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
-            request_id, moves, fens, clock_ms, analysis, rating_diff,
+            request_id, moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
+            clock_ms, analysis, rating_diff,
         });
     }
 

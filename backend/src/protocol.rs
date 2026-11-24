@@ -616,7 +616,7 @@ pub enum BackendMessage {
     },
     // `fens[0]` is the starting position, `fens[i]` is the position after SAN
     // move `moves[i-1]` -- always `fens.len() == moves.len() + 1` (see
-    // game::replay::fens_for_export). Sent once per RequestGameMoves, not
+    // game::replay::replay_export). Sent once per RequestGameMoves, not
     // streamed -- a finished game's move list never changes. `clock_ms`/
     // `analysis` are each aligned with `moves` (not `fens` -- no entry for the
     // starting position) and may be shorter than `moves` or empty entirely:
@@ -628,6 +628,7 @@ pub enum BackendMessage {
         request_id: Option<u32>,
         moves: Vec<String>,
         fens: Vec<String>,
+        initial_in_check: bool,
         clock_ms: Vec<u32>,
         analysis: Vec<MoveAnalysis>,
         // The same export can recover a rating after a missed account event.
@@ -1007,6 +1008,7 @@ mod tests {
             request_id: Some(7),
             moves: vec!["e4".into(), "e5".into()],
             fens: vec!["startpos".into(), "after-e4".into(), "after-e5".into()],
+            initial_in_check: false,
             clock_ms: vec![],
             analysis: vec![],
             rating_diff: Some(0),
@@ -1015,6 +1017,7 @@ mod tests {
         assert!(json.contains(r#""type":"GameMoves""#));
         assert!(json.contains(r#""request_id":7"#));
         assert!(json.contains(r#""moves":["e4","e5"]"#));
+        assert!(json.contains(r#""initial_in_check":false"#));
         assert!(json.contains(r#""rating_diff":0"#));
 
         let failure = serde_json::to_value(BackendMessage::GameMovesFailed {
@@ -1032,6 +1035,7 @@ mod tests {
             request_id: None,
             moves: vec!["e4".into()],
             fens: vec!["startpos".into(), "after-e4".into()],
+            initial_in_check: true,
             clock_ms: vec![29900],
             analysis: vec![MoveAnalysis {
                 eval_cp: None,
@@ -1043,6 +1047,7 @@ mod tests {
         })
         .unwrap();
         assert!(!json.contains("request_id"));
+        assert!(json.contains(r#""initial_in_check":true"#));
         assert!(json.contains(r#""clock_ms":[29900]"#));
         assert!(json.contains(r#""mate_in":3"#));
         assert!(json.contains(r#""judgment":"Blunder""#));
