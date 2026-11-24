@@ -2720,8 +2720,68 @@ TestCase {
         authEndpoint.reply({type: "TokenVerified", username: "player"})
         verify(String(startup.source).endsWith("HomeScreen.qml"))
         verify(connectivityBar.visible)
+        compare(authEndpoint.sentMessages.filter(function(message) {
+            return message.type === "RequestSettings"
+        }).length, 1)
         authEndpoint.reply({type: "AuthenticationCheckFailed", message: "old error"})
         verify(String(startup.source).endsWith("HomeScreen.qml"))
+    }
+
+    function test_startupRestoresDarkModeBeforeSignInAndAcrossScreens() {
+        var reopened = createTemporaryObject(Qt.createComponent("../ui/main.qml"), this)
+        var reopenedEndpoint = findChild(reopened, "testAppLoadEndpoint")
+        var reopenedScreen = findChild(reopened, "screenLoader")
+        reopenedEndpoint.reply({type: "SettingsState", dark_mode: true, board_theme: "green", piece_set: "merida"})
+        verify(reopenedScreen.item.darkMode)
+        reopenedEndpoint.reply({type: "AuthenticationRequired"})
+        verify(String(reopenedScreen.source).endsWith("LoginScreen.qml"))
+        verify(reopenedScreen.item.darkMode)
+        reopenedEndpoint.reply({type: "TokenVerified", username: "player"})
+        verify(String(reopenedScreen.source).endsWith("HomeScreen.qml"))
+        verify(reopenedScreen.item.darkMode)
+        verify(!reopenedEndpoint.sentMessages.some(function(message) {
+            return message.type === "RequestSettings"
+        }))
+
+        reopened.openGame("dark-game")
+        reopenedEndpoint.reply(boardState("dark-game"))
+        verify(reopenedScreen.item.darkMode)
+        compare(reopenedScreen.item.boardTheme, "green")
+        compare(reopenedScreen.item.pieceSet, "merida")
+        reopened.openGameReview("dark-game", {game_id: "dark-game"})
+        var request = reopenedEndpoint.sentMessages[reopenedEndpoint.sentMessages.length - 1]
+        reopenedEndpoint.reply({type: "GameMoves", request_id: request.request_id,
+                               fens: [startFen], moves: []})
+        verify(reopenedScreen.item.darkMode)
+        compare(reopenedScreen.item.boardTheme, "green")
+        compare(reopenedScreen.item.pieceSet, "merida")
+    }
+
+    function test_darkModeToggleSavesAndUsesPersistedAppearanceOnFailure() {
+        endpoint.reply({type: "SettingsState", dark_mode: false, board_theme: "green", piece_set: "merida"})
+        app.navigateTo("SettingsScreen.qml")
+        var settings = screen.item
+        var toggle = findChild(settings, "darkModeSetting")
+        var button = findChild(toggle, "settingsToggleButton")
+        verify(waitForRendering(settings))
+        var sent = endpoint.sentMessages.length
+        mouseClick(button, button.width / 2, button.height / 2)
+        verify(toggle.value)
+        compare(endpoint.sentMessages.length, sent + 1)
+        var save = endpoint.sentMessages[sent]
+        compare(save.type, "SaveSettings")
+        compare(save.dark_mode, true)
+        compare(save.board_theme, "green")
+        compare(save.piece_set, "merida")
+
+        endpoint.reply({type: "SettingsState", board_theme: "green", piece_set: "merida"})
+        verify(toggle.value)
+        endpoint.reply({type: "ErrorMsg", message: "failed to save settings"})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1].type, "RequestSettings")
+        endpoint.reply({type: "SettingsState", dark_mode: false, board_theme: "green", piece_set: "merida"})
+        verify(!toggle.value)
+        compare(settings.boardTheme, "green")
+        compare(settings.pieceSet, "merida")
     }
 
     function test_onlyTheCurrentSignInCanBeCommitted() {
