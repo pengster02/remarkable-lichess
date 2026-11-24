@@ -148,7 +148,8 @@ pub enum FrontendMessage {
         request_id: Option<u32>,
     },
     CancelGameReview { request_id: u32 },
-    RequestCloudEvaluation { fen: String, request_id: Option<u32> },
+    RequestCloudEvaluation { fen: String, request_id: Option<u32>, review_id: Option<u32> },
+    CancelCloudEvaluations { review_id: u32 },
     RequestAnalysisPosition { fen: String, request_id: Option<u32> },
     MakeAnalysisMove {
         fen: String,
@@ -615,10 +616,12 @@ mod tests {
     fn analysis_messages_round_trip() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
-                r#"{"type":"RequestCloudEvaluation","fen":"startpos","request_id":8}"#
+                r#"{"type":"RequestCloudEvaluation","fen":"startpos","request_id":8,"review_id":2}"#
             )
             .unwrap(),
-            FrontendMessage::RequestCloudEvaluation { fen: "startpos".into(), request_id: Some(8) }
+            FrontendMessage::RequestCloudEvaluation {
+                fen: "startpos".into(), request_id: Some(8), review_id: Some(2)
+            }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(

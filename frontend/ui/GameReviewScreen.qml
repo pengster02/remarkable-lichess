@@ -38,6 +38,7 @@ Rectangle {
     // this is what lets the header below show who was played and how it
     // ended instead of a contextless board.
     property var game: null
+    property int reviewRequestId: 0
     // Index into `fens` currently displayed -- 0 is the start, fens.length-1 is
     // the final position. Deliberately independent of `moves`' own indexing
     // (off by one from it) rather than tracking a "current ply" separately.
@@ -100,6 +101,14 @@ Rectangle {
     readonly property bool canRequestCloudEvaluation: gameReviewScreen.currentFen().length > 0 &&
         (cloudEvaluationPhase === "" || cloudEvaluationPhase === "failed")
     readonly property int coordinateGutter: 52
+
+    Component.onDestruction: {
+        if (gameReviewScreen.reviewRequestId > 0 && gameReviewScreen.backendSender &&
+                Object.keys(gameReviewScreen.cloudEvaluationByFen).length > 0) {
+            gameReviewScreen.backendSender({type: "CancelCloudEvaluations",
+                                           review_id: gameReviewScreen.reviewRequestId})
+        }
+    }
 
     function currentFen() {
         if (gameReviewScreen.exploreMode && gameReviewScreen.exploreFen.length > 0) {
@@ -482,7 +491,8 @@ Rectangle {
         var fen = gameReviewScreen.currentFen()
         var requestId = gameReviewScreen.nextRequestId()
         gameReviewScreen.setCloudState(fen, {phase: "pending", requestId: requestId})
-        gameReviewScreen.backendSender({type: "RequestCloudEvaluation", fen: fen, request_id: requestId})
+        gameReviewScreen.backendSender({type: "RequestCloudEvaluation", fen: fen, request_id: requestId,
+                                       review_id: gameReviewScreen.reviewRequestId || null})
     }
 
     function setCloudState(fen, state) {

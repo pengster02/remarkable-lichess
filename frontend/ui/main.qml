@@ -47,6 +47,7 @@ Rectangle {
     // way GameReviewScreen's header gets to show who was played and how it
     // ended, not just a bare, contextless board.
     property var reviewGame: null
+    property int reviewRequestId: 0
     // A shared sequence survives screen changes. Per-screen counters can repeat
     // IDs after navigation, and timestamps can collide across rapid requests.
     property int requestSequence: 0
@@ -126,6 +127,7 @@ Rectangle {
         root.resolvedChallengeIds = []
         root.pendingReview = null
         root.reviewGame = null
+        root.reviewRequestId = 0
         root.reviewMoves = []
         root.reviewFens = []
         root.reviewClockMs = []
@@ -404,6 +406,7 @@ Rectangle {
                     root.reviewGame = request.game && typeof msg.rating_diff === "number"
                         ? Object.assign({}, request.game, {rating_diff: msg.rating_diff})
                         : request.game
+                    root.reviewRequestId = request.id
                     root.reviewMoves = msg.moves || []
                     root.reviewFens = msg.fens || []
                     root.reviewClockMs = msg.clock_ms || []
@@ -574,6 +577,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("game")) {
                 item.game = root.reviewGame
+            }
+            if (item.hasOwnProperty("reviewRequestId")) {
+                item.reviewRequestId = root.reviewRequestId
             }
             if (item.hasOwnProperty("selectGameForReview")) {
                 item.selectGameForReview = root.selectGameForReview

@@ -228,6 +228,20 @@ TestCase {
         verify(review.requestExplorationMove("d2", "d4"))
     }
 
+    function test_leavingReviewCancelsCloudEvaluationForThatReview() {
+        var reviewId = choose("cloud-game")
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [startFen]})
+        screen.item.requestCloudEvaluation()
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.review_id, reviewId)
+        app.navigateTo("HomeScreen.qml")
+        tryVerify(function() {
+            return endpoint.sentMessages.some(function(message) {
+                return message.type === "CancelCloudEvaluations" && message.review_id === reviewId
+            })
+        })
+    }
+
     function test_cloudEvaluationKeepsEachPositionsRequestAndError() {
         var reviewId = choose("cloud-game")
         var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
