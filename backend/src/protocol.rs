@@ -42,6 +42,7 @@ pub enum FrontendMessage {
     // ever calls us on an incoming frontend message, so there's nowhere to poll
     // it from.
     ActivateSavedToken,
+    RetryAuthentication,
     // Still reachable behind "Enter a token instead" on the sign-in screen, for
     // networks where the phone can't reach this tablet (see LoginScreen.qml).
     SaveToken { token: String },
@@ -303,6 +304,7 @@ pub enum BackendMessage {
     // as a placeholder while a saved token is still being checked. Alternatives:
     // infer this from LoginFailed, or let the frontend start OAuth immediately.
     AuthenticationRequired,
+    AuthenticationCheckFailed { message: String },
     LogoutFailed { message: String },
     TokenVerified { username: String },
     TokenInvalid { reason: String },
@@ -865,6 +867,8 @@ mod tests {
     fn authentication_required_is_an_explicit_startup_state() {
         let json = serde_json::to_string(&BackendMessage::AuthenticationRequired).unwrap();
         assert_eq!(json, r#"{"type":"AuthenticationRequired"}"#);
+        let request = serde_json::from_str::<FrontendMessage>(r#"{"type":"RetryAuthentication"}"#).unwrap();
+        assert_eq!(request, FrontendMessage::RetryAuthentication);
     }
 
     #[test]

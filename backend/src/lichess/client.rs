@@ -17,6 +17,32 @@ pub struct LichessClient {
 
 const ONE_SHOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+#[derive(Debug)]
+struct HttpResponseError {
+    status: reqwest::StatusCode,
+    context: String,
+    reason: Option<String>,
+}
+
+impl std::fmt::Display for HttpResponseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} failed with status {}", self.context, self.status)?;
+        if let Some(reason) = &self.reason {
+            write!(formatter, ": {reason}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for HttpResponseError {}
+
+#[cfg(any(feature = "transport", test))]
+pub(crate) fn is_auth_rejection(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<HttpResponseError>().is_some_and(|error| {
+        matches!(error.status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN)
+    })
+}
+
 /// Shared with the OAuth sign-in flow (see lichess::oauth), which talks to the
 /// same host before any client exists to hold it.
 pub const LICHESS_BASE_URL: &str = "https://lichess.org";
@@ -73,12 +99,9 @@ async fn error_from_response(context: &str, resp: reqwest::Response) -> anyhow::
             Some(shortened)
         }
     });
-    let err = match reason {
-        Some(reason) => anyhow!("{context} failed with status {status}: {reason}"),
-        None => anyhow!("{context} failed with status {status}"),
-    };
-    log::warn!("{err}");
-    err
+    let error = HttpResponseError { status, context: context.to_owned(), reason };
+    log::warn!("{error}");
+    error.into()
 }
 
 impl LichessClient {
@@ -731,6 +754,21 @@ mod tests {
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let account = client.get_account().await.unwrap();
         assert_eq!(account.username, "testuser");
+    }
+
+    #[tokio::test]
+    async fn the_account_check_distinguishes_rejection_from_temporary_failure() {
+        for (status, rejected) in [(401, true), (403, true), (429, false), (503, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/account"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            let client = LichessClient::with_base_url("test-token".into(), server.uri());
+            let error = client.get_account().await.unwrap_err();
+            assert_eq!(is_auth_rejection(&error), rejected, "HTTP {status}");
+        }
     }
 
     #[tokio::test]

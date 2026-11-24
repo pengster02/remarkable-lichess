@@ -4,6 +4,7 @@ import QtTest 1.2
 TestCase {
     name: "AppMessageRouting"
     when: windowShown
+    visible: true
     width: 954
     height: 1696
 
@@ -71,6 +72,30 @@ TestCase {
     function test_terminalNoticeCannotNavAwayFromHistory() {
         endpoint.reply({type: "GameOver", game_id: "other", result: "draw", reason: "Draw"})
         verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
+    }
+
+    function test_startupRetryKeepsTheSavedSignInFlow() {
+        var unverified = createTemporaryObject(Qt.createComponent("../ui/main.qml"), this)
+        verify(unverified)
+        var authEndpoint = findChild(unverified, "testAppLoadEndpoint")
+        var startup = findChild(unverified, "screenLoader")
+        authEndpoint.reply({type: "AuthenticationCheckFailed", message: "Lichess is unavailable"})
+        verify(String(startup.source).endsWith("StartupScreen.qml"))
+        compare(startup.item.checkError, "Lichess is unavailable")
+        compare(authEndpoint.sentMessages.length, 0)
+
+        var retry = findChild(startup.item, "retryAuthenticationButton")
+        verify(retry.visible)
+        retry.clicked()
+        compare(authEndpoint.sentMessages.length, 1)
+        compare(authEndpoint.sentMessages[0].type, "RetryAuthentication")
+        compare(startup.item.checkError, "")
+        verify(!retry.visible)
+
+        authEndpoint.reply({type: "TokenVerified", username: "player"})
+        verify(String(startup.source).endsWith("HomeScreen.qml"))
+        authEndpoint.reply({type: "AuthenticationCheckFailed", message: "old error"})
+        verify(String(startup.source).endsWith("HomeScreen.qml"))
     }
 
     function test_logoutDiscardsOldGameRepliesAndClearsAccountData() {

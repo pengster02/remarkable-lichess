@@ -5,6 +5,9 @@ Rectangle {
     anchors.fill: parent
     color: theme.background
     property bool darkMode: false
+    property var backendSender
+    property var showSignIn
+    property string checkError: ""
 
     Theme { id: theme; darkMode: startupScreen.darkMode }
 
@@ -38,11 +41,34 @@ Rectangle {
         Text {
             objectName: "startupStatus"
             width: parent.width
-            text: "Checking your saved Lichess sign-in…"
+            text: startupScreen.checkError || "Checking your saved Lichess sign-in…"
             font.pixelSize: theme.fontBody
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
             color: theme.textMuted
         }
+
+        AppButton {
+            objectName: "retryAuthenticationButton"
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: startupScreen.checkError.length > 0
+            text: "Try again"
+            highlighted: true
+            onClicked: {
+                startupScreen.checkError = ""
+                startupScreen.backendSender({type: "RetryAuthentication"})
+            }
+        }
+
+        AppButton {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: startupScreen.checkError.length > 0
+            text: "Use a different sign-in"
+            onClicked: startupScreen.showSignIn()
+        }
+    }
+
+    function handleMessage(msg) {
+        if (msg.type === "AuthenticationCheckFailed") startupScreen.checkError = msg.message
     }
 }

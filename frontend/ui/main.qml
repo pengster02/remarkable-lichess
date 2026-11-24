@@ -284,6 +284,10 @@ Rectangle {
                 screenLoader.source = "HomeScreen.qml"
             } else if (msg.type === "AuthenticationRequired") {
                 root.requireAuthentication()
+            } else if (msg.type === "AuthenticationCheckFailed") {
+                if (root.authenticationState === "checking" && screenLoader.item) {
+                    screenLoader.item.handleMessage(msg)
+                }
             } else if (msg.type === "SettingsState") {
                 // Updates root state (not just forwarded to the current screen)
                 // since it needs to persist across navigation, same as darkMode --
@@ -436,6 +440,9 @@ Rectangle {
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend
+            }
+            if (item.hasOwnProperty("showSignIn")) {
+                item.showSignIn = root.requireAuthentication
             }
             if (item.hasOwnProperty("navigateTo")) {
                 item.navigateTo = root.navigateTo
