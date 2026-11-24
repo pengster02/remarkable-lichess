@@ -80,18 +80,18 @@ pub enum FrontendMessage {
     ChallengeAi { level: u8, minutes: u32, increment: u32 },
     CancelSeek { request_id: Option<u32> },
     MakeMove { from: String, to: String, promotion: Option<String>, request_id: Option<u32> },
-    Resign,
+    Resign { request_id: Option<u32> },
     // `accept: true` offers a draw/takeback when none is pending, or accepts the
     // opponent's pending offer; `accept: false` declines it -- same split Lichess's
     // own `/draw/{accept}` and `/takeback/{accept}` endpoints use, so the frontend
     // doesn't need to track "did I just offer or am I responding" separately.
-    DrawAction { accept: bool },
-    TakebackAction { accept: bool },
-    Abort,
-    Berserk,
-    AddTime { seconds: u32 },
-    ClaimVictory,
-    ClaimDraw,
+    DrawAction { accept: bool, request_id: Option<u32> },
+    TakebackAction { accept: bool, request_id: Option<u32> },
+    Abort { request_id: Option<u32> },
+    Berserk { request_id: Option<u32> },
+    AddTime { seconds: u32, request_id: Option<u32> },
+    ClaimVictory { request_id: Option<u32> },
+    ClaimDraw { request_id: Option<u32> },
     RequestChallenges,
     AcceptChallenge { id: String, request_id: Option<u32> },
     DeclineChallenge { id: String, request_id: Option<u32> },
@@ -163,7 +163,7 @@ pub enum FrontendMessage {
     },
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub enum GameAction {
     Resign,
     Draw,
@@ -173,6 +173,21 @@ pub enum GameAction {
     AddTime,
     ClaimVictory,
     ClaimDraw,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct GameActionRequest {
+    pub action: GameAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
+}
+
+impl GameActionRequest {
+    pub fn new(action: GameAction, request_id: Option<u32>) -> Self {
+        Self { action, request_id, seconds: None }
+    }
 }
 
 // Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
@@ -412,6 +427,9 @@ pub enum BackendMessage {
         // Pair release with its position. A separate acknowledgement can race premoves; last-move squares can match another line.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolved_move_request_id: Option<u32>,
+        // A resumed board needs the current action. Local-only state forgets it on remount and a separate event can race the snapshot.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pending_game_action: Option<Box<GameActionRequest>>,
         // Include the latest departure in the same snapshot as the position.
         // A separate resume event can arrive late, while inferring it from
         // profile presence can expose claim buttons without a game event.
@@ -484,8 +502,8 @@ pub enum BackendMessage {
         outcome: Option<Box<GameOutcome>>,
     },
     GameOver { game_id: String, result: String, reason: String },
-    GameActionCompleted { game_id: String, action: GameAction },
-    GameActionFailed { game_id: String, action: GameAction, message: String },
+    GameActionCompleted { game_id: String, #[serde(flatten)] request: GameActionRequest },
+    GameActionFailed { game_id: String, #[serde(flatten)] request: GameActionRequest, message: String },
     MovePreview {
         game_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -713,39 +731,39 @@ mod tests {
     fn new_game_action_frontend_messages_parse() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"DrawAction","accept":true}"#).unwrap(),
-            FrontendMessage::DrawAction { accept: true }
+            FrontendMessage::DrawAction { accept: true, request_id: None }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"TakebackAction","accept":false}"#).unwrap(),
-            FrontendMessage::TakebackAction { accept: false }
+            FrontendMessage::TakebackAction { accept: false, request_id: None }
         );
-        assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"Abort"}"#).unwrap(), FrontendMessage::Abort);
+        assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"Abort"}"#).unwrap(), FrontendMessage::Abort { request_id: None });
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"Berserk"}"#).unwrap(),
-            FrontendMessage::Berserk
+            FrontendMessage::Berserk { request_id: None }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"AddTime","seconds":15}"#).unwrap(),
-            FrontendMessage::AddTime { seconds: 15 }
+            FrontendMessage::AddTime { seconds: 15, request_id: None }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"ClaimVictory"}"#).unwrap(),
-            FrontendMessage::ClaimVictory
+            FrontendMessage::ClaimVictory { request_id: None }
         );
         let json = serde_json::to_string(&BackendMessage::GameActionCompleted {
             game_id: "g1".into(),
-            action: GameAction::AddTime,
+            request: GameActionRequest { action: GameAction::AddTime, request_id: Some(9), seconds: Some(15) },
         })
         .unwrap();
-        assert_eq!(json, r#"{"type":"GameActionCompleted","game_id":"g1","action":"AddTime"}"#);
+        assert_eq!(json, r#"{"type":"GameActionCompleted","game_id":"g1","action":"AddTime","request_id":9,"seconds":15}"#);
     }
 
     #[test]
     fn board_request_envelope_preserves_bound_and_legacy_commands() {
         let bound: FrontendRequest = serde_json::from_str(
-            r#"{"type":"Resign","expected_game_id":"g1"}"#,
+            r#"{"type":"Resign","expected_game_id":"g1","request_id":7}"#,
         ).unwrap();
-        assert_eq!(bound.message, FrontendMessage::Resign);
+        assert_eq!(bound.message, FrontendMessage::Resign { request_id: Some(7) });
         assert_eq!(bound.expected_game_id.as_deref(), Some("g1"));
 
         let legacy: FrontendRequest = serde_json::from_str(
@@ -974,6 +992,7 @@ mod tests {
             game_id: "g1".into(),
             game_stream_connected: false,
             resolved_move_request_id: None,
+            pending_game_action: None,
             opponent_departure: None,
             fen: "startpos".into(),
             turn: "white".into(),

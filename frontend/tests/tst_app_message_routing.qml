@@ -306,8 +306,10 @@ TestCase {
         screen.item.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
         var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
         compare(request.expected_game_id, "active")
+        verify(request.request_id > 0)
 
-        endpoint.reply({type: "GameActionCompleted", game_id: "previous", action: "AddTime"})
+        endpoint.reply({type: "GameActionCompleted", game_id: "previous", action: "AddTime",
+                        request_id: request.request_id, seconds: 15})
         compare(screen.item.pendingGameAction, "AddTime")
         compare(screen.item.statusText, "")
         endpoint.reply({type: "OpponentGone", game_id: "previous", gone: true})
@@ -315,9 +317,47 @@ TestCase {
         endpoint.reply({type: "MoveRejected", game_id: "previous", reason: "old move"})
         compare(screen.item.statusText, "")
 
-        endpoint.reply({type: "GameActionFailed", game_id: "active", action: "AddTime", message: "try again"})
+        endpoint.reply({type: "GameActionFailed", game_id: "active", action: "AddTime",
+                        request_id: request.request_id, message: "try again"})
         compare(screen.item.pendingGameAction, "")
         compare(screen.item.statusText, "try again")
+    }
+
+    function test_pendingBoardActionSurvivesReopenAndRejectsOldReplies() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        endpoint.reply(snapshot)
+        screen.item.requestGameAction({type: "AddTime", seconds: 30}, "AddTime")
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        verify(first > 0)
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("active")
+        snapshot.pending_game_action = {action: "AddTime", request_id: first, seconds: 30}
+        endpoint.reply(snapshot)
+        compare(screen.item.gameActionsLabel(), "Working...")
+        var messageCount = endpoint.sentMessages.length
+        screen.item.requestGameAction({type: "AddTime", seconds: 30}, "AddTime")
+        compare(endpoint.sentMessages.length, messageCount)
+
+        endpoint.reply({type: "GameActionCompleted", game_id: "active", action: "AddTime",
+                        request_id: first, seconds: 30})
+        compare(screen.item.gameActionsLabel(), "Actions")
+        compare(screen.item.statusText, "30 seconds added to opponent")
+        screen.item.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        var second = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        verify(second > first)
+        endpoint.reply({type: "GameActionFailed", game_id: "active", action: "AddTime",
+                        request_id: first, message: "old error"})
+        endpoint.reply({type: "GameActionCompleted", game_id: "active", action: "Berserk",
+                        request_id: second})
+        compare(screen.item.gameActionsLabel(), "Working...")
+        compare(screen.item.statusText, "")
+
+        endpoint.reply({type: "GameOver", game_id: "active", result: "draw", reason: "Agreement"})
+        compare(screen.item.gameActionsLabel(), "Game over")
+        endpoint.reply({type: "GameActionCompleted", game_id: "active", action: "AddTime",
+                        request_id: second, seconds: 15})
+        compare(screen.item.statusText, "Draw · Agreement")
     }
 
     function test_moveRepliesCannotAffectANewerSameGameSubmission() {

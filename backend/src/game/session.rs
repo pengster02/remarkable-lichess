@@ -1,7 +1,7 @@
 use crate::game::outcome::outcome;
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
 use crate::lichess::models::{GameFull, GameState};
-use crate::protocol::{BackendMessage, LegalMove, OpponentDeparture, PlayerIdentity, PlayerStatusSummary};
+use crate::protocol::{BackendMessage, GameActionRequest, LegalMove, OpponentDeparture, PlayerIdentity, PlayerStatusSummary};
 use shakmaty::{Chess, Position};
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -9,6 +9,12 @@ use tokio::sync::oneshot;
 struct PendingMove {
     request_id: Option<u32>,
     // Closing this channel cancels the HTTP wait. A flag leaves it running and an IPC cancel can arrive out of order.
+    _cancel_on_drop: oneshot::Sender<()>,
+}
+
+struct PendingGameAction {
+    request: GameActionRequest,
+    // Keep the action through reconnects and drop it with the session. A detached POST can reply after teardown; a queue can replay duplicate gestures.
     _cancel_on_drop: oneshot::Sender<()>,
 }
 
@@ -21,6 +27,7 @@ pub struct GameSession {
     pub opponent_departure: Option<OpponentDeparture>,
     prior_moves_before_prediction: Option<String>,
     pending_move: Option<PendingMove>,
+    pending_game_action: Option<PendingGameAction>,
     pub initial_fen: String,
     pub position: Chess,
     pub legal: Vec<LegalMove>,
@@ -211,6 +218,8 @@ fn to_board_state(
         game_id: session.game_id.clone(),
         game_stream_connected: session.game_stream_connected,
         resolved_move_request_id: None,
+        pending_game_action: session.pending_game_action.as_ref().filter(|_| active)
+            .map(|pending| Box::new(pending.request)),
         opponent_departure: if active { session.opponent_departure.map(Box::new) } else { None },
         fen: shakmaty::fen::Fen::from_position(&session.position, shakmaty::EnPassantMode::Legal)
             .to_string(),
@@ -301,6 +310,7 @@ impl GameSession {
             opponent_departure: None,
             prior_moves_before_prediction: None,
             pending_move: None,
+            pending_game_action: None,
             initial_fen: full.initial_fen.clone(),
             position,
             legal,
@@ -355,6 +365,9 @@ impl GameSession {
         let mut board = self.update_state(state, true)?;
         if changed {
             self.resolve_move(&mut board);
+        }
+        if self.state.status != "started" {
+            self.cancel_game_action();
         }
         self.prior_moves_before_prediction = None;
         Ok(board)
@@ -468,11 +481,32 @@ impl GameSession {
         }
     }
 
-    pub fn inherit_pending_move(&mut self, previous: &mut Self, board: &mut BackendMessage) {
+    pub fn inherit_pending_requests(&mut self, previous: &mut Self, board: &mut BackendMessage) {
         self.pending_move = previous.pending_move.take();
         if self.state.status != "started" || self.state.moves != previous.state.moves {
             self.resolve_move(board);
         }
+        if self.state.status == "started" {
+            self.pending_game_action = previous.pending_game_action.take();
+            if let BackendMessage::BoardState { pending_game_action, .. } = board {
+                *pending_game_action = self.pending_game_action.as_ref().map(|pending| Box::new(pending.request));
+            }
+        } else {
+            previous.cancel_game_action();
+        }
+    }
+
+    pub fn begin_game_action(&mut self, request: GameActionRequest) -> Option<oneshot::Receiver<()>> {
+        if self.pending_game_action.is_some() || self.state.status != "started" {
+            return None;
+        }
+        let (cancel_on_drop, canceled) = oneshot::channel();
+        self.pending_game_action = Some(PendingGameAction { request, _cancel_on_drop: cancel_on_drop });
+        Some(canceled)
+    }
+
+    pub fn cancel_game_action(&mut self) {
+        self.pending_game_action = None;
     }
 
     fn preview_move(&self, uci: &str, request_id: Option<u32>) -> anyhow::Result<BackendMessage> {
@@ -824,14 +858,41 @@ mod tests {
         let (mut previous, _) = GameSession::from_game_full(&full, "my-id").unwrap();
         let (_, mut canceled) = previous.begin_move("e2e4", Some(21)).unwrap();
         let (mut reconnected, mut same) = GameSession::from_game_full(&full, "my-id").unwrap();
-        reconnected.inherit_pending_move(&mut previous, &mut same);
+        reconnected.inherit_pending_requests(&mut previous, &mut same);
         assert!(matches!(same, BackendMessage::BoardState { resolved_move_request_id: None, .. }));
         assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Empty));
 
         let different = sample_full("d2d4 d7d5");
         let (mut replacement, mut changed) = GameSession::from_game_full(&different, "my-id").unwrap();
-        replacement.inherit_pending_move(&mut reconnected, &mut changed);
+        replacement.inherit_pending_requests(&mut reconnected, &mut changed);
         assert!(matches!(changed, BackendMessage::BoardState { resolved_move_request_id: Some(21), .. }));
+        assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+    }
+
+    #[test]
+    fn active_action_is_shared_with_resumed_boards_until_game_end() {
+        use crate::protocol::GameAction;
+
+        let full = sample_full("");
+        let (mut previous, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let request = GameActionRequest { action: GameAction::AddTime, request_id: Some(21), seconds: Some(15) };
+        let mut canceled = previous.begin_game_action(request).unwrap();
+        assert!(previous.begin_game_action(request).is_none());
+        assert!(matches!(previous.board_state(),
+            BackendMessage::BoardState { pending_game_action: Some(current), .. } if *current == request));
+
+        let next = sample_full("e2e4");
+        let (mut reconnected, mut snapshot) = GameSession::from_game_full(&next, "my-id").unwrap();
+        reconnected.inherit_pending_requests(&mut previous, &mut snapshot);
+        assert!(matches!(snapshot,
+            BackendMessage::BoardState { pending_game_action: Some(current), .. } if *current == request));
+        assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let mut terminal = next.state;
+        terminal.status = "draw".into();
+        let snapshot = reconnected.apply_state_update(terminal).unwrap();
+        assert!(matches!(snapshot,
+            BackendMessage::BoardState { outcome: Some(_), pending_game_action: None, .. }));
         assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Closed));
     }
 

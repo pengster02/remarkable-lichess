@@ -421,7 +421,8 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "BoardState" || msg.type === "PlayerStatuses") {
+            } else if (msg.type === "BoardState" || msg.type === "PlayerStatuses" ||
+                       msg.type === "GameActionCompleted" || msg.type === "GameActionFailed") {
                 if (!root.hasToken || !root.selectedGameId || msg.game_id !== root.selectedGameId) return
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
@@ -438,9 +439,7 @@ Rectangle {
             } else if (msg.type === "LogoutFailed" ||
                        msg.type === "GameOver" || msg.type === "MoveRejected" ||
                        msg.type === "GameStreamReconnecting" || msg.type === "GameStreamFailed" ||
-                       msg.type === "OpponentGone" ||
-                       msg.type === "GameActionCompleted" ||
-                       msg.type === "GameActionFailed" || msg.type === "MovePreview") {
+                       msg.type === "OpponentGone" || msg.type === "MovePreview") {
                 // Deliberately never navigates on its own (confirmed via the PC
                 // emulator: a bare reconnect message with no real game yet threw the
                 // user onto a genuinely empty, un-escapable Board screen). Only

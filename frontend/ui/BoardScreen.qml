@@ -115,7 +115,9 @@ Rectangle {
     // pending, else null. Set instead of immediately sending MakeMove whenever a
     // pawn move has more than one legal promotion option.
     property var pendingPromotion: null
-    property string pendingGameAction: ""
+    property var pendingActionRequest: null
+    readonly property string pendingGameAction: boardScreen.pendingActionRequest
+        ? boardScreen.pendingActionRequest.action : ""
     property bool showGameActions: false
     property bool showMoves: false
     // SAN per move, sent whole by the backend each BoardState (see
@@ -548,10 +550,13 @@ Rectangle {
     }
 
     function requestGameAction(message, action) {
-        if (boardScreen.gameId.length === 0 || boardScreen.streamError.length > 0 ||
-                boardScreen.pendingGameAction.length > 0) return
-        boardScreen.pendingGameAction = action
+        if (boardScreen.gameId.length === 0 || boardScreen.awaitingBoard ||
+                boardScreen.gameOver || boardScreen.streamError.length > 0 ||
+                boardScreen.pendingActionRequest !== null || !boardScreen.nextRequestId) return
+        message.request_id = boardScreen.nextRequestId()
         message.expected_game_id = boardScreen.gameId
+        boardScreen.pendingActionRequest = {action: action, request_id: message.request_id}
+        boardScreen.statusMessage = ""
         boardScreen.backendSender(message)
         boardScreen.showGameActions = false
     }
@@ -1720,7 +1725,7 @@ Rectangle {
         moveRequestGate.clear()
         boardScreen.pendingPremove = null
         boardScreen.resetGameActionControls()
-        boardScreen.pendingGameAction = ""
+        boardScreen.pendingActionRequest = null
         boardScreen.statusMessage = ""
         boardScreen.gameOutcomeText = reason && reason.length > 0 && reason !== outcome
             ? outcome + " · " + reason
@@ -1793,7 +1798,7 @@ Rectangle {
                         boardScreen.gameRatingChange.gameId !== nextGameId) {
                     boardScreen.gameRatingChange = null
                 }
-                boardScreen.pendingGameAction = ""
+                boardScreen.pendingActionRequest = null
             }
             boardScreen.gameId = nextGameId
             boardScreen.opponentDeparture = msg.opponent_departure || null
@@ -1873,6 +1878,9 @@ Rectangle {
                 boardScreen.completeGame(msg.outcome.result, msg.outcome.reason)
                 return
             }
+            if (msg.pending_game_action && boardScreen.pendingActionRequest === null) {
+                boardScreen.pendingActionRequest = msg.pending_game_action
+            }
             moveRequestGate.resolve(boardScreen.gameId, msg.resolved_move_request_id)
             if (boardScreen.pendingPremove !== null &&
                     boardScreen.pendingPremove.gameId !== boardScreen.gameId) {
@@ -1891,23 +1899,20 @@ Rectangle {
         } else if (msg.type === "RatingDiff") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId)) return
             boardScreen.gameRatingChange = {gameId: msg.game_id, diff: msg.rating_diff}
-        } else if (msg.type === "GameActionCompleted") {
-            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
-            if (boardScreen.pendingGameAction === msg.action) {
-                boardScreen.pendingGameAction = ""
-            }
-            if (msg.action === "Berserk") {
+        } else if (msg.type === "GameActionCompleted" || msg.type === "GameActionFailed") {
+            var pendingAction = boardScreen.pendingActionRequest
+            if (msg.game_id !== boardScreen.gameId || boardScreen.awaitingBoard ||
+                    boardScreen.gameOver || pendingAction === null ||
+                    msg.request_id !== pendingAction.request_id || msg.action !== pendingAction.action) return
+            boardScreen.pendingActionRequest = null
+            if (msg.type === "GameActionFailed") {
+                boardScreen.statusMessage = msg.message
+            } else if (msg.action === "Berserk") {
                 boardScreen.canBerserk = false
                 if (gameActionsLoader.item) gameActionsLoader.item.resetBerserk()
                 boardScreen.statusMessage = "Berserk activated"
-            } else if (msg.action === "AddTime") {
-                boardScreen.statusMessage = "15 seconds added to opponent"
-            }
-        } else if (msg.type === "GameActionFailed") {
-            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
-            if (boardScreen.pendingGameAction === msg.action) {
-                boardScreen.pendingGameAction = ""
-                boardScreen.statusMessage = msg.message
+            } else if (msg.action === "AddTime" && typeof msg.seconds === "number") {
+                boardScreen.statusMessage = msg.seconds + " seconds added to opponent"
             }
         } else if (msg.type === "MovePreview") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0 ||
@@ -1962,7 +1967,7 @@ Rectangle {
             boardScreen.selectedSquare = ""
             boardScreen.pendingMoveConfirmation = null
             boardScreen.pendingPromotion = null
-            boardScreen.pendingGameAction = ""
+            boardScreen.pendingActionRequest = null
             boardScreen.showGameActions = false
             boardScreen.streamReconnecting = false
             boardScreen.streamError = msg.message || "Could not load this game."
@@ -1974,11 +1979,7 @@ Rectangle {
         } else if (msg.type === "GameMovesFailed") {
             boardScreen.statusMessage = msg.message
         } else if (msg.type === "ErrorMsg") {
-            // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
-            // possible") only ever reached main.qml's console.warn -- invisible
-            // to an actual player on-device.
             boardScreen.statusMessage = msg.message
-            boardScreen.pendingGameAction = ""
         }
     }
 }
