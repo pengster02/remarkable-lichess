@@ -199,9 +199,14 @@ Minimum emulator smoke test:
   action per board at a time and returns a matching `GameActionCompleted` or
   `GameActionFailed` while the board remains active. A resumed snapshot carries
   the pending action, and the app does not automatically retry the POST.
+  Position-scoped feedback stays visible through same-position clock and offer
+  updates. A new move or action, board advance, stream failure, or outcome clears it.
 - Every move request passes through `MoveRequestGate`. The gate releases on a
   scoped rejection or a `BoardState` that settles the request, from either HTTP
   acceptance or an authoritative game stream update.
+  While a move preview is visible, keep its clocks and receipt time together.
+  Same-position frames update the live snapshot used for rollback, including its
+  receipt time and first-move deadline.
 - One-shot Lichess requests have a 20-second total deadline so move and action
   gates cannot remain pending forever after a dropped response. Held-open event,
   game, seek, and challenge streams use the separate unbounded stream path.

@@ -46,10 +46,13 @@ Rectangle {
     // on your own player bar below the board, matching every reference
     // client's "your side is a real labeled player too" treatment.
     property string username: ""
-    property int whiteTimeMs: 0
-    property int blackTimeMs: 0
-    property int liveWhiteTimeMs: 0
-    property int liveBlackTimeMs: 0
+    // Keep clock values with their receipt time so rollback restores their age.
+    // Copying displayed values loses that age and a shared timestamp mixes turns.
+    property var liveClock: ({whiteMs: 0, blackMs: 0, firstMoveMs: null, receivedAt: 0})
+    property var previewClock: null
+    readonly property var displayedClock: boardScreen.previewClock || boardScreen.liveClock
+    readonly property double whiteTimeMs: boardScreen.displayedClock.whiteMs
+    readonly property double blackTimeMs: boardScreen.displayedClock.blackMs
     // Fixed for the game's lifetime (see game::session::GameSession) -- null
     // for an untimed/correspondence game, same Option-to-null convention as
     // opponentRating. Needed alongside the live whiteTimeMs/blackTimeMs
@@ -58,7 +61,9 @@ Rectangle {
     property var initialClockMs: null
     property var legalMoves: []
     property string selectedSquare: ""
-    property string statusMessage: ""
+    // Position feedback survives metadata updates. A timeout can race the e-ink
+    // refresh, and keeping every message would leave recovered errors visible.
+    property var boardNotice: null
     property string gameOutcomeText: ""
     // The two streams can finish in either order. Appending text repeats
     // duplicate events, and a bare delta can leak across game selections.
@@ -67,7 +72,7 @@ Rectangle {
         boardScreen.gameRatingChange.gameId === boardScreen.gameId
         ? boardScreen.gameRatingChange.diff : null
     readonly property string statusText: {
-        if (boardScreen.statusMessage.length > 0) return boardScreen.statusMessage
+        if (boardScreen.boardNotice !== null) return boardScreen.boardNotice.text
         if (!boardScreen.gameOver) return ""
         var diff = boardScreen.resultRatingDiff
         if (diff === null) return boardScreen.gameOutcomeText
@@ -160,7 +165,6 @@ Rectangle {
     property string opponentFlair: ""
     property string gameDescription: ""
     readonly property bool hasGameDescription: gameDescription.length > 0
-    property var firstMoveTimeMs: null
     // Pushed from main.qml's root state (see settings.rs / SettingsScreen.qml) --
     // when on, a queen promotion is sent immediately instead of opening the
     // picker popup below. Only skips the popup when "q" is actually one of the
@@ -205,7 +209,6 @@ Rectangle {
     property bool annotationMode: false
     property var boardAnnotations: []
     property bool liveClockEnabled: true
-    property double lastClockSyncMs: 0
     property int clockPulse: 0
     property double clockNowMs: Date.now() + boardScreen.clockPulse * 0
     Timer {
@@ -214,7 +217,7 @@ Rectangle {
         running: boardScreen.visible &&
             boardScreen.liveClockEnabled &&
             (boardScreen.initialClockMs !== null ||
-                boardScreen.firstMoveTimeMs !== null) &&
+                boardScreen.displayedClock.firstMoveMs !== null) &&
             !boardScreen.gameOver &&
             boardScreen.streamError.length === 0 &&
             boardScreen.fen.length > 0
@@ -241,7 +244,7 @@ Rectangle {
         if (!boardScreen.nextRequestId || moveRequestGate.pending !== null) return false
         if (!moveRequestGate.submit(from, to, promotion, boardScreen.nextRequestId())) return false
         boardScreen.selectedSquare = ""
-        boardScreen.statusMessage = ""
+        boardScreen.boardNotice = null
         return true
     }
 
@@ -253,9 +256,7 @@ Rectangle {
         boardScreen.previewFen = ""
         boardScreen.fen = boardScreen.liveFen
         boardScreen.turn = boardScreen.liveTurn
-        boardScreen.whiteTimeMs = boardScreen.liveWhiteTimeMs
-        boardScreen.blackTimeMs = boardScreen.liveBlackTimeMs
-        boardScreen.lastClockSyncMs = Date.now()
+        boardScreen.previewClock = null
         boardScreen.clockPulse += 1
         boardScreen.lastMove = boardScreen.liveLastMove
         boardScreen.inCheck = boardScreen.liveInCheck
@@ -457,32 +458,23 @@ Rectangle {
             : boardScreen.opponentFlair
     }
 
-    function clockFor(color) {
-        return color === "white" ? boardScreen.whiteTimeMs : boardScreen.blackTimeMs
+    function clockElapsedMs() {
+        var receivedAt = boardScreen.displayedClock.receivedAt
+        if (receivedAt <= 0) return 0
+        return Math.floor(Math.max(0, boardScreen.clockNowMs - receivedAt) / 1000) * 1000
     }
 
     function displayClockFor(color) {
-        var base = boardScreen.clockFor(color)
-        if (!boardScreen.liveClockEnabled || color !== boardScreen.turn ||
-                boardScreen.lastClockSyncMs <= 0 || boardScreen.gameOver) {
+        var base = color === "white" ? boardScreen.whiteTimeMs : boardScreen.blackTimeMs
+        if (!boardScreen.liveClockEnabled || color !== boardScreen.turn || boardScreen.gameOver) {
             return base
         }
-        var elapsed = Math.floor(
-            Math.max(0, boardScreen.clockNowMs - boardScreen.lastClockSyncMs) / 1000
-        ) * 1000
-        return Math.max(0, base - elapsed)
+        return Math.max(0, base - boardScreen.clockElapsedMs())
     }
 
     function displayFirstMoveTimeMs() {
-        if (boardScreen.firstMoveTimeMs === null ||
-                boardScreen.firstMoveTimeMs === undefined) {
-            return null
-        }
-        if (boardScreen.lastClockSyncMs <= 0) return boardScreen.firstMoveTimeMs
-        var elapsed = Math.floor(
-            Math.max(0, boardScreen.clockNowMs - boardScreen.lastClockSyncMs) / 1000
-        ) * 1000
-        return Math.max(0, boardScreen.firstMoveTimeMs - elapsed)
+        var remaining = boardScreen.displayedClock.firstMoveMs
+        return remaining === null ? null : Math.max(0, remaining - boardScreen.clockElapsedMs())
     }
 
     // Faster only when the visible clock text is about to change often.
@@ -556,7 +548,7 @@ Rectangle {
         message.request_id = boardScreen.nextRequestId()
         message.expected_game_id = boardScreen.gameId
         boardScreen.pendingActionRequest = {action: action, request_id: message.request_id}
-        boardScreen.statusMessage = ""
+        boardScreen.boardNotice = null
         boardScreen.backendSender(message)
         boardScreen.showGameActions = false
     }
@@ -786,8 +778,10 @@ Rectangle {
                 return
             }
         }
-        boardScreen.statusMessage = "Premove canceled: " + queued.from + "-" +
-            queued.to + " is no longer legal."
+        boardScreen.boardNotice = {
+            text: "Premove canceled: " + queued.from + "-" + queued.to + " is no longer legal.",
+            positionBound: true
+        }
     }
 
     function onSquareTapped(squareName) {
@@ -1699,9 +1693,13 @@ Rectangle {
     function completeGame(result, reason) {
         boardScreen.rollbackMovePreview()
         boardScreen.returnToLive()
-        boardScreen.whiteTimeMs = boardScreen.displayClockFor("white")
-        boardScreen.blackTimeMs = boardScreen.displayClockFor("black")
-        boardScreen.lastClockSyncMs = 0
+        boardScreen.clockPulse += 1
+        boardScreen.liveClock = {
+            whiteMs: boardScreen.displayClockFor("white"),
+            blackMs: boardScreen.displayClockFor("black"),
+            firstMoveMs: null,
+            receivedAt: 0
+        }
         var outcome
         if (result === "draw") {
             outcome = "Draw"
@@ -1726,7 +1724,7 @@ Rectangle {
         boardScreen.pendingPremove = null
         boardScreen.resetGameActionControls()
         boardScreen.pendingActionRequest = null
-        boardScreen.statusMessage = ""
+        boardScreen.boardNotice = null
         boardScreen.gameOutcomeText = reason && reason.length > 0 && reason !== outcome
             ? outcome + " · " + reason
             : outcome
@@ -1806,6 +1804,7 @@ Rectangle {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
+                boardScreen.previewClock = null
                 // Full sync (game load/resume/takeback) carries the whole line and
                 // replaces our copy; a normal one-move advance sends neither array,
                 // just appended_move, so we grow our own copy by this message's fen
@@ -1832,11 +1831,12 @@ Rectangle {
                 boardScreen.capturedByWhite = msg.captured_by_white || []
                 boardScreen.capturedByBlack = msg.captured_by_black || []
             }
-            boardScreen.whiteTimeMs = msg.white_time_ms
-            boardScreen.blackTimeMs = msg.black_time_ms
-            boardScreen.liveWhiteTimeMs = msg.white_time_ms
-            boardScreen.liveBlackTimeMs = msg.black_time_ms
-            boardScreen.lastClockSyncMs = msg.outcome ? 0 : Date.now()
+            boardScreen.liveClock = {
+                whiteMs: msg.white_time_ms,
+                blackMs: msg.black_time_ms,
+                firstMoveMs: msg.first_move_time_ms !== undefined ? msg.first_move_time_ms : null,
+                receivedAt: msg.outcome ? 0 : Date.now()
+            }
             boardScreen.clockPulse += 1
             boardScreen.initialClockMs = msg.initial_clock_ms !== undefined ? msg.initial_clock_ms : null
             boardScreen.yourColor = msg.your_color || "white"
@@ -1865,11 +1865,10 @@ Rectangle {
             boardScreen.opponentTitle = opponentPlayer.title || ""
             boardScreen.opponentProvisional = opponentPlayer.provisional || false
             boardScreen.gameDescription = msg.game_description || ""
-            boardScreen.firstMoveTimeMs = msg.first_move_time_ms !== undefined
-                ? msg.first_move_time_ms
-                : null
             boardScreen.resetGameActionControls()
-            boardScreen.statusMessage = ""
+            if (boardChanged || (boardScreen.boardNotice !== null && !boardScreen.boardNotice.positionBound)) {
+                boardScreen.boardNotice = null
+            }
             boardScreen.gameOver = false
             boardScreen.showGameOverDialog = false
             boardScreen.gameResult = ""
@@ -1881,7 +1880,9 @@ Rectangle {
             if (msg.pending_game_action && boardScreen.pendingActionRequest === null) {
                 boardScreen.pendingActionRequest = msg.pending_game_action
             }
-            moveRequestGate.resolve(boardScreen.gameId, msg.resolved_move_request_id)
+            if (moveRequestGate.resolve(boardScreen.gameId, msg.resolved_move_request_id)) {
+                boardScreen.rollbackMovePreview()
+            }
             if (boardScreen.pendingPremove !== null &&
                     boardScreen.pendingPremove.gameId !== boardScreen.gameId) {
                 boardScreen.cancelPremove()
@@ -1906,13 +1907,13 @@ Rectangle {
                     msg.request_id !== pendingAction.request_id || msg.action !== pendingAction.action) return
             boardScreen.pendingActionRequest = null
             if (msg.type === "GameActionFailed") {
-                boardScreen.statusMessage = msg.message
+                boardScreen.boardNotice = {text: msg.message, positionBound: true}
             } else if (msg.action === "Berserk") {
                 boardScreen.canBerserk = false
                 if (gameActionsLoader.item) gameActionsLoader.item.resetBerserk()
-                boardScreen.statusMessage = "Berserk activated"
+                boardScreen.boardNotice = {text: "Berserk activated", positionBound: true}
             } else if (msg.action === "AddTime" && typeof msg.seconds === "number") {
-                boardScreen.statusMessage = msg.seconds + " seconds added to opponent"
+                boardScreen.boardNotice = {text: msg.seconds + " seconds added to opponent", positionBound: true}
             }
         } else if (msg.type === "MovePreview") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0 ||
@@ -1934,9 +1935,12 @@ Rectangle {
             boardScreen.previewFen = msg.fen
             boardScreen.fen = msg.fen
             boardScreen.turn = msg.turn
-            boardScreen.whiteTimeMs = msg.white_time_ms
-            boardScreen.blackTimeMs = msg.black_time_ms
-            boardScreen.lastClockSyncMs = Date.now()
+            boardScreen.previewClock = {
+                whiteMs: msg.white_time_ms,
+                blackMs: msg.black_time_ms,
+                firstMoveMs: null,
+                receivedAt: Date.now()
+            }
             boardScreen.clockPulse += 1
             boardScreen.lastMove = previewLastMove
             boardScreen.inCheck = msg.in_check || false
@@ -1944,7 +1948,7 @@ Rectangle {
             if (boardScreen.gameOver || (msg.game_id && msg.game_id !== boardScreen.gameId)) return
             if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
             boardScreen.rollbackMovePreview()
-            boardScreen.statusMessage = "Move rejected: " + msg.reason
+            boardScreen.boardNotice = {text: "Move rejected: " + msg.reason, positionBound: true}
             boardScreen.selectedSquare = ""
             moveRequestGate.clear()
         } else if (msg.type === "GameStreamReconnecting") {
@@ -1968,6 +1972,7 @@ Rectangle {
             boardScreen.pendingMoveConfirmation = null
             boardScreen.pendingPromotion = null
             boardScreen.pendingActionRequest = null
+            boardScreen.boardNotice = null
             boardScreen.showGameActions = false
             boardScreen.streamReconnecting = false
             boardScreen.streamError = msg.message || "Could not load this game."
@@ -1976,10 +1981,8 @@ Rectangle {
             boardScreen.opponentDeparture = msg.gone
                 ? {claim_win_in_seconds: msg.claim_win_in_seconds}
                 : null
-        } else if (msg.type === "GameMovesFailed") {
-            boardScreen.statusMessage = msg.message
-        } else if (msg.type === "ErrorMsg") {
-            boardScreen.statusMessage = msg.message
+        } else if (msg.type === "GameMovesFailed" || msg.type === "ErrorMsg") {
+            boardScreen.boardNotice = {text: msg.message, positionBound: false}
         }
     }
 }
