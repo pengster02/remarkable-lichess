@@ -4,6 +4,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
     #[serde(default)]
+    pub dark_mode: bool,
+    #[serde(default)]
     pub auto_queen_promotion: bool,
     // Confirmed shipped in the official lichess-org/mobile app (its own
     // `moveToConfirm`/`confirmMove()`/`cancelMove()`, default off there too),
@@ -76,6 +78,7 @@ impl AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            dark_mode: false,
             auto_queen_promotion: false,
             move_confirmation: false,
             minimal_highlights: true,
@@ -144,10 +147,20 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_brown_cburnett_appearance() {
+    fn defaults_to_light_brown_cburnett_appearance() {
         let settings = AppSettings::default();
+        assert!(!settings.dark_mode);
         assert_eq!(settings.board_theme, "brown");
         assert_eq!(settings.piece_set, "cburnett");
+    }
+
+    #[test]
+    fn older_appearance_settings_keep_the_light_default() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"board_theme":"green","piece_set":"merida"}"#).unwrap();
+        assert!(!settings.dark_mode);
+        assert_eq!(settings.board_theme, "green");
+        assert_eq!(settings.piece_set, "merida");
     }
 
     #[test]
@@ -192,6 +205,7 @@ mod tests {
     fn save_then_load_round_trips() {
         let path = std::env::temp_dir().join("remarkable-lichess-settings-test-roundtrip.json");
         let settings = AppSettings {
+            dark_mode: true,
             auto_queen_promotion: true,
             premoves_enabled: true,
             live_clock_enabled: false,

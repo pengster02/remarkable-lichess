@@ -874,22 +874,7 @@ impl LichessBackend {
 
     fn handle_request_settings(&self, replier: &BackendReplier<Self>) {
         let settings = crate::settings::load(&self.settings_path);
-        self.send(
-            replier,
-            &BackendMessage::SettingsState {
-                auto_queen_promotion: settings.auto_queen_promotion,
-                move_confirmation: settings.move_confirmation,
-                minimal_highlights: settings.minimal_highlights,
-                premoves_enabled: settings.premoves_enabled,
-                live_clock_enabled: settings.live_clock_enabled,
-                board_theme: settings.board_theme,
-                piece_set: settings.piece_set,
-                show_coordinates: settings.show_coordinates,
-                show_captured_pieces: settings.show_captured_pieces,
-                highlight_last_move: settings.highlight_last_move,
-                confirm_resign: settings.confirm_resign,
-            },
-        );
+        self.send(replier, &BackendMessage::SettingsState { settings });
     }
 
     fn send_analysis_failure(&self, replier: &BackendReplier<Self>, request_id: Option<u32>, message: String) {
@@ -964,22 +949,7 @@ impl LichessBackend {
         // Echoed back rather than assumed -- the frontend already optimistically
         // shows the new toggle state, but this confirms the write actually
         // succeeded instead of silently drifting from what's on disk.
-        self.send(
-            replier,
-            &BackendMessage::SettingsState {
-                auto_queen_promotion: settings.auto_queen_promotion,
-                move_confirmation: settings.move_confirmation,
-                minimal_highlights: settings.minimal_highlights,
-                premoves_enabled: settings.premoves_enabled,
-                live_clock_enabled: settings.live_clock_enabled,
-                board_theme: settings.board_theme,
-                piece_set: settings.piece_set,
-                show_coordinates: settings.show_coordinates,
-                show_captured_pieces: settings.show_captured_pieces,
-                highlight_last_move: settings.highlight_last_move,
-                confirm_resign: settings.confirm_resign,
-            },
-        );
+        self.send(replier, &BackendMessage::SettingsState { settings });
     }
 
     async fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
@@ -1883,6 +1853,7 @@ impl AppLoadBackend for LichessBackend {
                 session.cancel_move();
                 session.cancel_game_action();
             }
+            self.handle_request_settings(replier);
             if self.client.is_none() {
                 self.check_saved_sign_in(replier);
             } else if let Some(username) = self.username.clone() {
@@ -2017,6 +1988,7 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::RequestSettings => self.handle_request_settings(replier),
             FrontendMessage::SaveSettings {
+                dark_mode,
                 auto_queen_promotion,
                 move_confirmation,
                 minimal_highlights,
@@ -2032,6 +2004,7 @@ impl AppLoadBackend for LichessBackend {
                 self.handle_save_settings(
                     replier,
                     crate::settings::AppSettings {
+                        dark_mode: dark_mode.unwrap_or_else(|| crate::settings::load(&self.settings_path).dark_mode),
                         auto_queen_promotion,
                         move_confirmation,
                         minimal_highlights,

@@ -17,6 +17,7 @@ Rectangle {
     // is being verified. Alternatives: a timer-delayed login, or a blank Loader.
     property string authenticationState: "checking"
     property string username: ""
+    property bool settingsReceived: false
     property bool darkMode: false
     // Persisted server-side (see backend/src/settings.rs) -- pushed into any
     // loaded screen that declares it, same pattern as darkMode below.
@@ -179,11 +180,13 @@ Rectangle {
 
     function toggleDarkMode() {
         root.darkMode = !root.darkMode
+        root.persistSettings()
     }
 
     function persistSettings() {
         root.sendToBackend({
             type: "SaveSettings",
+            dark_mode: root.darkMode,
             auto_queen_promotion: root.autoQueenPromotion,
             move_confirmation: root.moveConfirmation,
             minimal_highlights: root.minimalHighlights,
@@ -360,7 +363,8 @@ Rectangle {
                 root.hasToken = true
                 root.authenticationState = "authenticated"
                 root.username = msg.username || ""
-                endpoint.sendMessage(1, JSON.stringify({type: "RequestSettings"}))
+                // Older backends don't send the startup snapshot. Always requesting duplicates it, while relying on it alone loses legacy settings.
+                if (!root.settingsReceived) root.sendToBackend({type: "RequestSettings"})
                 screenLoader.source = "HomeScreen.qml"
             } else if (msg.type === "AuthenticationRequired") {
                 root.requireAuthentication()
@@ -369,9 +373,8 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "SettingsState") {
-                // Updates root state (not just forwarded to the current screen)
-                // since it needs to persist across navigation, same as darkMode --
-                // onAutoQueenPromotionChanged above re-syncs whatever's loaded.
+                root.settingsReceived = true
+                if (typeof msg.dark_mode === "boolean") root.darkMode = msg.dark_mode
                 root.autoQueenPromotion = msg.auto_queen_promotion || false
                 root.moveConfirmation = msg.move_confirmation || false
                 root.minimalHighlights = msg.minimal_highlights !== undefined
