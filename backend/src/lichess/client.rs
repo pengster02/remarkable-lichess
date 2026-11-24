@@ -113,6 +113,14 @@ async fn error_from_response(context: &str, resp: reqwest::Response) -> anyhow::
             Some(shortened)
         }
     });
+    http_response_error(context, status, reason)
+}
+
+fn http_response_error(
+    context: &str,
+    status: reqwest::StatusCode,
+    reason: Option<String>,
+) -> anyhow::Error {
     let error = HttpResponseError { status, context: context.to_owned(), reason };
     log::warn!("{error}");
     error.into()
@@ -160,7 +168,25 @@ impl LichessClient {
         context: &str,
         builder: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
-        self.send_with_logging(context, builder).await
+        // Bound stream setup only. A connect timeout leaves headers unbounded,
+        // while a request-wide timeout also cuts off a healthy streaming body.
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
+        let response = match tokio::time::timeout_at(deadline, self.send_with_logging(context, builder)).await {
+            Ok(result) => result?,
+            Err(_) => {
+                log::warn!("{context}: timed out waiting for Lichess response headers");
+                return Err(anyhow!("{context} timed out waiting for Lichess"));
+            }
+        };
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        let error = tokio::time::timeout_at(deadline, error_from_response(context, response))
+            .await
+            .unwrap_or_else(|_| http_response_error(context, status, None));
+        Err(error)
     }
 
     async fn send_with_logging(
@@ -509,9 +535,6 @@ impl LichessClient {
             .send_stream_logged("create_seek", self.bearer(self.http.post(format!("{}/api/board/seek", self.base_url)))
                 .form(&form))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("create_seek", resp).await);
-        }
         Ok(response_to_lines(resp))
     }
 
@@ -539,9 +562,6 @@ impl LichessClient {
                     ("color", color.to_string()),
                 ]))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("create_challenge", resp).await);
-        }
         let mut lines = response_to_lines(resp);
         let first_line = tokio::time::timeout(self.request_timeout, async {
             while let Some(line) = lines.next().await {
@@ -611,9 +631,6 @@ impl LichessClient {
         let resp = self
             .send_stream_logged(&format!("stream {url_path}"), self.bearer(self.http.get(format!("{}{}", self.base_url, url_path))))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response(&format!("stream {}", url_path), resp).await);
-        }
         Ok(response_to_lines(resp))
     }
 }
@@ -690,25 +707,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    async fn read_http_stream(response: &'static [u8]) -> Vec<String> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::TcpListener;
+    async fn accept_http_request(server: TcpListener) -> BufReader<TcpStream> {
+        let (socket, _) = server.accept().await.unwrap();
+        let mut socket = BufReader::new(socket);
+        loop {
+            let mut header = String::new();
+            assert_ne!(socket.read_line(&mut header).await.unwrap(), 0);
+            if header == "\r\n" {
+                return socket;
+            }
+        }
+    }
 
+    async fn read_http_stream(response: &'static [u8]) -> Vec<String> {
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", server.local_addr().unwrap());
         let task = tokio::spawn(async move {
-            let (socket, _) = server.accept().await.unwrap();
-            let mut socket = BufReader::new(socket);
-            loop {
-                let mut header = String::new();
-                assert_ne!(socket.read_line(&mut header).await.unwrap(), 0);
-                if header == "\r\n" {
-                    break;
-                }
-            }
+            let mut socket = accept_http_request(server).await;
             socket.write_all(response).await.unwrap();
             socket.shutdown().await.unwrap();
         });
@@ -717,6 +739,64 @@ mod tests {
         let result = lines.collect().await;
         task.await.unwrap();
         result
+    }
+
+    async fn stalled_stream_error(response: &'static [u8]) -> anyhow::Error {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        let (sent, observed) = oneshot::channel();
+        let (release, hold) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut socket = accept_http_request(server).await;
+            socket.write_all(response).await.unwrap();
+            sent.send(()).unwrap();
+            let _ = hold.await;
+        });
+        let mut client = LichessClient::with_base_url("test-token".into(), endpoint);
+        client.request_timeout = Duration::from_millis(200);
+        let result = tokio::time::timeout(Duration::from_secs(2), client.stream_lines("/test")).await;
+        release.send(()).unwrap();
+        task.await.unwrap();
+        observed.await.expect("HTTP peer must have accepted the request");
+        result.expect("stream setup should finish by its own deadline").err().unwrap()
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_headers_return_a_timeout() {
+        let error = stalled_stream_error(b"").await;
+        assert!(error.to_string().contains("timed out waiting for Lichess"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_error_body_keeps_the_http_status() {
+        let error = stalled_stream_error(
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 80\r\n\r\n{\"error\":\"partial",
+        ).await;
+        assert!(is_auth_rejection(&error));
+        assert_eq!(board_stream_rejection(&error), Some("Lichess denied access to this board."));
+    }
+
+    #[tokio::test]
+    async fn successful_response_body_survives_its_setup_deadline() {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        let (release, hold) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut socket = accept_http_request(server).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nfirst\n\r\n").await.unwrap();
+            hold.await.unwrap();
+            socket.write_all(b"7\r\nsecond\n\r\n0\r\n\r\n").await.unwrap();
+        });
+
+        let mut client = LichessClient::with_base_url("test-token".into(), endpoint);
+        client.request_timeout = Duration::from_millis(200);
+        let mut lines = client.stream_lines("/test").await.unwrap();
+        assert_eq!(lines.next().await.as_deref(), Some("first"));
+        assert!(tokio::time::timeout(client.request_timeout * 2, lines.next()).await.is_err());
+        release.send(()).unwrap();
+        assert_eq!(lines.next().await.as_deref(), Some("second"));
+        assert!(lines.next().await.is_none());
+        server.await.unwrap();
     }
 
     #[tokio::test]
