@@ -9,7 +9,8 @@ TOKEN="${1:-${LICHESS_TOKEN:-}}"
 if [ -z "${TOKEN}" ]; then
   if [ -t 0 ]; then
     echo "Paste your Lichess personal access token (lip_...), then Enter:"
-    read -r TOKEN
+    read -r -s TOKEN
+    printf '\n'
   else
     echo "Usage: $0 lip_your_token" >&2
     echo "Or:    LICHESS_TOKEN=lip_... $0" >&2
@@ -29,20 +30,24 @@ case "${TOKEN}" in
 esac
 
 # Quick live check before wasting a rebuild cycle.
-HTTP_CODE="$(curl -s -o /tmp/lichess-account.json -w '%{http_code}' \
-  -H "Authorization: Bearer ${TOKEN}" \
-  https://lichess.org/api/account || true)"
+ACCOUNT_RESPONSE="$(mktemp)"
+trap 'rm -f "$ACCOUNT_RESPONSE"' EXIT
+HTTP_CODE="$(printf 'Authorization: Bearer %s\n' "${TOKEN}" | \
+  curl -s -o "$ACCOUNT_RESPONSE" -w '%{http_code}' -H @- https://lichess.org/api/account || true)"
 if [ "${HTTP_CODE}" != "200" ]; then
   echo "Lichess rejected that token (HTTP ${HTTP_CODE}):" >&2
-  cat /tmp/lichess-account.json >&2 || true
+  cat "$ACCOUNT_RESPONSE" >&2 || true
   echo >&2
   exit 1
 fi
-USERNAME="$(python3 -c 'import json; print(json.load(open("/tmp/lichess-account.json")).get("username","?"))' 2>/dev/null || echo "?")"
+USERNAME="$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("username", "?"))' < "$ACCOUNT_RESPONSE" 2>/dev/null || echo "?")"
 echo "Token OK — signed in as ${USERNAME}"
-printf '%s\n' "${TOKEN}" > "${TOKEN_FILE}"
+if [ -f "${TOKEN_FILE}" ]; then chmod 600 "${TOKEN_FILE}"; fi
+(umask 077; printf '%s\n' "${TOKEN}" > "${TOKEN_FILE}")
 chmod 600 "${TOKEN_FILE}"
 echo "Saved to ${TOKEN_FILE}"
 
+rm -f "$ACCOUNT_RESPONSE"
+trap - EXIT
 export LICHESS_TOKEN="${TOKEN}"
 exec "${ROOT}/scripts/run-local.sh"

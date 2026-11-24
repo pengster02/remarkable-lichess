@@ -5,13 +5,16 @@ APP_SRC="${APP_SRC:-/workspace/remarkable-lichess}"
 APPLOAD_SRC="${APPLOAD_SRC:-/workspace/rm-appload}"
 XOVI_SRC="${XOVI_SRC:-/workspace/xovi}"
 APP_DIR="${APPLOAD_SRC}/applications_root/remarkable-lichess"
-TOKEN_DIR="/home/root/.config/remarkable-lichess"
+export REMARKABLE_LICHESS_CONFIG_DIR="${REMARKABLE_LICHESS_CONFIG_DIR:-/tmp/remarkable-lichess-config}"
 
-mkdir -p "$TOKEN_DIR" /tmp/.X11-unix
+install -d -m 0700 "$REMARKABLE_LICHESS_CONFIG_DIR"
+mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
 if [ -n "${LICHESS_TOKEN:-}" ]; then
-  printf '%s\n' "${LICHESS_TOKEN}" > "${TOKEN_DIR}/token"
-  echo "==> Seeded LICHESS_TOKEN into ${TOKEN_DIR}/token"
+  (umask 077; printf '%s\n' "$LICHESS_TOKEN" > "$REMARKABLE_LICHESS_CONFIG_DIR/token")
+  chmod 0600 "$REMARKABLE_LICHESS_CONFIG_DIR/token"
+  unset LICHESS_TOKEN
+  echo "==> Seeded sign-in for the emulator"
 fi
 
 echo "==> Building AppLoad PC emulator for Linux"

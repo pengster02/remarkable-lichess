@@ -219,13 +219,12 @@ macOS cannot host AppLoad backends — they need Linux `AF_UNIX SOCK_SEQPACKET` 
 so local development runs in a Docker PC emulator reached over noVNC.
 
 ```bash
-./scripts/connect-lichess.sh lip_your_token
+./scripts/connect-lichess.sh
 ```
 
-That validates the token, writes the gitignored `.lichess-token`, and starts the
-emulator. Create a token with the scopes `board:play`, `challenge:read`,
-`challenge:write`, and `preference:read` — the script prints a prepared link if
-you run it with no argument.
+Paste the token at the hidden prompt. The script validates it, writes the
+gitignored `.lichess-token`, and starts the emulator. Create a token with the
+scopes `board:play`, `challenge:read`, `challenge:write`, and `preference:read`.
 
 Later runs:
 
@@ -234,9 +233,10 @@ Later runs:
 ```
 
 Then open <http://localhost:6080/vnc.html>. The container is named
-`remarkable-lichess-local`.
+`remarkable-lichess-local` and noVNC listens on the host's loopback interface.
 
-You can also skip the token entirely and use the in-app QR sign-in.
+QR sign-in requires your phone to reach the backend's callback address. For the
+default Docker network, use the token prompt above or the in-app token field.
 
 For a quick frontend-only redeploy into a running emulator:
 

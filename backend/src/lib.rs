@@ -9,5 +9,8 @@ pub mod lichess;
 pub mod game;
 pub mod settings;
 
+#[cfg(any(feature = "transport", test))]
+pub mod credentials;
+
 #[cfg(feature = "transport")]
 pub mod backend_app;

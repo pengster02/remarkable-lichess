@@ -48,7 +48,7 @@ docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
 RUN_ARGS=(
   -d --name "${NAME}"
-  -p "${PORT}:6080"
+  -p "127.0.0.1:${PORT}:6080"
   -v "${ROOT}:/workspace/remarkable-lichess"
   -v "${APPLOAD_HOST}:/workspace/rm-appload"
   -v "${XOVI_HOST}:/workspace/xovi"
@@ -57,7 +57,8 @@ RUN_ARGS=(
   -e XOVI_SRC=/workspace/xovi
 )
 if [ -n "${LICHESS_TOKEN:-}" ]; then
-  RUN_ARGS+=(-e "LICHESS_TOKEN=${LICHESS_TOKEN}")
+  export LICHESS_TOKEN
+  RUN_ARGS+=(-e LICHESS_TOKEN)
   echo "Seeding Lichess token into the emulator."
 else
   echo "No LICHESS_TOKEN / .lichess-token yet — Setup screen will ask for one."
@@ -67,7 +68,7 @@ echo "Starting emulator on http://localhost:${PORT}/vnc.html"
 docker run "${RUN_ARGS[@]}" "${IMAGE}"
 
 echo "Container ${NAME} started. Waiting for noVNC..."
-for i in $(seq 1 90); do
+for ((attempt = 0; attempt < 90; attempt++)); do
   if curl -sf "http://127.0.0.1:${PORT}/vnc.html" >/dev/null 2>&1; then
     echo "Ready: http://localhost:${PORT}/vnc.html"
     echo "Logs: docker logs -f ${NAME}"
