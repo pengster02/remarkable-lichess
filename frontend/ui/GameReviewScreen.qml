@@ -12,7 +12,7 @@ Rectangle {
     Theme { id: theme; darkMode: gameReviewScreen.darkMode }
     ChessDisplay { id: chessDisplay }
     property var backendSender
-    property var navigateTo
+    property var returnToGameHistory
     property bool darkMode: false
     property string boardTheme: "brown"
     property string pieceSet: "cburnett"
@@ -928,6 +928,7 @@ Rectangle {
 
     AppButton {
         id: backButton
+        objectName: "reviewBackButton"
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottomMargin: theme.pageSideMargin
@@ -935,7 +936,7 @@ Rectangle {
                         Math.max(theme.textFieldWidthMedium, naturalWidth))
         compact: true
         text: "Back to Game History"
-        onClicked: gameReviewScreen.navigateTo("GameHistoryScreen.qml")
+        onClicked: gameReviewScreen.returnToGameHistory()
     }
 
     EinkPagedFlickable {

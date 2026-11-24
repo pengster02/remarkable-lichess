@@ -1,4 +1,4 @@
-import QtQuick 2.5
+import QtQuick 2.9
 
 Rectangle {
     id: gameHistoryScreen
@@ -33,9 +33,10 @@ Rectangle {
     property string draftRated: "all"
     property string draftSpeed: "all"
     property string draftColor: "all"
+    property var restoredPosition: null
 
-    onBackendSenderChanged: gameHistoryScreen.requestFiltered()
-    onNextRequestIdChanged: gameHistoryScreen.requestFiltered()
+    onBackendSenderChanged: if (loading) requestFiltered()
+    onNextRequestIdChanged: if (loading) requestFiltered()
     Component.onDestruction: {
         if (gameHistoryScreen.pendingHistoryRequest > 0 && gameHistoryScreen.backendSender) {
             gameHistoryScreen.backendSender({type: "CancelGameHistory",
@@ -43,11 +44,44 @@ Rectangle {
         }
     }
 
+    function captureHistoryVisit() {
+        var position = null
+        if (historyList.contentY > 0) {
+            historyColumn.forceLayout()
+            for (var index = 0; index < historyRows.count; index++) {
+                var row = historyRows.itemAt(index)
+                if (row && row.y + row.height > historyList.contentY) {
+                    position = {index: index, inset: historyList.contentY - row.y}
+                    break
+                }
+            }
+        }
+        // Keep the loaded visit and a row-relative position. Refetching can reorder
+        // the list, and keeping the whole screen alive leaves its UI mounted.
+        return {
+            filterRated: filterRated,
+            filterSpeed: filterSpeed,
+            filterColor: filterColor,
+            games: games,
+            loading: loading,
+            loadError: loadError,
+            restoredPosition: position
+        }
+    }
+
+    function restorePosition() {
+        var position = restoredPosition
+        if (!position) return
+        var row = historyRows.itemAt(position.index)
+        if (row) historyList.moveTo(row.y + Math.min(position.inset, row.height - 1))
+    }
+
     function requestFiltered() {
         if (!gameHistoryScreen.backendSender || !gameHistoryScreen.nextRequestId) return
         gameHistoryScreen.loading = true
         gameHistoryScreen.errorMessage = ""
         gameHistoryScreen.loadError = ""
+        gameHistoryScreen.restoredPosition = null
         gameHistoryScreen.games = []
         gameHistoryScreen.pendingHistoryRequest = gameHistoryScreen.nextRequestId()
         gameHistoryScreen.backendSender({
@@ -162,6 +196,7 @@ Rectangle {
 
     EinkPagedFlickable {
         id: historyList
+        objectName: "historyList"
         // Anchored between the filter header and the Back button instead of a
         // fixed "parent.height - N" offset -- the filter Flows above can wrap to
         // an extra line depending on content width, which a magic-number height
@@ -174,13 +209,18 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: historyColumn.height
+        onMaximumContentYChanged: gameHistoryScreen.restorePosition()
+        onPageNavigationRequested: gameHistoryScreen.restoredPosition = null
 
         Column {
             id: historyColumn
             width: parent.width
             spacing: theme.spacingSmall
+            // Nested rows can reflow after their first layout at the Loader's width.
+            onPositioningComplete: gameHistoryScreen.restorePosition()
 
             Repeater {
+                id: historyRows
                 model: gameHistoryScreen.games
 
                 Rectangle {

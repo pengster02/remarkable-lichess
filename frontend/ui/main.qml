@@ -93,6 +93,10 @@ Rectangle {
                             request_id: root.pendingReview.id})
     }
 
+    function returnToGameHistory(visit) {
+        if (root.hasToken) screenLoader.setSource("GameHistoryScreen.qml", visit || {})
+    }
+
     function nextRequestId() {
         root.requestSequence += 1
         return root.requestSequence
@@ -450,7 +454,14 @@ Rectangle {
                     root.reviewFens = msg.fens || []
                     root.reviewClockMs = msg.clock_ms || []
                     root.reviewAnalysis = msg.analysis || []
-                    screenLoader.source = "GameReviewScreen.qml"
+                    var sourceScreen = screenLoader.item
+                    var visit = sourceScreen && sourceScreen.captureHistoryVisit
+                        ? sourceScreen.captureHistoryVisit() : null
+                    // Scope the return data to this replay. A root cache can reach
+                    // later visits, while saved settings would outlive sign-out.
+                    screenLoader.setSource("GameReviewScreen.qml", {
+                        returnToGameHistory: function() { root.returnToGameHistory(visit) }
+                    })
                 }
             } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" || msg.type === "AnalysisFailed" ||
                        msg.type === "CloudEvaluation" ||
