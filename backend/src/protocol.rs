@@ -35,27 +35,16 @@ pub(crate) struct FrontendRequest {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum FrontendMessage {
-    // Kicks off the QR sign-in (see lichess::oauth): the backend answers with a
-    // LoginChallenge to display, then a LoginCompleted/LoginFailed once the
-    // phone comes back. Sent automatically when the sign-in screen appears, and
-    // again whenever the user retries.
-    StartLogin,
-    CancelLogin,
-    // The sign-in flow finishes on a detached task, which can't reach the
-    // `&mut self` needed to install the client and start the account streams --
-    // so it only writes the token file and reports LoginCompleted, and the
-    // frontend replies with this to have it activated through the same path a
-    // restart already uses. Alternatives: (1) send the token itself back to the
-    // frontend and reuse SaveToken -- no new message, but it puts a live
-    // credential on the IPC channel for no reason; (2) hand the backend an
-    // internal channel to poll -- no round trip, but the AppLoad run loop only
-    // ever calls us on an incoming frontend message, so there's nowhere to poll
-    // it from.
-    ActivateSavedToken,
+    StartLogin { request_id: Option<u32> },
+    CancelLogin { request_id: Option<u32> },
+    // Confirm only the current screen's verified result. Installing from the
+    // worker can race a method switch; returning the token exposes a credential.
+    CompleteSignIn { request_id: u32 },
+    #[serde(alias = "ActivateSavedToken")]
     RetryAuthentication,
     // Still reachable behind "Enter a token instead" on the sign-in screen, for
     // networks where the phone can't reach this tablet (see LoginScreen.qml).
-    SaveToken { token: String },
+    SaveToken { token: String, request_id: Option<u32> },
     RequestHome { request_id: Option<u32> },
     // Attaches this specific game's stream if it isn't already being tracked --
     // replaces the old behavior of RequestHome always auto-attaching whichever
@@ -348,7 +337,11 @@ pub enum BackendMessage {
     AuthenticationRequired,
     AuthenticationCheckFailed { message: String },
     LogoutFailed { message: String },
-    TokenVerified { username: String },
+    TokenVerified {
+        username: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
     TokenInvalid { reason: String },
     // Everything the sign-in screen needs to draw itself. `authorize_url` is
     // shown as text too, not just encoded in the QR -- it's the only way in for
@@ -358,9 +351,16 @@ pub enum BackendMessage {
         qr_size: u32,
         qr_rows: Vec<String>,
         expires_in_secs: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
     },
-    LoginCompleted,
-    LoginFailed { reason: String },
+    LoginVerifying { request_id: u32 },
+    SignInReady { request_id: u32 },
+    LoginFailed {
+        reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
     // Separate replies let the game list appear while ratings load. One
     // combined reply blocks resume, and unscoped replies can replace newer data.
     HomeState {
@@ -661,6 +661,17 @@ mod tests {
             json,
             r#"{"type":"MoveSubmitted","game_id":"g1","from":"e7","to":"e8","promotion":"q"}"#
         );
+    }
+
+    #[test]
+    fn interactive_sign_in_confirms_a_verified_request_without_returning_the_token() {
+        let reply = serde_json::to_string(&BackendMessage::SignInReady { request_id: 31 }).unwrap();
+        assert_eq!(reply, r#"{"type":"SignInReady","request_id":31}"#);
+        let request = serde_json::from_str::<FrontendMessage>(
+            r#"{"type":"CompleteSignIn","request_id":31}"#,
+        ).unwrap();
+        assert_eq!(request, FrontendMessage::CompleteSignIn { request_id: 31 });
+        assert!(serde_json::from_str::<FrontendMessage>(r#"{"type":"CompleteSignIn"}"#).is_err());
     }
 
     #[test]

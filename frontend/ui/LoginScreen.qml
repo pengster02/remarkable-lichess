@@ -6,12 +6,11 @@ Rectangle {
     color: theme.background
     Theme { id: theme; darkMode: loginScreen.darkMode }
     property var backendSender
+    property var nextRequestId
     property bool darkMode: false
 
-    // Screen state, driven entirely by backend replies (see protocol.rs's
-    // LoginChallenge/LoginCompleted/LoginFailed). "starting" is the initial
-    // value because this screen asks for a challenge the moment it appears.
     property string phase: "starting"
+    property int signInRequestId: 0
     property string authorizeUrl: ""
     property var qrRows: []
     property int qrModules: 0
@@ -28,6 +27,7 @@ Rectangle {
     readonly property bool showingUrl: showingQr && authorizeUrl.length > 0
     readonly property bool showingTokenEntry: manualEntry
     readonly property bool keyboardActive: tokenField.activeFocus
+    readonly property bool manualPending: manualEntry && (phase === "verifying" || phase === "committing")
 
     function dismissKeyboard() {
         tokenField.focus = false
@@ -40,7 +40,12 @@ Rectangle {
     // GameHistoryScreen's note on the same hazard). This screen is the app's
     // entry point, so nothing else is around to kick the flow off for it.
     onBackendSenderChanged: {
-        if (loginScreen.backendSender) {
+        if (loginScreen.backendSender && loginScreen.nextRequestId && loginScreen.signInRequestId === 0) {
+            loginScreen.startLogin()
+        }
+    }
+    onNextRequestIdChanged: {
+        if (loginScreen.backendSender && loginScreen.nextRequestId && loginScreen.signInRequestId === 0) {
             loginScreen.startLogin()
         }
     }
@@ -135,6 +140,7 @@ Rectangle {
                     objectName: "manualEntryButton"
                     width: parent.width
                     text: "Enter a token instead"
+                    enabled: loginScreen.phase !== "committing"
                     onClicked: loginScreen.showManualEntry()
                 }
             }
@@ -142,7 +148,7 @@ Rectangle {
             SectionCard {
                 objectName: "tokenCard"
                 darkMode: loginScreen.darkMode
-                title: "Sign in with a personal access token"
+                title: "Personal access token"
                 width: parent.width
                 visible: loginScreen.showingTokenEntry
 
@@ -160,6 +166,9 @@ Rectangle {
                     width: parent.width
                     font.pixelSize: theme.fontLarge
                     placeholderText: "lip_..."
+                    echoMode: TextInput.Password
+                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                    readOnly: loginScreen.manualPending
                     Keys.onReturnPressed: loginScreen.saveToken()
                     Keys.onEnterPressed: loginScreen.saveToken()
                 }
@@ -182,8 +191,10 @@ Rectangle {
                 }
 
                 AppButton {
+                    objectName: "saveTokenButton"
                     width: parent.width
-                    text: "Save"
+                    text: loginScreen.manualPending ? "Verifying token…" : "Save"
+                    enabled: !loginScreen.manualPending
                     highlighted: true
                     onClicked: loginScreen.saveToken()
                 }
@@ -192,6 +203,7 @@ Rectangle {
                     objectName: "backToScanButton"
                     width: parent.width
                     text: "Scan a code instead"
+                    enabled: loginScreen.phase !== "committing"
                     onClicked: loginScreen.startLogin()
                 }
             }
@@ -200,15 +212,13 @@ Rectangle {
 
     function statusText() {
         if (loginScreen.phase === "starting") return "Preparing a sign-in code..."
-        if (loginScreen.phase === "verifying") return "Signing you in..."
+        if (loginScreen.phase === "verifying" || loginScreen.phase === "committing") return "Signing you in..."
         if (loginScreen.phase === "failed") return loginScreen.errorMessage
         return "Scan to sign in"
     }
 
     function startLogin() {
-        if (!loginScreen.backendSender) {
-            return
-        }
+        if (!loginScreen.backendSender || !loginScreen.nextRequestId || loginScreen.phase === "committing") return
         loginScreen.dismissKeyboard()
         loginScreen.manualEntry = false
         loginScreen.phase = "starting"
@@ -216,39 +226,67 @@ Rectangle {
         loginScreen.qrRows = []
         loginScreen.qrModules = 0
         loginScreen.authorizeUrl = ""
-        loginScreen.backendSender({type: "StartLogin"})
+        tokenField.text = ""
+        loginScreen.signInRequestId = loginScreen.nextRequestId()
+        loginScreen.backendSender({type: "StartLogin", request_id: loginScreen.signInRequestId})
     }
 
     // Stops the backend holding its callback port open for a sign-in nobody is
     // going to finish.
     function showManualEntry() {
+        if (loginScreen.manualEntry || loginScreen.phase === "committing") return
         loginScreen.dismissKeyboard()
-        loginScreen.backendSender({type: "CancelLogin"})
+        var request = loginScreen.signInRequestId
+        loginScreen.signInRequestId = 0
+        loginScreen.phase = "idle"
         loginScreen.errorMessage = ""
         loginScreen.manualEntry = true
+        if (request > 0) loginScreen.backendSender({type: "CancelLogin", request_id: request})
     }
 
     function saveToken() {
+        if (!loginScreen.manualEntry || loginScreen.manualPending) return
         loginScreen.dismissKeyboard()
+        var token = tokenField.text.trim()
+        if (token.length === 0) {
+            loginScreen.errorMessage = "Enter a personal access token."
+            return
+        }
         loginScreen.errorMessage = ""
-        loginScreen.backendSender({type: "SaveToken", token: tokenField.text})
+        loginScreen.phase = "verifying"
+        loginScreen.signInRequestId = loginScreen.nextRequestId()
+        loginScreen.backendSender({type: "SaveToken", token: token, request_id: loginScreen.signInRequestId})
+    }
+
+    function acceptsCommittedSignIn(msg) {
+        return loginScreen.phase === "committing" &&
+            loginScreen.signInRequestId > 0 && msg.request_id === loginScreen.signInRequestId
     }
 
     function handleMessage(msg) {
+        if (msg.type === "TokenInvalid") {
+            loginScreen.errorMessage = msg.reason || "Lichess rejected the sign-in."
+            return
+        }
+        if (loginScreen.signInRequestId === 0 || msg.request_id !== loginScreen.signInRequestId) return
         if (msg.type === "LoginChallenge") {
+            if (loginScreen.manualEntry || loginScreen.phase !== "starting") return
             loginScreen.authorizeUrl = msg.authorize_url || ""
             loginScreen.qrRows = msg.qr_rows || []
             loginScreen.qrModules = msg.qr_size || 0
             loginScreen.errorMessage = ""
             loginScreen.phase = "ready"
-        } else if (msg.type === "LoginCompleted") {
+        } else if (msg.type === "LoginVerifying") {
+            if (loginScreen.manualEntry || loginScreen.phase !== "ready") return
             loginScreen.phase = "verifying"
+        } else if (msg.type === "SignInReady") {
+            if (loginScreen.phase !== "verifying") return
+            loginScreen.phase = "committing"
+            loginScreen.backendSender({type: "CompleteSignIn", request_id: loginScreen.signInRequestId})
         } else if (msg.type === "LoginFailed") {
             loginScreen.errorMessage = msg.reason || "Sign-in failed"
             loginScreen.phase = "failed"
-        } else if (msg.type === "TokenInvalid") {
-            loginScreen.errorMessage = "Token rejected: " + msg.reason
-            loginScreen.phase = "failed"
+            loginScreen.signInRequestId = 0
         }
     }
 }

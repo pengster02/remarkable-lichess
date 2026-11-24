@@ -9,6 +9,7 @@ TestCase {
     height: 1696
 
     property var sent: []
+    property int sequence: 0
 
     Theme {
         id: theme
@@ -30,6 +31,7 @@ TestCase {
         width: 960
         height: 1696
         backendSender: function(msg) { sent.push(msg) }
+        nextRequestId: function() { return ++sequence }
     }
 
     function challenge(size) {
@@ -46,12 +48,14 @@ TestCase {
             authorize_url: "https://lichess.org/oauth?response_type=code&client_id=remarkable-lichess",
             qr_size: size,
             qr_rows: rows,
-            expires_in_secs: 300
+            expires_in_secs: 300,
+            request_id: login.signInRequestId
         }
     }
 
     function init() {
         login.darkMode = false
+        login.phase = "idle"
         login.startLogin()
         sent = []
     }
@@ -62,9 +66,11 @@ TestCase {
         var fresh = []
         var screen = createTemporaryObject(freshLogin, login)
         verify(screen !== null)
+        screen.nextRequestId = function() { return ++sequence }
         screen.backendSender = function(msg) { fresh.push(msg) }
         compare(fresh.length, 1)
         compare(fresh[0].type, "StartLogin")
+        verify(fresh[0].request_id > 0)
     }
 
     function test_challengeRendersAScannableQr() {
@@ -121,7 +127,8 @@ TestCase {
     function test_adjacentDarkModulesMergeIntoOneFill() {
         var solid = {
             type: "LoginChallenge", authorize_url: "https://lichess.org/oauth",
-            qr_size: 4, qr_rows: ["1111", "0000", "1100", "1011"], expires_in_secs: 300
+            qr_size: 4, qr_rows: ["1111", "0000", "1100", "1011"], expires_in_secs: 300,
+            request_id: login.signInRequestId
         }
         login.handleMessage(solid)
         var qr = findChild(login, "loginQrCode")
@@ -158,7 +165,8 @@ TestCase {
     }
 
     function test_failureExplainsItselfAndOffersARetry() {
-        login.handleMessage({type: "LoginFailed", reason: "this reMarkable isn't on a Wi-Fi network yet"})
+        login.handleMessage({type: "LoginFailed", reason: "this reMarkable isn't on a Wi-Fi network yet",
+                             request_id: login.signInRequestId})
         compare(login.phase, "failed")
         verify(!login.showingQr)
         verify(login.showingRetry)
@@ -176,9 +184,11 @@ TestCase {
         login.handleMessage(challenge(21))
         var manual = findChild(login, "manualEntryButton")
         verify(manual !== null)
+        var request = login.signInRequestId
         manual.clicked()
         compare(sent.length, 1)
         compare(sent[0].type, "CancelLogin")
+        compare(sent[0].request_id, request)
         verify(login.showingTokenEntry)
         verify(!login.showingQr)
     }
@@ -199,17 +209,41 @@ TestCase {
     }
 
     function test_rejectedTokenSurfacesTheReason() {
-        login.handleMessage({type: "TokenInvalid", reason: "Unauthorized"})
+        login.showManualEntry()
+        findChild(login, "tokenField").text = "fixture"
+        login.saveToken()
+        login.handleMessage({type: "LoginFailed", reason: "Unauthorized", request_id: login.signInRequestId})
         compare(login.phase, "failed")
         verify(login.errorMessage.indexOf("Unauthorized") !== -1)
     }
 
     function test_completedSignInShowsProgressRatherThanTheQr() {
         login.handleMessage(challenge(21))
-        login.handleMessage({type: "LoginCompleted"})
+        login.handleMessage({type: "LoginVerifying", request_id: login.signInRequestId})
         compare(login.phase, "verifying")
         verify(!login.showingQr)
         verify(login.statusText().indexOf("Signing you in") !== -1)
+    }
+
+    function test_manualVerificationBlocksDuplicatesAndKeepsMethodSwitchAvailable() {
+        login.showManualEntry()
+        findChild(login, "tokenField").text = " fixture "
+        var save = findChild(login, "saveTokenButton")
+        var scan = findChild(login, "backToScanButton")
+        save.clicked()
+        var request = login.signInRequestId
+        compare(sent[sent.length - 1], {type: "SaveToken", token: "fixture", request_id: request})
+        verify(!save.enabled && scan.enabled)
+        var count = sent.length
+        login.saveToken()
+        compare(sent.length, count)
+
+        login.handleMessage({type: "SignInReady", request_id: request})
+        compare(sent[sent.length - 1], {type: "CompleteSignIn", request_id: request})
+        verify(!scan.enabled)
+        login.handleMessage({type: "LoginFailed", reason: "Could not save", request_id: request})
+        verify(save.enabled && scan.enabled)
+        compare(login.errorMessage, "Could not save")
     }
 
     function test_startingOverClearsTheExpiredCode() {
