@@ -202,9 +202,7 @@ Rectangle {
             previousFen: previousFen,
             pieces: pieces,
             previousPieces: previousPieces,
-            lastMove: previousFen.length > 0
-                ? gameReviewScreen.squareLookup(gameReviewScreen.changedSquares(previousPieces, pieces))
-                : {},
+            lastMove: gameReviewScreen.squareLookup(chessDisplay.moveEndpoints(previousFen, previousPieces, pieces)),
             checkedKing: gameReviewScreen.checkedKingSquare(fen, pieces)
         }
     }

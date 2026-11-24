@@ -1172,6 +1172,41 @@ TestCase {
         compare(review.flashSquares.slice().sort(), data.highlights ? ["e2", "e4", "e5", "e7"] : ["e5", "e7"])
     }
 
+    function test_specialMoveReplayHighlightsEndpointsAndRefreshesEveryChangedPiece() {
+        var beforeCastle = "4k3/8/8/8/8/8/8/4K2R w K - 0 1"
+        var afterCastle = "4k3/8/8/8/8/8/8/5RK1 b - - 1 1"
+        var afterReply = "8/3k4/8/8/8/8/8/5RK1 w - - 2 2"
+        app.openGame("castle-history")
+        var snapshot = boardState("castle-history")
+        snapshot.fen = afterReply
+        snapshot.position_history = [beforeCastle, afterCastle, afterReply]
+        snapshot.move_history = ["O-O", "Kd7"]
+        snapshot.last_move = ["e8", "d7"]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.showHistoryPosition(0)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+        board.showHistoryPosition(1)
+        compare(board.flashSquares.slice().sort(), ["e1", "f1", "g1", "h1"])
+        verify(findChild(board, "boardSquare-e1").isLastMove)
+        verify(findChild(board, "boardSquare-g1").isLastMove)
+        verify(!findChild(board, "boardSquare-f1").isLastMove)
+        verify(!findChild(board, "boardSquare-h1").isLastMove)
+
+        var beforeCapture = "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 4"
+        var afterCapture = "4k3/8/3P4/8/8/8/8/4K3 b - - 0 4"
+        app.navigateTo("GameHistoryScreen.qml")
+        var requestId = choose("en-passant-history")
+        endpoint.reply({type: "GameMoves", request_id: requestId,
+                        fens: [beforeCapture, afterCapture], moves: ["exd6"]})
+        var review = screen.item
+        review.goNext()
+        compare(review.flashSquares.slice().sort(), ["d5", "d6", "e5"])
+        verify(findChild(review, "boardSquare-e5").isLastMove)
+        verify(findChild(review, "boardSquare-d6").isLastMove)
+        verify(!findChild(review, "boardSquare-d5").isLastMove)
+    }
+
     function test_exploreRefreshTracksTheCheckedKingWithoutPieceChanges() {
         var fen = "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1"
         var requestId = choose("check-refresh")

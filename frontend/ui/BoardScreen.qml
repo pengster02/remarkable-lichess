@@ -648,9 +648,10 @@ Rectangle {
         if (!boardScreen.highlightLastMove) return []
         if (!boardScreen.isViewingHistory()) return boardScreen.lastMove || []
         if (boardScreen.historyIndex === 0) return []
-        return boardScreen.changedSquaresBetweenFens(
-            boardScreen.positionHistory[boardScreen.historyIndex - 1],
-            boardScreen.fen
+        var previousFen = boardScreen.positionHistory[boardScreen.historyIndex - 1]
+        return chessDisplay.moveEndpoints(previousFen,
+            boardScreen.buildPieceMap(previousFen),
+            boardScreen.buildPieceMap(boardScreen.fen)
         )
     }
 
