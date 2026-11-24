@@ -303,7 +303,10 @@ TestCase {
         endpoint.reply({type: "SeekEnded", request_id: first})
         compare(screen.item.waitingLabel, "Checking for a match...")
         tryCompare(screen.item, "waiting", false, 6500)
-        verify(screen.item.formError.indexOf("Opponent search ended") === 0)
+        verify(findChild(screen.item, "seekEndedNotice").visible)
+        var pager = findChild(screen.item, "seekFlickable")
+        var retry = findChild(screen.item, "findOpponentButton")
+        tryVerify(function() { return retry.mapToItem(pager, 0, retry.height).y <= pager.pageHeight })
 
         screen.item.submitSeek()
         var second = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id

@@ -29,6 +29,7 @@ Rectangle {
     property string waitingChallengeGameId: ""
     property int seekRequestId: 0
     property string seekMatchBeforeAckId: ""
+    property bool seekEnded: false
     property string formError: ""
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
@@ -41,7 +42,7 @@ Rectangle {
         interval: 5000
         onTriggered: {
             seekScreen.clearWaiting()
-            seekScreen.formError = "Opponent search ended. Check Home for a game or try again."
+            seekScreen.seekEnded = true
         }
     }
 
@@ -92,6 +93,7 @@ Rectangle {
         // 60s cap hides valid seeks, while separate duplicate forms add drift.
         if (pendingAction.length > 0 || !validateTimeControl(180)) return
         dismissKeyboard()
+        seekEnded = false
         seekRequestId = nextRequestId()
         seekMatchBeforeAckId = ""
         pendingAction = "seek"
@@ -327,6 +329,17 @@ Rectangle {
                 wrapMode: Text.WordWrap
                 color: theme.errorText
             }
+        }
+
+        Text {
+            objectName: "seekEndedNotice"
+            width: parent.width
+            visible: seekScreen.seekEnded && !seekScreen.waiting &&
+                seekScreen.pendingAction.length === 0 && seekScreen.formError.length === 0
+            text: "Search ended. Check Home for a match."
+            wrapMode: Text.WordWrap
+            font.pixelSize: theme.fontLabel
+            color: theme.textMuted
         }
 
         AppButton {
