@@ -307,8 +307,10 @@ TestCase {
         var pager = findChild(screen.item, "seekFlickable")
         var retry = findChild(screen.item, "findOpponentButton")
         tryVerify(function() { return retry.mapToItem(pager, 0, retry.height).y <= pager.pageHeight })
+        compare(retry.text, "Search again")
+        verify(findChild(screen.item, "editSeekSetupButton").visible)
 
-        screen.item.submitSeek()
+        retry.clicked()
         var second = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
         verify(first !== second)
         endpoint.reply({type: "SeekCreated", request_id: second})

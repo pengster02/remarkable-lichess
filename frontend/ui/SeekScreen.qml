@@ -30,6 +30,7 @@ Rectangle {
     property int seekRequestId: 0
     property string seekMatchBeforeAckId: ""
     property bool seekEnded: false
+    readonly property bool showingSetup: !waiting && !seekEnded
     property string formError: ""
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
@@ -93,7 +94,6 @@ Rectangle {
         // 60s cap hides valid seeks, while separate duplicate forms add drift.
         if (pendingAction.length > 0 || !validateTimeControl(180)) return
         dismissKeyboard()
-        seekEnded = false
         seekRequestId = nextRequestId()
         seekMatchBeforeAckId = ""
         pendingAction = "seek"
@@ -205,9 +205,7 @@ Rectangle {
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: seekColumn.height
         onPageNavigationRequested: seekScreen.dismissKeyboard()
-        pageStops: seekScreen.waiting
-            ? [0]
-            : [0, playerChallengeSection.y]
+        pageStops: seekScreen.showingSetup ? [0, playerChallengeSection.y] : [0]
 
     Column {
         id: seekColumn
@@ -227,7 +225,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             compact: true
             title: "Time control"
-            visible: !seekScreen.waiting
+            visible: seekScreen.showingSetup
 
             Text {
                 objectName: "timeControlSummary"
@@ -283,7 +281,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             compact: true
             title: "Game preferences"
-            visible: !seekScreen.waiting
+            visible: seekScreen.showingSetup
 
             Text { text: "Game type"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
             SegmentedControl {
@@ -319,7 +317,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             compact: true
             title: "Check game setup"
-            visible: seekScreen.formError.length > 0
+            visible: seekScreen.showingSetup && seekScreen.formError.length > 0
 
             Text {
                 objectName: "seekErrorText"
@@ -334,8 +332,7 @@ Rectangle {
         Text {
             objectName: "seekEndedNotice"
             width: parent.width
-            visible: seekScreen.seekEnded && !seekScreen.waiting &&
-                seekScreen.pendingAction.length === 0 && seekScreen.formError.length === 0
+            visible: seekScreen.seekEnded
             text: "Search ended. Check Home for a match."
             wrapMode: Text.WordWrap
             font.pixelSize: theme.fontLabel
@@ -347,11 +344,20 @@ Rectangle {
             objectName: "findOpponentButton"
             text: seekScreen.pendingAction === "seek"
                 ? "Finding an opponent…"
-                : "Find an opponent"
+                : (seekScreen.seekEnded ? "Search again" : "Find an opponent")
             highlighted: true
             visible: !seekScreen.waiting
             enabled: seekScreen.pendingAction.length === 0
             onClicked: seekScreen.submitSeek()
+        }
+
+        AppButton {
+            width: parent.width
+            objectName: "editSeekSetupButton"
+            text: "Edit game setup"
+            visible: seekScreen.seekEnded
+            enabled: seekScreen.pendingAction.length === 0
+            onClicked: seekScreen.seekEnded = false
         }
 
         SectionCard {
@@ -361,7 +367,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             compact: true
             title: "Challenge a player"
-            visible: !seekScreen.waiting
+            visible: seekScreen.showingSetup
             AppTextField {
                 id: usernameField
                 objectName: "usernameField"
@@ -393,13 +399,13 @@ Rectangle {
             text: seekScreen.pendingAction === "open"
                 ? "Creating link…"
                 : "Create a shareable challenge"
-            visible: !seekScreen.waiting && seekScreen.openChallengeUrls === null
+            visible: seekScreen.showingSetup && seekScreen.openChallengeUrls === null
             enabled: seekScreen.pendingAction.length === 0
             onClicked: seekScreen.submitOpenChallenge()
         }
 
         Column {
-            visible: seekScreen.openChallengeUrls !== null
+            visible: !seekScreen.seekEnded && seekScreen.openChallengeUrls !== null
             width: parent.width
             spacing: theme.spacingSmall
 
@@ -437,7 +443,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             compact: true
             title: "Play the computer"
-            visible: !seekScreen.waiting
+            visible: seekScreen.showingSetup
             Row {
                 width: parent.width
                 spacing: theme.spacingSmall
@@ -490,6 +496,7 @@ Rectangle {
             if (seekScreen.pendingAction !== "seek" || msg.request_id !== seekScreen.seekRequestId) return
             seekScreen.pendingAction = ""
             seekScreen.formError = ""
+            seekScreen.seekEnded = false
             seekScreen.waiting = true
             seekScreen.waitingLabel = "Waiting for an opponent..."
             if (seekScreen.seekMatchBeforeAckId) seekScreen.openGame(seekScreen.seekMatchBeforeAckId)
@@ -497,6 +504,7 @@ Rectangle {
             if (seekScreen.pendingAction !== "seek" || msg.request_id !== seekScreen.seekRequestId) return
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
+            seekScreen.seekEnded = false
             seekScreen.formError = msg.message || "Lichess could not find an opponent."
         } else if (msg.type === "SeekEnded") {
             if (!seekScreen.waiting || msg.request_id !== seekScreen.seekRequestId) return
