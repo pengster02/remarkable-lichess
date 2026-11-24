@@ -2310,13 +2310,14 @@ mod history_summary_tests {
 
     #[test]
     fn your_analysis_is_read_from_your_own_side_and_none_when_this_game_was_never_analyzed() {
-        let summary_stats = PlayerAnalysisSummary { inaccuracy: 5, mistake: 2, blunder: 1, acpl: 26, accuracy: Some(90) };
+        let summary_stats = PlayerAnalysisSummary { inaccuracy: 5, mistake: 2, blunder: 1, acpl: Some(26), accuracy: Some(90) };
         let analyzed = history_game_to_summary(
             game(human_with_analysis("myuser", "MyUser", 1500, summary_stats), human("bob", "Bob", 1480)),
             "myuser",
         );
         let your_analysis = analyzed.your_analysis.unwrap();
         assert_eq!(your_analysis.blunders, 1);
+        assert_eq!(your_analysis.acpl, Some(26));
         assert_eq!(your_analysis.accuracy, Some(90));
 
         let unanalyzed =

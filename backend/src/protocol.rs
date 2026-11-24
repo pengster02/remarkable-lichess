@@ -284,7 +284,7 @@ pub struct GameAnalysisSummary {
     pub inaccuracies: u32,
     pub mistakes: u32,
     pub blunders: u32,
-    pub acpl: u32,
+    pub acpl: Option<u32>,
     pub accuracy: Option<u32>,
 }
 
