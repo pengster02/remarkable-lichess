@@ -619,11 +619,20 @@ impl LichessBackend {
         );
     }
 
-    fn handle_request_analysis_position(&self, replier: &BackendReplier<Self>, fen: String) {
+    fn send_analysis_failure(&self, replier: &BackendReplier<Self>, request_id: Option<u32>, message: String) {
+        let reply = match request_id {
+            Some(request_id) => BackendMessage::AnalysisFailed { request_id, message },
+            None => BackendMessage::ErrorMsg { message },
+        };
+        self.send(replier, &reply);
+    }
+
+    fn handle_request_analysis_position(&self, replier: &BackendReplier<Self>, fen: String, request_id: Option<u32>) {
         match analysis_position(&fen) {
             Ok((normalized_fen, legal_moves, in_check, status)) => self.send(
                 replier,
                 &BackendMessage::AnalysisPosition {
+                    request_id,
                     requested_fen: fen,
                     fen: normalized_fen,
                     legal_moves: legal_moves.into_boxed_slice(),
@@ -631,9 +640,10 @@ impl LichessBackend {
                     status,
                 },
             ),
-            Err(error) => self.send(
+            Err(error) => self.send_analysis_failure(
                 replier,
-                &BackendMessage::ErrorMsg { message: format!("invalid analysis position: {error}") },
+                request_id,
+                format!("Invalid analysis position: {error}"),
             ),
         }
     }
@@ -645,11 +655,13 @@ impl LichessBackend {
         from: String,
         to: String,
         promotion: Option<String>,
+        request_id: Option<u32>,
     ) {
         match apply_analysis_move(&fen, &from, &to, promotion.as_deref()) {
             Ok((next_fen, san, legal_moves, in_check, status)) => self.send(
                 replier,
                 &BackendMessage::AnalysisMove {
+                    request_id,
                     from_fen: fen,
                     fen: next_fen,
                     san,
@@ -658,9 +670,10 @@ impl LichessBackend {
                     status,
                 },
             ),
-            Err(error) => self.send(
+            Err(error) => self.send_analysis_failure(
                 replier,
-                &BackendMessage::ErrorMsg { message: format!("analysis move rejected: {error}") },
+                request_id,
+                format!("Analysis move rejected: {error}"),
             ),
         }
     }
@@ -1437,11 +1450,11 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::RequestCloudEvaluation { fen } => {
                 self.handle_request_cloud_evaluation(replier, fen).await
             }
-            FrontendMessage::RequestAnalysisPosition { fen } => {
-                self.handle_request_analysis_position(replier, fen)
+            FrontendMessage::RequestAnalysisPosition { fen, request_id } => {
+                self.handle_request_analysis_position(replier, fen, request_id)
             }
-            FrontendMessage::MakeAnalysisMove { fen, from, to, promotion } => {
-                self.handle_make_analysis_move(replier, fen, from, to, promotion)
+            FrontendMessage::MakeAnalysisMove { fen, from, to, promotion, request_id } => {
+                self.handle_make_analysis_move(replier, fen, from, to, promotion, request_id)
             }
         }
     }

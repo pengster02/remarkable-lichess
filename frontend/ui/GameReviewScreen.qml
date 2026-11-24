@@ -90,6 +90,8 @@ Rectangle {
     property string exploreStatus: ""
     property bool exploreInCheck: false
     property string exploreStatusCode: "playing"
+    property var nextRequestId
+    property int pendingAnalysisRequestId: 0
     property var cloudEvaluations: ({})
     property var cloudEvaluationUnavailable: ({})
     property string cloudEvaluationPendingFen: ""
@@ -320,18 +322,13 @@ Rectangle {
     }
 
     function requestExplorationMove(from, to) {
+        if (gameReviewScreen.pendingAnalysisRequestId !== 0) return false
         if (gameReviewScreen.destinationsFrom(from).indexOf(to) === -1) return false
         var promotions = gameReviewScreen.promotionOptionsFor(from, to)
         if (promotions.length > 0) {
             gameReviewScreen.pendingPromotion = {from: from, to: to, options: promotions}
         } else {
-            gameReviewScreen.backendSender({
-                type: "MakeAnalysisMove",
-                fen: gameReviewScreen.exploreFen,
-                from: from,
-                to: to,
-                promotion: null
-            })
+            gameReviewScreen.submitExplorationMove(from, to, null)
         }
         gameReviewScreen.selectedSquare = ""
         return true
@@ -339,6 +336,7 @@ Rectangle {
 
     function onExplorationGesture(from, to) {
         if (!gameReviewScreen.exploreMode || from.length === 0 || to.length === 0) return
+        if (gameReviewScreen.pendingAnalysisRequestId !== 0) return
         if (from !== to && gameReviewScreen.requestExplorationMove(from, to)) return
         if (gameReviewScreen.selectedSquare.length > 0) {
             if (gameReviewScreen.selectedSquare === to) {
@@ -358,13 +356,29 @@ Rectangle {
         gameReviewScreen.exploreFen = base
         gameReviewScreen.variationFens = [base]
         gameReviewScreen.variationMoves = []
+        gameReviewScreen.loadExplorationPosition()
+    }
+
+    function loadExplorationPosition() {
         gameReviewScreen.exploreLegalMoves = []
         gameReviewScreen.selectedSquare = ""
         gameReviewScreen.pendingPromotion = null
-        gameReviewScreen.exploreStatus = "Loading legal moves..."
         gameReviewScreen.exploreInCheck = false
         gameReviewScreen.exploreStatusCode = "playing"
-        gameReviewScreen.backendSender({type: "RequestAnalysisPosition", fen: base})
+        gameReviewScreen.sendAnalysisRequest({type: "RequestAnalysisPosition", fen: gameReviewScreen.exploreFen},
+                                              "Loading legal moves...")
+    }
+
+    function sendAnalysisRequest(message, status) {
+        gameReviewScreen.pendingAnalysisRequestId = gameReviewScreen.nextRequestId()
+        gameReviewScreen.exploreStatus = status
+        message.request_id = gameReviewScreen.pendingAnalysisRequestId
+        gameReviewScreen.backendSender(message)
+    }
+
+    function submitExplorationMove(from, to, promotion) {
+        gameReviewScreen.sendAnalysisRequest({type: "MakeAnalysisMove", fen: gameReviewScreen.exploreFen,
+                                              from: from, to: to, promotion: promotion}, "Applying move...")
     }
 
     function beginExploration() {
@@ -374,6 +388,7 @@ Rectangle {
 
     function stopExploration() {
         gameReviewScreen.exploreMode = false
+        gameReviewScreen.pendingAnalysisRequestId = 0
         gameReviewScreen.exploreFen = ""
         gameReviewScreen.exploreLegalMoves = []
         gameReviewScreen.variationFens = []
@@ -398,15 +413,7 @@ Rectangle {
         gameReviewScreen.variationFens = nextFens
         gameReviewScreen.variationMoves = nextMoves
         gameReviewScreen.exploreFen = nextFens[nextFens.length - 1]
-        gameReviewScreen.exploreLegalMoves = []
-        gameReviewScreen.selectedSquare = ""
-        gameReviewScreen.exploreStatus = "Loading legal moves..."
-        gameReviewScreen.exploreInCheck = false
-        gameReviewScreen.exploreStatusCode = "playing"
-        gameReviewScreen.backendSender({
-            type: "RequestAnalysisPosition",
-            fen: gameReviewScreen.exploreFen
-        })
+        gameReviewScreen.loadExplorationPosition()
     }
 
     // `analysis` may be shorter than `moves` or empty.
@@ -973,20 +980,16 @@ Rectangle {
             var from = gameReviewScreen.pendingPromotion.from
             var to = gameReviewScreen.pendingPromotion.to
             gameReviewScreen.pendingPromotion = null
-            gameReviewScreen.backendSender({
-                type: "MakeAnalysisMove",
-                fen: gameReviewScreen.exploreFen,
-                from: from,
-                to: to,
-                promotion: piece
-            })
+            gameReviewScreen.submitExplorationMove(from, to, piece)
         }
     }
 
     function handleMessage(msg) {
         if (msg.type === "AnalysisPosition") {
             if (!gameReviewScreen.exploreMode ||
+                    msg.request_id !== gameReviewScreen.pendingAnalysisRequestId ||
                     msg.requested_fen !== gameReviewScreen.exploreFen) return
+            gameReviewScreen.pendingAnalysisRequestId = 0
             var normalized = []
             for (var i = 0; i < gameReviewScreen.variationFens.length; i++) {
                 normalized.push(i === gameReviewScreen.variationFens.length - 1
@@ -1001,7 +1004,9 @@ Rectangle {
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
         } else if (msg.type === "AnalysisMove") {
             if (!gameReviewScreen.exploreMode ||
+                    msg.request_id !== gameReviewScreen.pendingAnalysisRequestId ||
                     msg.from_fen !== gameReviewScreen.exploreFen) return
+            gameReviewScreen.pendingAnalysisRequestId = 0
             var nextFens = []
             var nextMoves = []
             for (var j = 0; j < gameReviewScreen.variationFens.length; j++) {
@@ -1046,8 +1051,11 @@ Rectangle {
             }
             gameReviewScreen.cloudEvaluationErrorFen = msg.requested_fen
             gameReviewScreen.cloudEvaluationError = msg.message || "unknown error"
-        } else if (msg.type === "ErrorMsg" && gameReviewScreen.exploreMode) {
-            gameReviewScreen.exploreStatus = msg.message
+        } else if (msg.type === "AnalysisFailed") {
+            if (gameReviewScreen.exploreMode && msg.request_id === gameReviewScreen.pendingAnalysisRequestId) {
+                gameReviewScreen.pendingAnalysisRequestId = 0
+                gameReviewScreen.exploreStatus = msg.message
+            }
         }
     }
 }
