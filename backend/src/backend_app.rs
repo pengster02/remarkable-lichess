@@ -379,15 +379,31 @@ impl LichessBackend {
     /// independent of `self.session` (which models the *live*, currently
     /// in-progress game, if any) so reviewing an old game can never disturb
     /// whatever's actually being played right now.
-    async fn handle_request_game_moves(&mut self, replier: &BackendReplier<Self>, game_id: String) {
+    async fn handle_request_game_moves(
+        &self,
+        replier: &BackendReplier<Self>,
+        game_id: String,
+        request_id: Option<u32>,
+    ) {
+        let fail = |message| {
+            let reply = match request_id {
+                Some(request_id) => BackendMessage::GameMovesFailed { request_id, message },
+                None => BackendMessage::ErrorMsg { message },
+            };
+            self.send(replier, &reply);
+        };
         let Some(client) = self.client.clone() else {
-            self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+            if request_id.is_some() {
+                fail("Not signed in to Lichess".into());
+            } else {
+                self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+            }
             return;
         };
         let export = match client.export_game(&game_id).await {
             Ok(export) => export,
             Err(e) => {
-                self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                fail(e.to_string());
                 return;
             }
         };
@@ -407,8 +423,8 @@ impl LichessBackend {
             })
             .collect();
         match crate::game::replay::fens_for_moves(&moves) {
-            Ok(fens) => self.send(replier, &BackendMessage::GameMoves { moves, fens, clock_ms, analysis }),
-            Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: format!("replaying game moves: {e}") }),
+            Ok(fens) => self.send(replier, &BackendMessage::GameMoves { request_id, moves, fens, clock_ms, analysis }),
+            Err(e) => fail(format!("replaying game moves: {e}")),
         }
     }
 
@@ -1351,8 +1367,8 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::CreateOpenChallenge { minutes, increment, rated } => {
                 self.handle_create_open_challenge(replier, minutes, increment, rated).await
             }
-            FrontendMessage::RequestGameMoves { game_id } => {
-                self.handle_request_game_moves(replier, game_id).await
+            FrontendMessage::RequestGameMoves { game_id, request_id } => {
+                self.handle_request_game_moves(replier, game_id, request_id).await
             }
             FrontendMessage::RequestCloudEvaluation { fen } => {
                 self.handle_request_cloud_evaluation(replier, fen).await

@@ -14,6 +14,7 @@ Rectangle {
     property var backendSender
     property var navigateTo
     property var openGameReview: function() {}
+    property bool openingReview: false
     property bool darkMode: false
     property string boardTheme: "brown"
     property string pieceSet: "cburnett"
@@ -1186,7 +1187,8 @@ Rectangle {
 
         AppButton {
             width: parent.width
-            text: "Review this game"
+            text: boardScreen.openingReview ? "Opening game…" : "Review this game"
+            enabled: !boardScreen.openingReview
             highlighted: true
             visible: boardScreen.gameOver && boardScreen.gameId.length > 0
             onClicked: boardScreen.openGameReview(boardScreen.gameId, {
@@ -1572,7 +1574,8 @@ Rectangle {
                 }
                 AppButton {
                     width: parent.width
-                    text: "Review game"
+                    text: boardScreen.openingReview ? "Opening game…" : "Review game"
+                    enabled: !boardScreen.openingReview
                     visible: boardScreen.gameId.length > 0
                     onClicked: {
                         boardScreen.showGameOverDialog = false
@@ -1861,6 +1864,8 @@ Rectangle {
         } else if (msg.type === "OpponentGone") {
             boardScreen.opponentGone = msg.gone
             boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
+        } else if (msg.type === "GameMovesFailed") {
+            boardScreen.statusText = msg.message
         } else if (msg.type === "ErrorMsg") {
             // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
             // possible") only ever reached main.qml's console.warn -- invisible

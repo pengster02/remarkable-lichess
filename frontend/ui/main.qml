@@ -47,6 +47,10 @@ Rectangle {
     // way GameReviewScreen's header gets to show who was played and how it
     // ended, not just a bare, contextless board.
     property var reviewGame: null
+    // A sequence ID distinguishes retries of the same game. A game ID alone would
+    // accept old retries, and blocking all taps would prevent changing selection.
+    property int reviewRequestSequence: 0
+    property var pendingReview: null
 
     // Connectivity lives at the root (not per-screen) so the persistent top bar
     // can show it on every screen -- fed by the backend's ConnectivityState (see
@@ -75,8 +79,11 @@ Rectangle {
     }
 
     function openGameReview(gameId, game) {
-        root.reviewGame = game || null
-        root.sendToBackend({type: "RequestGameMoves", game_id: gameId})
+        if (root.pendingReview && root.pendingReview.gameId === gameId) return
+        root.reviewRequestSequence += 1
+        root.pendingReview = {id: root.reviewRequestSequence, gameId: gameId, game: game || null}
+        root.sendToBackend({type: "RequestGameMoves", game_id: gameId,
+                            request_id: root.pendingReview.id})
     }
 
     function expectNextGame(gameId) {
@@ -329,15 +336,20 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "GameMoves") {
-                // Only reachable from GameHistoryScreen's RequestGameMoves -- an
-                // ErrorMsg reply instead (bad export/replay) leaves the source
-                // unchanged, so GameHistoryScreen stays up and shows it inline.
-                root.reviewMoves = msg.moves || []
-                root.reviewFens = msg.fens || []
-                root.reviewClockMs = msg.clock_ms || []
-                root.reviewAnalysis = msg.analysis || []
-                screenLoader.source = "GameReviewScreen.qml"
+            } else if (msg.type === "GameMoves" || msg.type === "GameMovesFailed") {
+                var request = root.pendingReview
+                if (!request || msg.request_id !== request.id) return
+                root.pendingReview = null
+                if (msg.type === "GameMovesFailed") {
+                    screenLoader.item.handleMessage(msg)
+                } else {
+                    root.reviewGame = request.game
+                    root.reviewMoves = msg.moves || []
+                    root.reviewFens = msg.fens || []
+                    root.reviewClockMs = msg.clock_ms || []
+                    root.reviewAnalysis = msg.analysis || []
+                    screenLoader.source = "GameReviewScreen.qml"
+                }
             } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" ||
                        msg.type === "CloudEvaluation" ||
                        msg.type === "CloudEvaluationUnavailable" ||
@@ -362,6 +374,9 @@ Rectangle {
                     root.expectedHomeGameId = ""
                     if (screenLoader.source.toString().indexOf("BoardScreen") === -1) {
                         screenLoader.source = "BoardScreen.qml"
+                    } else if (msg.type === "BoardState" && root.pendingReview &&
+                               root.pendingReview.gameId !== msg.game_id) {
+                        root.pendingReview = null
                     }
                     if (screenLoader.item && screenLoader.item.handleMessage) {
                         screenLoader.item.handleMessage(msg)
@@ -399,12 +414,14 @@ Rectangle {
 
     Loader {
         id: screenLoader
+        objectName: "screenLoader"
         // Sits below the persistent top bar so no screen underlaps it.
         anchors.top: topBar.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         source: "StartupScreen.qml"
+        onSourceChanged: root.pendingReview = null
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend
@@ -507,6 +524,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGameReview")) {
                 item.openGameReview = root.openGameReview
+            }
+            if (item.hasOwnProperty("openingReview")) {
+                item.openingReview = Qt.binding(function() { return root.pendingReview !== null })
             }
             if (item.hasOwnProperty("expectNextGame")) {
                 item.expectNextGame = root.expectNextGame

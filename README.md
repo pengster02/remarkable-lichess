@@ -293,7 +293,7 @@ build in a Linux container:
 cross check --features transport --target aarch64-unknown-linux-gnu
 ```
 
-QML lint and the 14 shared interaction test suites, using the emulator's Qt:
+QML lint and interaction tests, using the emulator's Qt:
 
 ```bash
 docker exec remarkable-lichess-local sh -lc \
@@ -305,7 +305,7 @@ docker exec remarkable-lichess-local sh -lc \
 docker exec remarkable-lichess-local sh -lc \
   'cd /workspace/remarkable-lichess &&
    QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner \
-   -input frontend/tests -import frontend/ui'
+   -input frontend/tests -import frontend/ui -import frontend/tests/imports'
 ```
 
 [`docs/DEVELOPER_HANDOFF.md`](docs/DEVELOPER_HANDOFF.md) carries a 14-step
