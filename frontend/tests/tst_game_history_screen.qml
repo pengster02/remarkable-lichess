@@ -26,6 +26,7 @@ TestCase {
         sentMessages = []
         selectedGame = null
         width = 954
+        height = 1696
         history.filterRated = "all"
         history.filterSpeed = "all"
         history.filterColor = "all"
@@ -100,13 +101,17 @@ TestCase {
         compare(history.games[0].game_id, "selected")
     }
 
-    function showGame(fields) {
+    function loadGames(games) {
         history.requestFiltered()
         var request = sentMessages[sentMessages.length - 1].request_id
+        history.handleMessage({type: "GameHistory", request_id: request,
+                               games: games})
+    }
+
+    function showGame(fields) {
         var game = {game_id: "selected", opponent_name: "Opponent", rated: true,
                     speed: "rapid", result: "win", termination: "Resignation"}
-        history.handleMessage({type: "GameHistory", request_id: request,
-                               games: [Object.assign(game, fields)]})
+        loadGames([Object.assign(game, fields)])
         var row = findChild(history, "historyGameRow")
         verify(row && waitForRendering(row))
         return row
@@ -169,5 +174,92 @@ TestCase {
         compare(analysis.text, data.text)
         verify(!findChild(row, "historyRatingChange").visible)
         verify(!findChild(row, "historyOpponentRating").visible)
+    }
+
+    function gamesForPaging(count, mixed, oversized) {
+        var games = []
+        for (var i = 0; i < count; i++) {
+            var game = {game_id: "archive-" + i, opponent_name: "Opponent " + i,
+                        opponent_rating: 1800, result: "win", termination: "Checkmate",
+                        speed: "rapid", rated: true}
+            if (mixed && i % 2 === 1) {
+                game.opponent_name = "WWWWWWWWWWWWWWWWWWWW"
+                game.result = "noStart"
+                game.opening_name = "Queen's Gambit Declined: Orthodox Defense, Main Line"
+                game.your_analysis = {accuracy: 91, blunders: 0, mistakes: 3}
+            }
+            if (oversized && (i === 4 || i === count - 1))
+                game.opening_name = "A long opening description with several words ".repeat(35)
+            games.push(game)
+        }
+        return games
+    }
+
+    function test_cardsFitOnReachablePages_data() {
+        return [
+            {tag: "ordinary tablet and uniform rows", width: 954, height: 1696,
+                mixed: false, oversized: false},
+            {tag: "compact viewport and wrapped details", width: 620, height: 1380,
+                mixed: true, oversized: false},
+            {tag: "oversized cards between and after shorter cards", width: 620, height: 1380,
+                mixed: true, oversized: true}
+        ]
+    }
+
+    function test_cardsFitOnReachablePages(data) {
+        width = data.width
+        height = data.height
+        loadGames(gamesForPaging(20, data.mixed, data.oversized))
+        var first = findChild(history, "historyGameRow")
+        verify(first && waitForRendering(first))
+        var rows = Array.prototype.filter.call(first.parent.children, function(child) {
+            return child.objectName === "historyGameRow"
+        })
+        compare(rows.length, 20)
+        var pager = findChild(history, "historyList")
+        var next = findChild(pager, "pageDownButton")
+        var previous = findChild(pager, "pageUpButton")
+        var number = findChild(pager, "pageNumber")
+        verify(next.visible && next.enabled)
+        if (data.mixed) verify(rows[1].height > rows[0].height)
+        compare(rows.some(function(row) { return row.height > pager.pageHeight }), data.oversized)
+
+        var stops = [0]
+        for (var page = 1; page < pager.pageCount; page++) {
+            verify(next.enabled)
+            next.clicked()
+            verify(pager.contentY > stops[page - 1])
+            verify(pager.contentY - stops[page - 1] <= pager.pageHeight + 0.01)
+            stops.push(pager.contentY)
+            compare(number.text, (page + 1) + " / " + pager.pageCount)
+        }
+        verify(!next.enabled)
+        fuzzyCompare(pager.contentY, pager.maximumContentY, 0.01)
+        for (var row of rows) {
+            if (row.height > pager.pageHeight) continue
+            verify(stops.some(function(y) {
+                return row.y >= y - 0.01 && row.y + row.height <= y + pager.pageHeight + 0.01
+            }), row.modelData.game_id + " is clipped on every page")
+        }
+        for (var index = stops.length - 2; index >= 0; index--) {
+            previous.clicked()
+            fuzzyCompare(pager.contentY, stops[index], 0.01)
+        }
+        verify(!previous.enabled)
+    }
+
+    function test_shorterResultsRemoveOldPageStops() {
+        var pager = findChild(history, "historyList")
+        var next = findChild(pager, "pageDownButton")
+        loadGames(gamesForPaging(20, false, false))
+        tryVerify(function() { return next.enabled && pager.pageStops.length > 0 })
+        next.clicked()
+        verify(pager.contentY > 0)
+
+        loadGames(gamesForPaging(2, false, false))
+        tryCompare(pager, "pageCount", 1)
+        tryCompare(pager, "pageStops", [])
+        verify(!next.visible)
+        compare(pager.contentY, 0)
     }
 }

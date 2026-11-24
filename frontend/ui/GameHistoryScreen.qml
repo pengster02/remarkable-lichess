@@ -76,6 +76,28 @@ Rectangle {
         if (row) historyList.moveTo(row.y + Math.min(position.inset, row.height - 1))
     }
 
+    function updateHistoryPageStops() {
+        if (!historyRows || !historyColumn) return
+        var pageHeight = historyList.pageHeight
+        var lastOrigin = Math.max(0, historyColumn.height - pageHeight)
+        var stops = []
+        var origin = 0
+        if (pageHeight >= 1) {
+            for (var index = 0; index < historyRows.count && origin < lastOrigin; index++) {
+                var row = historyRows.itemAt(index)
+                if (!row || row.y + row.height <= origin + pageHeight) continue
+                var nextOrigin = Math.min(row.y, lastOrigin)
+                if (nextOrigin > origin) {
+                    origin = nextOrigin
+                    stops.push(origin)
+                }
+            }
+        }
+        // Start at the first card that needs more room. Fixed strides can split
+        // a card on both pages, and a fixed card count ignores wrapped details.
+        historyList.pageStops = stops
+    }
+
     function requestFiltered() {
         if (!gameHistoryScreen.backendSender || !gameHistoryScreen.nextRequestId) return
         gameHistoryScreen.loading = true
@@ -209,6 +231,7 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: historyColumn.height
+        onPageHeightChanged: gameHistoryScreen.updateHistoryPageStops()
         onMaximumContentYChanged: gameHistoryScreen.restorePosition()
         onPageNavigationRequested: gameHistoryScreen.restoredPosition = null
 
@@ -217,7 +240,10 @@ Rectangle {
             width: parent.width
             spacing: theme.spacingSmall
             // Nested rows can reflow after their first layout at the Loader's width.
-            onPositioningComplete: gameHistoryScreen.restorePosition()
+            onPositioningComplete: {
+                gameHistoryScreen.updateHistoryPageStops()
+                gameHistoryScreen.restorePosition()
+            }
 
             Repeater {
                 id: historyRows
