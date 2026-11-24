@@ -103,8 +103,8 @@ pub fn load(path: &Path) -> AppSettings {
 }
 
 pub fn save(path: &Path, settings: &AppSettings) -> std::io::Result<()> {
-    let json = serde_json::to_string(&settings.clone().normalized()).expect("AppSettings always serializes");
-    std::fs::write(path, json)
+    let json = serde_json::to_vec(&settings.clone().normalized()).expect("AppSettings always serializes");
+    crate::storage::replace(path, &json)
 }
 
 #[cfg(test)]
@@ -202,6 +202,27 @@ mod tests {
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), settings);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_open_settings_reader_keeps_its_complete_previous_version() {
+        let path = std::env::temp_dir().join(format!(
+            "remarkable-lichess-settings-atomic-test-{}.json",
+            std::process::id()
+        ));
+        let previous = AppSettings::default();
+        save(&path, &previous).unwrap();
+        let existing_reader = std::fs::File::open(&path).unwrap();
+        let next = AppSettings {
+            premoves_enabled: true,
+            ..AppSettings::default()
+        };
+
+        save(&path, &next).unwrap();
+
+        assert_eq!(serde_json::from_reader::<_, AppSettings>(existing_reader).unwrap(), previous);
+        assert_eq!(load(&path), next);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

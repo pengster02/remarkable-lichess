@@ -8,6 +8,7 @@ pub mod protocol;
 pub mod lichess;
 pub mod game;
 pub mod settings;
+mod storage;
 
 #[cfg(any(feature = "transport", test))]
 pub mod credentials;
