@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -52,6 +52,11 @@ impl StreamReconnectDelay {
 struct GameStream {
     game_id: String,
     task: tokio::task::JoinHandle<()>,
+}
+
+struct AccountStream {
+    task: tokio::task::JoinHandle<()>,
+    challenge_refresh: mpsc::Sender<()>,
 }
 
 // Startup retries can reuse the saved sign-in. Sending every failure to OAuth
@@ -115,7 +120,7 @@ pub struct LichessBackend {
     // Lichess keeps the seek or direct challenge alive while this task holds
     // its response open. Closing the response cancels the outstanding request.
     pending_seek: Option<tokio::task::JoinHandle<()>>,
-    account_stream_handle: Option<tokio::task::JoinHandle<()>>,
+    account_stream: Option<AccountStream>,
     // The detached task waiting on the OAuth callback (see handle_start_login).
     // Held so CancelLogin -- and any restart of the flow -- can drop it, which
     // closes the listening port with it. Detached rather than awaited inline
@@ -146,7 +151,7 @@ impl LichessBackend {
             username: None,
             session: Arc::new(Mutex::new(None)),
             pending_seek: None,
-            account_stream_handle: None,
+            account_stream: None,
             login_handle: None,
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
@@ -760,7 +765,10 @@ impl LichessBackend {
 
     async fn stop_game_activity(&mut self) {
         stop_task(&mut self.pending_seek).await;
-        stop_task(&mut self.account_stream_handle).await;
+        if let Some(account) = self.account_stream.as_mut() {
+            abort_task(&mut account.task).await;
+            self.account_stream = None;
+        }
         self.stop_game_stream().await;
     }
 
@@ -912,59 +920,76 @@ impl LichessBackend {
     fn spawn_account_stream(&mut self, replier: BackendReplier<Self>) {
         let Some(client) = self.client.clone() else { return };
         let write_lock = self.write_lock.clone();
-        let handle = tokio::spawn(async move {
-            let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(30));
-            // Reconnect replays ongoing games. A per-connection set repeats old
-            // starts, and remembering every finished game grows without bound.
-            let mut announced_games = HashSet::new();
-            loop {
-                let mut received_for = Duration::ZERO;
-                if let Ok(mut lines) = client.stream_lines("/api/stream/event").await {
-                    let connected_at = Instant::now();
-                    while let Ok(Some(line)) =
-                        next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
-                    {
-                        received_for = connected_at.elapsed();
-                        match parse_ndjson_line::<EventStreamMessage>(&line) {
-                                Some(EventStreamMessage::GameStart { game }) => {
-                                    if !announced_games.insert(game.id.clone()) {
-                                        continue;
-                                    }
-                                    // Real-time seeks return no game ID. Match lobby/pool
-                                    // events, since using any start can open a challenge
-                                    // and requiring all seekers to Resume adds a tap.
-                                    let from_realtime_lobby =
-                                        matches!(game.source.as_deref(), Some("lobby" | "pool")) &&
-                                        game.speed.as_deref().is_some_and(|speed| speed != "correspondence");
-                                    send_locked(&replier, &write_lock, &BackendMessage::GameStarted {
-                                        game_id: game.id,
-                                        from_realtime_lobby,
-                                    });
-                                }
-                                Some(EventStreamMessage::Challenge)
-                                | Some(EventStreamMessage::ChallengeCanceled)
-                                | Some(EventStreamMessage::ChallengeDeclined) => {
-                                    send_pending_challenges(&client, &replier, &write_lock).await;
-                                }
-                                Some(EventStreamMessage::GameFinish { game }) => {
-                                    announced_games.remove(&game.id);
-                                    if let Some(rating_diff) = game.rating_diff {
-                                        send_locked(&replier, &write_lock, &BackendMessage::RatingDiff {
-                                            game_id: game.id,
-                                            rating_diff,
-                                        });
-                                    }
-                                }
-                            _ => {}
+        // Keep one refresh queued behind the active fetch. Awaiting it inside the
+        // stream blocked game events, and spawning per event overlaps requests.
+        let (challenge_refresh, mut refreshes) = mpsc::channel(1);
+        let event_refresh = challenge_refresh.clone();
+        let task = tokio::spawn(async move {
+            // Both futures drop together when the account is replaced or signed out.
+            let refresh = async {
+                while refreshes.recv().await.is_some() {
+                    send_pending_challenges(&client, &replier, &write_lock).await;
+                }
+            };
+            tokio::join!(read_account_events(&client, &replier, &write_lock, &event_refresh), refresh);
+        });
+        self.account_stream = Some(AccountStream { task, challenge_refresh });
+    }
+}
+
+async fn read_account_events(
+    client: &LichessClient,
+    replier: &BackendReplier<LichessBackend>,
+    write_lock: &Arc<std::sync::Mutex<()>>,
+    refresh_challenges: &mpsc::Sender<()>,
+) {
+    let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(30));
+    // Reconnect replays ongoing games. A per-connection set repeats old
+    // starts, and remembering every finished game grows without bound.
+    let mut announced_games = HashSet::new();
+    loop {
+        let mut received_for = Duration::ZERO;
+        if let Ok(mut lines) = client.stream_lines("/api/stream/event").await {
+            let connected_at = Instant::now();
+            while let Ok(Some(line)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {
+                received_for = connected_at.elapsed();
+                match parse_ndjson_line::<EventStreamMessage>(&line) {
+                    Some(EventStreamMessage::GameStart { game }) => {
+                        if !announced_games.insert(game.id.clone()) {
+                            continue;
+                        }
+                        // Real-time seeks return no game ID. Match lobby/pool
+                        // events, since using any start can open a challenge
+                        // and requiring all seekers to Resume adds a tap.
+                        let from_realtime_lobby =
+                            matches!(game.source.as_deref(), Some("lobby" | "pool")) &&
+                            game.speed.as_deref().is_some_and(|speed| speed != "correspondence");
+                        send_locked(replier, write_lock, &BackendMessage::GameStarted {
+                            game_id: game.id,
+                            from_realtime_lobby,
+                        });
+                    }
+                    Some(EventStreamMessage::Challenge)
+                    | Some(EventStreamMessage::ChallengeCanceled)
+                    | Some(EventStreamMessage::ChallengeDeclined) => {
+                        let _ = refresh_challenges.try_send(());
+                    }
+                    Some(EventStreamMessage::GameFinish { game }) => {
+                        announced_games.remove(&game.id);
+                        if let Some(rating_diff) = game.rating_diff {
+                            send_locked(replier, write_lock, &BackendMessage::RatingDiff {
+                                game_id: game.id,
+                                rating_diff,
+                            });
                         }
                     }
+                    _ => {}
                 }
-                let delay = reconnect.after_attempt(received_for);
-                log::warn!("account event stream ended; retrying in {delay:?}");
-                tokio::time::sleep(delay).await;
             }
-        });
-        self.account_stream_handle = Some(handle);
+        }
+        let delay = reconnect.after_attempt(received_for);
+        log::warn!("account event stream ended; retrying in {delay:?}");
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -1446,8 +1471,9 @@ impl AppLoadBackend for LichessBackend {
                 .await;
             }
             FrontendMessage::RequestChallenges => {
-                let Some(client) = self.client.clone() else { return };
-                send_pending_challenges(&client, replier, &self.write_lock).await;
+                if let Some(account) = &self.account_stream {
+                    let _ = account.challenge_refresh.try_send(());
+                }
             }
             FrontendMessage::AcceptChallenge { id } => {
                 if let Some(client) = &self.client {
