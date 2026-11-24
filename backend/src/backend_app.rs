@@ -1,5 +1,5 @@
 use crate::credentials;
-use crate::game::outcome::{outcome, termination_label};
+use crate::game::outcome::outcome;
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
 use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
@@ -2122,16 +2122,12 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         .and_then(|u| u.name.clone())
         .or_else(|| opponent.ai_level.map(|level| format!("Stockfish level {level}")));
     let opponent_rating = opponent.rating;
-    let result = match &game.winner {
+    let settled = outcome(game.status.as_deref().unwrap_or("unknown"), game.winner.as_deref());
+    let result = match game.winner.as_deref() {
         Some(w) if w == your_color => "win".to_string(),
         Some(_) => "loss".to_string(),
-        // No winner and a real draw status -- stalemate is scored as a draw too.
-        None if matches!(game.status.as_deref(), Some("draw") | Some("stalemate")) => "draw".to_string(),
-        // No winner and *not* a draw status (aborted, noStart, etc.) -- shown
-        // as-is rather than mislabeled "draw".
-        None => game.status.clone().unwrap_or_else(|| "unknown".into()),
+        None => settled.result,
     };
-    let termination = termination_label(game.status.as_deref());
     let your_analysis = you.analysis.as_ref().map(|a| GameAnalysisSummary {
         inaccuracies: a.inaccuracy,
         mistakes: a.mistake,
@@ -2146,7 +2142,7 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         opponent_rating,
         your_color: your_color.to_string(),
         result,
-        termination,
+        termination: settled.reason,
         rating_diff: you.rating_diff,
         your_analysis,
         rated: game.rated,
@@ -2328,6 +2324,26 @@ mod history_summary_tests {
             "myuser",
         );
         assert_eq!(by_timeout.termination, "Time forfeit");
+    }
+
+    #[test]
+    fn history_reduces_the_shared_outcome_to_the_accounts_side() {
+        for (status, winner, result, reason) in [
+            ("outoftime", None, "draw", "Time expired"),
+            ("timeout", None, "draw", "Disconnection"),
+            ("insufficientMaterialClaim", None, "draw", "Insufficient material"),
+            ("outoftime", Some("white"), "win", "Time forfeit"),
+            ("timeout", Some("black"), "loss", "Disconnection"),
+            ("noStart", Some("black"), "loss", "First move deadline missed"),
+            ("aborted", None, "aborted", "Aborted"),
+        ] {
+            let mut archived = game_with_status(human("myuser", "MyUser", 1500),
+                                                human("bob", "Bob", 1480), status);
+            archived.winner = winner.map(str::to_owned);
+            let summary = history_game_to_summary(archived, "myuser");
+            assert_eq!(summary.result, result, "{status} {winner:?}");
+            assert_eq!(summary.termination, reason, "{status} {winner:?}");
+        }
     }
 
     #[test]

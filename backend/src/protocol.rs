@@ -302,7 +302,7 @@ pub struct HistoryGameSummary {
     // "noStart") for the rare case where there's no winner and it wasn't a draw.
     pub result: String,
     // How the game actually ended -- "Checkmate"/"Resignation"/"Time forfeit"/
-    // etc. (see game::outcome::termination_label), distinct from `result`
+    // etc. (see game::outcome::outcome), distinct from `result`
     // above: two "win"s can still differ in how they happened, which
     // win/loss/draw alone can't convey.
     pub termination: String,
