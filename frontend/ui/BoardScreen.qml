@@ -131,6 +131,7 @@ Rectangle {
     property var yourRating: null
     property string yourId: ""
     property string yourTitle: ""
+    property string yourStatusTitle: ""
     property bool yourProvisional: false
     property bool yourStatusKnown: false
     property bool yourOnline: false
@@ -142,6 +143,7 @@ Rectangle {
     property var opponentRating: null
     property string opponentId: ""
     property string opponentTitle: ""
+    property string opponentStatusTitle: ""
     property bool opponentProvisional: false
     property bool opponentStatusKnown: false
     property bool opponentOnline: false
@@ -404,8 +406,8 @@ Rectangle {
 
     function titleFor(color) {
         return color === boardScreen.yourColor
-            ? boardScreen.yourTitle
-            : boardScreen.opponentTitle
+            ? (boardScreen.yourStatusTitle || boardScreen.yourTitle)
+            : (boardScreen.opponentStatusTitle || boardScreen.opponentTitle)
     }
 
     function provisionalFor(color) {
@@ -1652,12 +1654,14 @@ Rectangle {
     }
 
     function resetPlayerStatuses() {
+        boardScreen.yourStatusTitle = ""
         boardScreen.yourStatusKnown = false
         boardScreen.yourOnline = false
         boardScreen.yourPlaying = false
         boardScreen.yourStreaming = false
         boardScreen.yourPatron = false
         boardScreen.yourFlair = ""
+        boardScreen.opponentStatusTitle = ""
         boardScreen.opponentStatusKnown = false
         boardScreen.opponentOnline = false
         boardScreen.opponentPlaying = false
@@ -1676,7 +1680,7 @@ Rectangle {
             boardScreen.yourStreaming = player.streaming || false
             boardScreen.yourPatron = player.patron || false
             boardScreen.yourFlair = player.flair || ""
-            if (player.title) boardScreen.yourTitle = player.title
+            boardScreen.yourStatusTitle = player.title || ""
         } else if (playerId === boardScreen.opponentId.toLowerCase()) {
             boardScreen.opponentStatusKnown = true
             boardScreen.opponentOnline = player.online || false
@@ -1684,7 +1688,7 @@ Rectangle {
             boardScreen.opponentStreaming = player.streaming || false
             boardScreen.opponentPatron = player.patron || false
             boardScreen.opponentFlair = player.flair || ""
-            if (player.title) boardScreen.opponentTitle = player.title
+            boardScreen.opponentStatusTitle = player.title || ""
         }
     }
 

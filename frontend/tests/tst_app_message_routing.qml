@@ -558,4 +558,28 @@ TestCase {
         endpoint.reply(nextSnapshot)
         compare(screen.item.statusText, "Draw")
     }
+
+    function test_playerStatusesReachOnlyTheSelectedBoardAndSurviveAnUpdate() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        var snapshot = boardState("selected")
+        snapshot.opponent_player = {id: "bob", name: "Bob"}
+        endpoint.reply(snapshot)
+        var playerBar = findChild(screen.item, "topPlayerBar")
+        var title = findChild(playerBar, "playerTitleText")
+        var name = findChild(playerBar, "playerNameText")
+        var statuses = {type: "PlayerStatuses", game_id: "other",
+                        players: [{id: "bob", title: "GM", online: true, patron: true}]}
+        endpoint.reply(statuses)
+        compare(title.text, "")
+        verify(name.text.indexOf("Patron") === -1)
+
+        statuses.game_id = "selected"
+        endpoint.reply(statuses)
+        compare(title.text, "GM")
+        verify(name.text.indexOf("Patron") !== -1)
+        endpoint.reply(snapshot)
+        compare(title.text, "GM")
+        verify(name.text.indexOf("Patron") !== -1)
+    }
 }
