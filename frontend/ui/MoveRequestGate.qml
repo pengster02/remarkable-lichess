@@ -6,7 +6,7 @@ QtObject {
     property var pending: null
     signal submitRequested(var message)
 
-    function submit(from, to, promotion, requestId) {
+    function submit(from, to, promotion, requestId, positionId) {
         if (gate.gameId.length === 0 || gate.pending !== null) return false
         gate.pending = {
             gameId: gate.gameId,
@@ -18,6 +18,7 @@ QtObject {
         gate.submitRequested({
             type: "MakeMove",
             expected_game_id: gate.pending.gameId,
+            expected_position_id: positionId,
             request_id: requestId,
             from: from,
             to: to,

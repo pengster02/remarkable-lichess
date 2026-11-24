@@ -1,8 +1,9 @@
 use crate::game::outcome::outcome;
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
 use crate::lichess::models::{GameFull, GameState};
-use crate::protocol::{BackendMessage, GameActionRequest, LegalMove, OpponentDeparture, PlayerIdentity, PlayerStatusSummary};
+use crate::protocol::{BackendMessage, GameActionRequest, LegalMove, OpponentDeparture, PlayerIdentity, PlayerStatusSummary, PositionId};
 use shakmaty::{Chess, Position};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 use tokio::sync::oneshot;
 
@@ -20,6 +21,7 @@ struct PendingGameAction {
 
 pub struct GameSession {
     pub game_id: String,
+    pub position_id: PositionId,
     // A POST or cached resume can publish a board while its stream is down.
     // Treating any board as recovery, or sending an independent recovery event,
     // could leave the UI showing a connection that the snapshot did not have.
@@ -62,6 +64,14 @@ pub struct GameSession {
     // all (correspondence/untimed) rather than assumed.
     pub initial_clock_ms: Option<u64>,
     state_received_at: Instant,
+}
+
+fn next_position_id() -> PositionId {
+    // Keep the sequence across attachments. A per-session counter can be
+    // reused on reattach, and a history hash repeats when a takeback restores it.
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    PositionId(NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .expect("position ID exhausted"))
 }
 
 fn turn_name(pos: &Chess) -> String {
@@ -216,6 +226,7 @@ fn to_board_state(
     });
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
+        position_id: session.position_id,
         game_stream_connected: session.game_stream_connected,
         resolved_move_request_id: None,
         pending_game_action: session.pending_game_action.as_ref().filter(|_| active)
@@ -306,6 +317,7 @@ impl GameSession {
         let opp = opponent(full, &your_color);
         let session = GameSession {
             game_id: full.id.clone(),
+            position_id: next_position_id(),
             game_stream_connected: true,
             opponent_departure: None,
             prior_moves_before_prediction: None,
@@ -416,6 +428,7 @@ impl GameSession {
             Change::Unchanged
         };
         if !matches!(change, Change::Unchanged) {
+            self.position_id = next_position_id();
             self.legal = legal_moves(&self.position);
             self.last_move = last_move_from_uci_list(&state.moves);
         }
@@ -482,8 +495,17 @@ impl GameSession {
     }
 
     pub fn inherit_pending_requests(&mut self, previous: &mut Self, board: &mut BackendMessage) {
+        let same_position = self.state.moves == previous.state.moves &&
+            self.position_history.first() == previous.position_history.first() &&
+            self.your_color == previous.your_color;
+        if same_position {
+            self.position_id = previous.position_id;
+            if let BackendMessage::BoardState { position_id, .. } = board {
+                *position_id = self.position_id;
+            }
+        }
         self.pending_move = previous.pending_move.take();
-        if self.state.status != "started" || self.state.moves != previous.state.moves {
+        if self.state.status != "started" || !same_position {
             self.resolve_move(board);
         }
         if self.state.status == "started" {
@@ -802,13 +824,35 @@ mod tests {
     fn an_old_frame_cannot_undo_a_prediction_but_a_later_takeback_can() {
         let full = sample_full("");
         let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let initial = session.position_id;
         session.apply_accepted_move("", "e2e4").unwrap().unwrap();
+        let accepted = session.position_id;
+        assert_ne!(accepted, initial);
 
         assert!(session.apply_stream_update(full.state.clone()).unwrap().is_none());
         assert_eq!(session.state.moves, "e2e4");
         assert!(session.apply_stream_update(session.state.clone()).unwrap().is_some());
+        assert_eq!(session.position_id, accepted);
         assert!(session.apply_stream_update(full.state).unwrap().is_some());
         assert!(session.state.moves.is_empty());
+        assert_ne!(session.position_id, accepted);
+        assert_ne!(session.position_id, initial);
+    }
+
+    #[test]
+    fn position_id_changes_when_a_line_is_rewritten_to_the_same_fen() {
+        let full = sample_full("g1f3 g8f6 b1c3 b8c6");
+        let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let original_id = session.position_id;
+        let last_fen = session.position_history.last().unwrap().clone();
+        let replacement = sample_full("b1c3 b8c6 g1f3 g8f6");
+        let updated = session.apply_state_update(replacement.state).unwrap();
+        let BackendMessage::BoardState { fen, position_id, .. } = updated else {
+            panic!("expected BoardState");
+        };
+        assert_eq!(fen, last_fen);
+        assert_ne!(position_id, original_id);
+        assert_eq!(position_id, session.position_id);
     }
 
     #[test]
@@ -828,16 +872,21 @@ mod tests {
     fn stream_releases_only_the_pending_move_after_a_valid_board_change() {
         let full = sample_full("");
         let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let initial = session.position_id;
         let (preview, mut first) = session.begin_move("e2e4", Some(21)).unwrap();
         assert!(matches!(preview, BackendMessage::MovePreview { request_id: Some(21), .. }));
         assert!(session.begin_move("d2d4", Some(22)).is_err());
         let mut clock_update = full.state.clone();
         clock_update.wtime -= 1000;
+        clock_update.bdraw = true;
         let board = session.apply_stream_update(clock_update).unwrap().unwrap();
-        assert!(matches!(board, BackendMessage::BoardState { resolved_move_request_id: None, .. }));
+        assert!(matches!(board,
+            BackendMessage::BoardState { position_id, resolved_move_request_id: None, .. }
+            if position_id == initial));
         let mut invalid = full.state.clone();
         invalid.moves = "invalid".into();
         assert!(session.apply_stream_update(invalid).is_err());
+        assert_eq!(session.position_id, initial);
         assert_eq!(first.try_recv(), Err(oneshot::error::TryRecvError::Empty));
 
         let mut played = full.state;
@@ -858,14 +907,19 @@ mod tests {
         let (mut previous, _) = GameSession::from_game_full(&full, "my-id").unwrap();
         let (_, mut canceled) = previous.begin_move("e2e4", Some(21)).unwrap();
         let (mut reconnected, mut same) = GameSession::from_game_full(&full, "my-id").unwrap();
+        assert_ne!(reconnected.position_id, previous.position_id);
         reconnected.inherit_pending_requests(&mut previous, &mut same);
-        assert!(matches!(same, BackendMessage::BoardState { resolved_move_request_id: None, .. }));
+        assert!(matches!(same,
+            BackendMessage::BoardState { position_id, resolved_move_request_id: None, .. }
+            if position_id == previous.position_id && position_id == reconnected.position_id));
         assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Empty));
 
         let different = sample_full("d2d4 d7d5");
         let (mut replacement, mut changed) = GameSession::from_game_full(&different, "my-id").unwrap();
         replacement.inherit_pending_requests(&mut reconnected, &mut changed);
-        assert!(matches!(changed, BackendMessage::BoardState { resolved_move_request_id: Some(21), .. }));
+        assert!(matches!(changed,
+            BackendMessage::BoardState { position_id, resolved_move_request_id: Some(21), .. }
+            if position_id == replacement.position_id && position_id != reconnected.position_id));
         assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Closed));
     }
 

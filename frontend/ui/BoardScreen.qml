@@ -37,6 +37,7 @@ Rectangle {
         boardScreen.liveFen.length === 0
     property string fen: ""
     property string liveFen: ""
+    property var livePositionId
     property string previewFen: ""
     property string turn: "white"
     property string liveTurn: "white"
@@ -242,7 +243,8 @@ Rectangle {
 
     function submitMove(from, to, promotion) {
         if (!boardScreen.nextRequestId || moveRequestGate.pending !== null) return false
-        if (!moveRequestGate.submit(from, to, promotion, boardScreen.nextRequestId())) return false
+        if (!moveRequestGate.submit(from, to, promotion,
+                boardScreen.nextRequestId(), boardScreen.livePositionId)) return false
         boardScreen.selectedSquare = ""
         boardScreen.boardNotice = null
         return true
@@ -1772,6 +1774,9 @@ Rectangle {
                 (!boardScreen.sameHistory(fullMoves, boardScreen.moveHistory) ||
                  !boardScreen.sameHistory(fullPositions, boardScreen.positionHistory))
             var boardChanged = positionChanged || rewrittenHistory
+            var promptScopeChanged = boardChanged ||
+                (typeof boardScreen.livePositionId === "number" && typeof msg.position_id === "number" &&
+                 boardScreen.livePositionId !== msg.position_id)
             var previewConfirmed = boardScreen.previewFen.length > 0 &&
                 boardScreen.previewFen === msg.fen &&
                 boardScreen.gameId === nextGameId
@@ -1802,8 +1807,9 @@ Rectangle {
                 boardScreen.pendingActionRequest = null
             }
             boardScreen.gameId = nextGameId
+            boardScreen.livePositionId = msg.position_id
             boardScreen.opponentDeparture = msg.opponent_departure || null
-            if (boardChanged) {
+            if (promptScopeChanged) {
                 // Invalidate unsent prompts on the authoritative change. FEN
                 // alone misses rewrites, and rechecking legality could still
                 // submit a move selected on the old line.
@@ -1811,9 +1817,11 @@ Rectangle {
                 boardScreen.clearAnnotations()
                 boardScreen.resetGameActionControls()
                 if (boardScreen.pendingPremove !== null &&
-                        (gameChanged || !boardScreen.extendsLiveHistory(msg))) {
+                        (gameChanged || !boardChanged || !boardScreen.extendsLiveHistory(msg))) {
                     boardScreen.cancelPremove()
                 }
+            }
+            if (boardChanged) {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
@@ -1875,7 +1883,7 @@ Rectangle {
             boardScreen.opponentTitle = opponentPlayer.title || ""
             boardScreen.opponentProvisional = opponentPlayer.provisional || false
             boardScreen.gameDescription = msg.game_description || ""
-            if (boardChanged || (boardScreen.boardNotice !== null && !boardScreen.boardNotice.positionBound)) {
+            if (promptScopeChanged || (boardScreen.boardNotice !== null && !boardScreen.boardNotice.positionBound)) {
                 boardScreen.boardNotice = null
             }
             boardScreen.gameOver = false

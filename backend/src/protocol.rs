@@ -22,6 +22,21 @@ pub struct LegalMove {
     pub promotion: Option<String>,
 }
 
+// A compact integer is exact in QML. FEN alone repeats across lines, and
+// sending the whole history with each move would duplicate the board snapshot.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct PositionId(pub u32);
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct MoveRequest {
+    pub from: String,
+    pub to: String,
+    pub promotion: Option<String>,
+    pub request_id: Option<u32>,
+    pub expected_position_id: Option<PositionId>,
+}
+
 // One envelope carries the board identity without duplicating a field across
 // commands. Inferring it from the active session can target a different game.
 #[cfg(any(feature = "transport", test))]
@@ -69,7 +84,7 @@ pub enum FrontendMessage {
     ChallengeAi { level: u8, minutes: u32, increment: u32, request_id: Option<u32> },
     #[serde(alias = "CancelSeek")]
     CancelMatch { request_id: Option<u32> },
-    MakeMove { from: String, to: String, promotion: Option<String>, request_id: Option<u32> },
+    MakeMove { #[serde(flatten)] request: MoveRequest },
     Resign { request_id: Option<u32> },
     // `accept: true` offers a draw/takeback when none is pending, or accepts the
     // opponent's pending offer; `accept: false` declines it -- same split Lichess's
@@ -433,6 +448,7 @@ pub enum BackendMessage {
     AccountEventsResumed,
     BoardState {
         game_id: String,
+        position_id: PositionId,
         game_stream_connected: bool,
         // Pair release with its position. A separate acknowledgement can race premoves; last-move squares can match another line.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -652,7 +668,10 @@ mod tests {
         let parsed: FrontendMessage = serde_json::from_str(json).unwrap();
         assert_eq!(
             parsed,
-            FrontendMessage::MakeMove { from: "e2".into(), to: "e4".into(), promotion: None, request_id: None }
+            FrontendMessage::MakeMove { request: MoveRequest {
+                from: "e2".into(), to: "e4".into(), promotion: None,
+                request_id: None, expected_position_id: None,
+            }}
         );
         let json = serde_json::to_string(&BackendMessage::MoveSubmitted {
             game_id: "g1".into(),
@@ -814,9 +833,12 @@ mod tests {
         assert_eq!(legacy.expected_game_id, None);
 
         let bound_move: FrontendRequest = serde_json::from_str(
-            r#"{"type":"MakeMove","from":"e2","to":"e4","promotion":null,"expected_game_id":"g1"}"#,
+            r#"{"type":"MakeMove","from":"e2","to":"e4","promotion":null,"expected_game_id":"g1","expected_position_id":4294967294,"request_id":9}"#,
         ).unwrap();
-        assert!(matches!(bound_move.message, FrontendMessage::MakeMove { .. }));
+        assert!(matches!(bound_move.message,
+            FrontendMessage::MakeMove { request: MoveRequest {
+                expected_position_id: Some(PositionId(4_294_967_294)), request_id: Some(9), ..
+            }}));
         assert_eq!(bound_move.expected_game_id.as_deref(), Some("g1"));
     }
 
@@ -1033,6 +1055,7 @@ mod tests {
     fn backend_message_serializes_with_type_tag() {
         let msg = BackendMessage::BoardState {
             game_id: "g1".into(),
+            position_id: PositionId(4_294_967_294),
             game_stream_connected: false,
             resolved_move_request_id: None,
             pending_game_action: None,
@@ -1081,6 +1104,7 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));
         assert!(json.contains(r#""game_id":"g1""#));
+        assert!(json.contains(r#""position_id":4294967294"#));
         assert!(json.contains(r#""game_stream_connected":false"#));
         assert!(json.contains(r#""captured_by_white":["bP"]"#));
         assert!(json.contains(r#""fen":"startpos""#));
