@@ -313,6 +313,10 @@ pub struct HistoryGameSummary {
     pub rating_diff: Option<i32>,
     pub your_analysis: Option<GameAnalysisSummary>,
     pub rated: bool,
+    pub variant: Option<String>,
+    // Missing metadata still goes to export validation. Assuming Standard can
+    // hide the variant, and a second rules table in QML can drift.
+    pub review_supported: Option<bool>,
     pub speed: Option<String>,
     pub opening_name: Option<String>,
     pub created_at_ms: Option<i64>,

@@ -365,6 +365,7 @@ pub struct HistoryGame {
     pub id: String,
     #[serde(default)]
     pub rated: bool,
+    pub variant: Option<String>,
     pub speed: Option<String>,
     pub status: Option<String>,
     #[serde(rename = "createdAt")]
@@ -585,6 +586,7 @@ mod tests {
         let game: HistoryGame = serde_json::from_str(json).unwrap();
         assert_eq!(game.id, "abcd1234");
         assert!(game.rated);
+        assert_eq!(game.variant.as_deref(), Some("standard"));
         assert_eq!(game.speed.as_deref(), Some("rapid"));
         assert_eq!(game.winner.as_deref(), Some("white"));
         assert_eq!(game.players.white.user.as_ref().unwrap().id.as_deref(), Some("myuser"));

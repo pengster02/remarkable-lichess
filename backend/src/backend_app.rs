@@ -2139,6 +2139,7 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         acpl: a.acpl,
         accuracy: a.accuracy,
     });
+    let review_supported = game.variant.as_deref().map(crate::game::rules::supports_variant);
     HistoryGameSummary {
         game_id: game.id,
         opponent_name,
@@ -2149,6 +2150,8 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         rating_diff: you.rating_diff,
         your_analysis,
         rated: game.rated,
+        variant: game.variant,
+        review_supported,
         speed: game.speed,
         opening_name: game.opening.map(|o| o.name),
         created_at_ms: game.created_at,
@@ -2260,6 +2263,7 @@ mod history_summary_tests {
         HistoryGame {
             id: "abcd1234".to_string(),
             rated: false,
+            variant: Some("standard".to_string()),
             speed: Some("blitz".to_string()),
             status: Some(status.to_string()),
             created_at: Some(1),
@@ -2274,6 +2278,24 @@ mod history_summary_tests {
         let summary = history_game_to_summary(game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480)), "myuser");
         assert_eq!(summary.opponent_name, Some("Bob".to_string()));
         assert_eq!(summary.opponent_rating, Some(1480));
+    }
+
+    #[test]
+    fn archive_keeps_variant_and_speed_and_reports_known_replay_support() {
+        for (variant, supported) in [
+            (Some("standard"), Some(true)),
+            (Some("fromPosition"), Some(true)),
+            (Some("crazyhouse"), Some(false)),
+            (Some("futureVariant"), Some(false)),
+            (None, None),
+        ] {
+            let mut archived = game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480));
+            archived.variant = variant.map(str::to_owned);
+            let summary = history_game_to_summary(archived, "myuser");
+            assert_eq!(summary.variant.as_deref(), variant);
+            assert_eq!(summary.speed.as_deref(), Some("blitz"));
+            assert_eq!(summary.review_supported, supported);
+        }
     }
 
     #[test]

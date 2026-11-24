@@ -536,6 +536,8 @@ Rectangle {
         if (gameReviewScreen.game.speed) {
             parts.push(chessDisplay.speedLabel(gameReviewScreen.game.speed))
         }
+        var variant = chessDisplay.variantLabel(gameReviewScreen.game.variant)
+        if (variant) parts.push(variant)
         if (gameReviewScreen.game.termination) {
             parts.push(chessDisplay.terminationLabel(gameReviewScreen.game.termination))
         }
