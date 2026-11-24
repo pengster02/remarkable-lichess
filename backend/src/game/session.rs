@@ -1,7 +1,7 @@
 use crate::game::outcome::outcome;
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
 use crate::lichess::models::{GameFull, GameState};
-use crate::protocol::{BackendMessage, LegalMove, PlayerIdentity, PlayerStatusSummary};
+use crate::protocol::{BackendMessage, LegalMove, OpponentDeparture, PlayerIdentity, PlayerStatusSummary};
 use shakmaty::{Chess, Position};
 use std::time::Instant;
 
@@ -11,6 +11,7 @@ pub struct GameSession {
     // Treating any board as recovery, or sending an independent recovery event,
     // could leave the UI showing a connection that the snapshot did not have.
     game_stream_connected: bool,
+    pub opponent_departure: Option<OpponentDeparture>,
     prior_moves_before_prediction: Option<String>,
     pub initial_fen: String,
     pub position: Chess,
@@ -200,6 +201,7 @@ fn to_board_state(
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
         game_stream_connected: session.game_stream_connected,
+        opponent_departure: if active { session.opponent_departure.map(Box::new) } else { None },
         fen: shakmaty::fen::Fen::from_position(&session.position, shakmaty::EnPassantMode::Legal)
             .to_string(),
         turn: turn_name(&session.position),
@@ -282,6 +284,7 @@ impl GameSession {
         let session = GameSession {
             game_id: full.id.clone(),
             game_stream_connected: true,
+            opponent_departure: None,
             prior_moves_before_prediction: None,
             initial_fen: full.initial_fen.clone(),
             position,
@@ -318,6 +321,11 @@ impl GameSession {
 
     pub fn mark_stream_disconnected(&mut self) {
         self.game_stream_connected = false;
+        self.opponent_departure = None;
+    }
+
+    pub fn is_stream_connected(&self) -> bool {
+        self.game_stream_connected
     }
 
     fn board_state_at(&self, now: Instant) -> BackendMessage {

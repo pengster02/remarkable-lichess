@@ -10,7 +10,7 @@ use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
     GameAction, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
-    PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
+    OpponentDeparture, PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR};
 use async_trait::async_trait;
@@ -1193,6 +1193,7 @@ fn spawn_game_stream(
             if let Ok(mut lines) = response {
                 let connected_at = Instant::now();
                 let mut resync_deadline: Option<Instant> = None;
+                let mut opponent_departure = None;
                 loop {
                     let timeout = resync_deadline.map_or(STREAM_IDLE_TIMEOUT, |deadline| {
                         deadline.saturating_duration_since(Instant::now())
@@ -1218,8 +1219,11 @@ fn spawn_game_stream(
                                                 s.player_statuses = previous.player_statuses.take();
                                                 if previous.berserked {
                                                     s.mark_berserked();
-                                                    board_msg = s.board_state();
                                                 }
+                                            }
+                                            s.opponent_departure = opponent_departure;
+                                            if s.berserked || opponent_departure.is_some() {
+                                                board_msg = s.board_state();
                                             }
                                             if full.state.status != "started" {
                                                 stream_finished = true;
@@ -1284,13 +1288,21 @@ fn spawn_game_stream(
                                     }
                                     _ => None,
                                 },
-                                // Doesn't touch `guard` -- opponent-connection status is
-                                // orthogonal to the cached position/session state.
-                                GameStreamMessage::Gone(gone) => Some(BackendMessage::OpponentGone {
-                                    game_id: game_id.clone(),
-                                    gone: gone.gone,
-                                    claim_win_in_seconds: gone.claim_win_in_seconds,
-                                }),
+                                GameStreamMessage::Gone(gone) => {
+                                    opponent_departure = gone.gone.then_some(OpponentDeparture {
+                                        claim_win_in_seconds: gone.claim_win_in_seconds,
+                                    });
+                                    guard.as_mut()
+                                        .filter(|s| s.game_id == game_id && s.is_stream_connected())
+                                        .map(|s| {
+                                            s.opponent_departure = opponent_departure;
+                                            BackendMessage::OpponentGone {
+                                                game_id: game_id.clone(),
+                                                gone: gone.gone,
+                                                claim_win_in_seconds: gone.claim_win_in_seconds,
+                                            }
+                                        })
+                                }
                                 GameStreamMessage::Chat => None,
                             };
                             if let Some(m) = board_msg {
