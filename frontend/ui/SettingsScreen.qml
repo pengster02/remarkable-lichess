@@ -62,6 +62,50 @@ Rectangle {
         onClicked: settingsScreen.navigateTo("HomeScreen.qml")
     }
 
+    // A pinned notice keeps the current section in view. Inline errors move its page origin, while a modal blocks another edit.
+    SectionCard {
+        id: saveErrorCard
+        objectName: "settingsSaveErrorCard"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: backButton.top
+        anchors.margins: theme.pageSideMargin
+        anchors.bottomMargin: theme.spacingSmall
+        darkMode: settingsScreen.darkMode
+        compact: true
+        title: "Settings not saved"
+        visible: settingsScreen.saveError.length > 0
+
+        Row {
+            width: parent.width
+            height: Math.max(saveErrorMessage.implicitHeight, dismissSaveError.height)
+            spacing: theme.spacingXs
+
+            Text {
+                id: saveErrorMessage
+                objectName: "settingsSaveErrorMessage"
+                width: parent.width - dismissSaveError.width - parent.spacing
+                anchors.verticalCenter: parent.verticalCenter
+                text: settingsScreen.saveError.replace(/^failed to save settings: /, "")
+                font.pixelSize: theme.fontLabel
+                wrapMode: Text.Wrap
+                maximumLineCount: 3
+                elide: Text.ElideRight
+                color: theme.errorText
+            }
+
+            AppButton {
+                id: dismissSaveError
+                objectName: "dismissSettingsSaveErrorButton"
+                width: Math.max(theme.touchTarget, naturalWidth)
+                anchors.verticalCenter: parent.verticalCenter
+                compact: true
+                text: "Dismiss"
+                onClicked: settingsScreen.dismissSaveError()
+            }
+        }
+    }
+
     EinkPagedFlickable {
         id: settingsPager
         objectName: "settingsFlickable"
@@ -76,7 +120,7 @@ Rectangle {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: backButton.top
+        anchors.bottom: saveErrorCard.visible ? saveErrorCard.top : backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
@@ -95,31 +139,6 @@ Rectangle {
                 eyebrow: "Preferences"
                 title: "Settings"
                 detail: "Board, display, and gameplay"
-            }
-
-            SectionCard {
-                objectName: "settingsSaveErrorCard"
-                width: parent.width
-                darkMode: settingsScreen.darkMode
-                compact: true
-                title: "Settings not saved"
-                visible: settingsScreen.saveError.length > 0
-
-                Text {
-                    width: parent.width
-                    text: settingsScreen.saveError
-                    font.pixelSize: theme.fontBody
-                    wrapMode: Text.WordWrap
-                    color: theme.errorText
-                }
-
-                AppButton {
-                    width: parent.width
-                    objectName: "dismissSettingsSaveErrorButton"
-                    compact: true
-                    text: "Dismiss"
-                    onClicked: settingsScreen.dismissSaveError()
-                }
             }
 
             SectionCard {
