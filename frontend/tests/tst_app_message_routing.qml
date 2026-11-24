@@ -512,10 +512,50 @@ TestCase {
         compare(screen.item.statusText, "You lost · Checkmate")
         endpoint.reply({type: "RatingDiff", game_id: "g1", rating_diff: -5})
         compare(screen.item.statusText, "You lost · Checkmate · -5 rating")
+        compare(findChild(screen.item, "gameOverSummary").text,
+                "You lost · Checkmate · -5 rating")
+        endpoint.reply({type: "RatingDiff", game_id: "g1", rating_diff: -5})
+        compare(screen.item.statusText, "You lost · Checkmate · -5 rating")
         endpoint.reply({type: "BoardState", game_id: "g1", fen: startFen})
         endpoint.reply({type: "MoveRejected", game_id: "g1", reason: "late HTTP reply"})
         verify(screen.item.gameOver)
         compare(screen.item.fen, finalFen)
         compare(screen.item.statusText, "You lost · Checkmate · -5 rating")
+    }
+
+    function test_ratingBeforeFirstBoardSnapshot_data() {
+        return [{tag: "first snapshot terminal", firstSnapshotFinished: true},
+                {tag: "first snapshot active", firstSnapshotFinished: false}]
+    }
+
+    function test_ratingBeforeFirstBoardSnapshot(data) {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        verify(screen.item.awaitingBoard)
+        endpoint.reply({type: "RatingDiff", game_id: "selected", rating_diff: 7})
+        endpoint.reply({type: "RatingDiff", game_id: "other", rating_diff: 90})
+        compare(screen.item.topStatusText(), "Loading game...")
+
+        var snapshot = boardState("selected")
+        if (data.firstSnapshotFinished)
+            snapshot.outcome = {result: "white", reason: "Opponent resigned"}
+        endpoint.reply(snapshot)
+        if (!data.firstSnapshotFinished) {
+            compare(screen.item.statusText, "")
+            endpoint.reply({type: "GameOver", game_id: "selected",
+                            result: "white", reason: "Opponent resigned"})
+        }
+        verify(screen.item.gameOver)
+        compare(screen.item.statusText, "You won · Opponent resigned · +7 rating")
+        compare(findChild(screen.item, "gameOverSummary").text,
+                "You won · Opponent resigned · +7 rating")
+
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("different")
+        endpoint.reply({type: "RatingDiff", game_id: "selected", rating_diff: 7})
+        var nextSnapshot = boardState("different")
+        nextSnapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(nextSnapshot)
+        compare(screen.item.statusText, "Draw")
     }
 }

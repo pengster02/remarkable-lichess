@@ -57,7 +57,20 @@ Rectangle {
     property var initialClockMs: null
     property var legalMoves: []
     property string selectedSquare: ""
-    property string statusText: ""
+    property string statusMessage: ""
+    property string gameOutcomeText: ""
+    // The two streams can finish in either order. Appending text repeats
+    // duplicate events, and a bare delta can leak across game selections.
+    property var gameRatingChange: null
+    readonly property string statusText: {
+        if (boardScreen.statusMessage.length > 0) return boardScreen.statusMessage
+        if (!boardScreen.gameOver) return ""
+        var rating = boardScreen.gameRatingChange
+        if (rating === null || rating.gameId !== boardScreen.gameId)
+            return boardScreen.gameOutcomeText
+        return boardScreen.gameOutcomeText + " · " +
+            (rating.diff > 0 ? "+" : "") + rating.diff + " rating"
+    }
     property var flashSquares: []
     Timer {
         id: boardFlashTimer
@@ -100,13 +113,6 @@ Rectangle {
     property string pendingGameAction: ""
     property bool showGameActions: false
     property bool showMoves: false
-    // Set when RatingDiff arrives before GameOver does -- the per-game
-    // stream's terminal GameState (driving GameOver) and the account
-    // stream's gameFinish (driving RatingDiff) are two independent signals
-    // that arrive close together but in no guaranteed order. Appended by the
-    // GameOver handler once it runs; cleared immediately after so a second,
-    // later game's own GameOver doesn't accidentally re-append a stale value.
-    property string pendingRatingDiffText: ""
     // SAN per move, sent whole by the backend each BoardState (see
     // game::session::GameSession.move_history) -- only re-rendered when it
     // actually changes, same as everything else here.
@@ -765,7 +771,7 @@ Rectangle {
                 return
             }
         }
-        boardScreen.statusText = "Premove canceled: " + queued.from + "-" +
+        boardScreen.statusMessage = "Premove canceled: " + queued.from + "-" +
             queued.to + " is no longer legal."
     }
 
@@ -1602,6 +1608,7 @@ Rectangle {
 
                 Text {
                     width: parent.width
+                    objectName: "gameOverSummary"
                     text: boardScreen.statusText
                     wrapMode: Text.WordWrap
                     horizontalAlignment: Text.AlignHCenter
@@ -1711,14 +1718,10 @@ Rectangle {
         boardScreen.pendingPremove = null
         boardScreen.resetGameActionControls()
         boardScreen.pendingGameAction = ""
-        boardScreen.statusText = outcome
-        if (reason && reason.length > 0 && reason !== outcome) {
-            boardScreen.statusText += " · " + reason
-        }
-        if (boardScreen.pendingRatingDiffText.length > 0) {
-            boardScreen.statusText += boardScreen.pendingRatingDiffText
-            boardScreen.pendingRatingDiffText = ""
-        }
+        boardScreen.statusMessage = ""
+        boardScreen.gameOutcomeText = reason && reason.length > 0 && reason !== outcome
+            ? outcome + " · " + reason
+            : outcome
         boardScreen.showGameOverDialog = true
     }
 
@@ -1767,7 +1770,10 @@ Rectangle {
             if (boardChanged) boardScreen.clearAnnotations()
             if (gameChanged) {
                 boardScreen.resetPlayerStatuses()
-                boardScreen.pendingRatingDiffText = ""
+                if (boardScreen.gameRatingChange !== null &&
+                        boardScreen.gameRatingChange.gameId !== nextGameId) {
+                    boardScreen.gameRatingChange = null
+                }
                 boardScreen.pendingGameAction = ""
                 boardScreen.opponentGone = false
                 boardScreen.claimWinInSeconds = 0
@@ -1840,7 +1846,7 @@ Rectangle {
                 ? msg.first_move_time_ms
                 : null
             boardScreen.resetGameActionControls()
-            boardScreen.statusText = ""
+            boardScreen.statusMessage = ""
             boardScreen.gameOver = false
             boardScreen.showGameOverDialog = false
             boardScreen.gameResult = ""
@@ -1865,14 +1871,8 @@ Rectangle {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             boardScreen.completeGame(msg.result, msg.reason)
         } else if (msg.type === "RatingDiff") {
-            if (msg.game_id !== boardScreen.gameId) return
-            var diffText = " · " + (msg.rating_diff > 0 ? "+" : "") +
-                msg.rating_diff + " rating"
-            if (boardScreen.gameOver) {
-                boardScreen.statusText += diffText
-            } else {
-                boardScreen.pendingRatingDiffText = diffText
-            }
+            if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId)) return
+            boardScreen.gameRatingChange = {gameId: msg.game_id, diff: msg.rating_diff}
         } else if (msg.type === "GameActionCompleted") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             if (boardScreen.pendingGameAction === msg.action) {
@@ -1881,15 +1881,15 @@ Rectangle {
             if (msg.action === "Berserk") {
                 boardScreen.canBerserk = false
                 if (gameActionsLoader.item) gameActionsLoader.item.resetBerserk()
-                boardScreen.statusText = "Berserk activated"
+                boardScreen.statusMessage = "Berserk activated"
             } else if (msg.action === "AddTime") {
-                boardScreen.statusText = "15 seconds added to opponent"
+                boardScreen.statusMessage = "15 seconds added to opponent"
             }
         } else if (msg.type === "GameActionFailed") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             if (boardScreen.pendingGameAction === msg.action) {
                 boardScreen.pendingGameAction = ""
-                boardScreen.statusText = msg.message
+                boardScreen.statusMessage = msg.message
             }
         } else if (msg.type === "MovePreview") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0 ||
@@ -1922,7 +1922,7 @@ Rectangle {
         } else if (msg.type === "MoveRejected") {
             if (boardScreen.gameOver || (msg.game_id && msg.game_id !== boardScreen.gameId)) return
             boardScreen.rollbackMovePreview()
-            boardScreen.statusText = "Move rejected: " + msg.reason
+            boardScreen.statusMessage = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""
             moveRequestGate.clear()
         } else if (msg.type === "GameStreamReconnecting") {
@@ -1953,12 +1953,12 @@ Rectangle {
             boardScreen.opponentGone = msg.gone
             boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
         } else if (msg.type === "GameMovesFailed") {
-            boardScreen.statusText = msg.message
+            boardScreen.statusMessage = msg.message
         } else if (msg.type === "ErrorMsg") {
             // Otherwise a failed draw/takeback/abort/claim (e.g. "Takeback not
             // possible") only ever reached main.qml's console.warn -- invisible
             // to an actual player on-device.
-            boardScreen.statusText = msg.message
+            boardScreen.statusMessage = msg.message
             boardScreen.pendingGameAction = ""
         }
     }
