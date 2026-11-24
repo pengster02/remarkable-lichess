@@ -29,8 +29,6 @@ Rectangle {
     readonly property bool showingSetup: !waiting && !connectingMatch && !seekEnded
     readonly property bool canSubmit: !waiting && pendingAction.length === 0
     property string formError: ""
-    property bool creationFailed: false
-    onFormErrorChanged: if (formError.length === 0) creationFailed = false
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
         aiLevelField.activeFocus
@@ -80,7 +78,6 @@ Rectangle {
     }
 
     function validateTimeControl(maximumIncrement) {
-        creationFailed = false
         formError = timeControlError(maximumIncrement)
         return formError.length === 0
     }
@@ -133,6 +130,13 @@ Rectangle {
     function openMatchedGame(gameId) {
         cancelWaiting()
         openGame(gameId)
+    }
+
+    function revealChallengeSetup() {
+        if (!seekScreen.showingSetup || !seekScreen.canSubmit || !seekScreen.formError) return
+        // Waiting shrinks the pager. Remembered offsets can drift, and the first page can hide the retry.
+        seekColumn.forceLayout()
+        seekPager.showPageContaining(playerChallengeSection.y, playerChallengeSection.height)
     }
 
     function submitChallenge() {
@@ -208,19 +212,22 @@ Rectangle {
         }
     }
 
+    // Keep one error outside the pager. Inline feedback can be clipped, while a dialog blocks correction.
     Text {
-        id: creationError
-        objectName: "creationErrorText"
+        id: setupError
+        objectName: "seekErrorText"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
-        visible: seekScreen.creationFailed && seekScreen.formError.length > 0
+        visible: seekScreen.formError.length > 0
         text: seekScreen.formError
         textFormat: Text.PlainText
         font.pixelSize: theme.fontLabel
         wrapMode: Text.Wrap
+        maximumLineCount: 3
+        elide: Text.ElideRight
         color: theme.errorText
     }
 
@@ -239,7 +246,7 @@ Rectangle {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: creationError.visible ? creationError.top : backButton.top
+        anchors.bottom: setupError.visible ? setupError.top : backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
@@ -348,24 +355,6 @@ Rectangle {
                 ]
                 value: seekScreen.selectedColor
                 onSelected: (value) => seekScreen.selectedColor = value
-            }
-        }
-
-        SectionCard {
-            objectName: "seekErrorCard"
-            width: parent.width
-            darkMode: seekScreen.darkMode
-            compact: true
-            title: "Check game setup"
-            visible: seekScreen.showingSetup && !seekScreen.creationFailed && seekScreen.formError.length > 0
-
-            Text {
-                objectName: "seekErrorText"
-                width: parent.width
-                text: seekScreen.formError
-                font.pixelSize: theme.fontBody
-                wrapMode: Text.WordWrap
-                color: theme.errorText
             }
         }
 
@@ -561,12 +550,17 @@ Rectangle {
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
             seekScreen.formError = msg.message || "Lichess could not create the challenge."
+            Qt.callLater(seekScreen.revealChallengeSetup)
         } else if (msg.type === "ChallengeResolved") {
             if (!seekScreen.waiting || msg.game_id !== seekScreen.waitingChallengeGameId ||
                     msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.clearWaiting()
-            if (msg.error) seekScreen.formError = msg.error
-            else seekScreen.openGame(msg.game_id)
+            if (msg.error) {
+                seekScreen.formError = msg.error
+                Qt.callLater(seekScreen.revealChallengeSetup)
+            } else {
+                seekScreen.openGame(msg.game_id)
+            }
         } else if (msg.type === "ComputerGameCreated") {
             if (seekScreen.pendingAction !== "computer" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
@@ -583,7 +577,6 @@ Rectangle {
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
             seekScreen.formError = msg.message || "Lichess could not create that game."
-            seekScreen.creationFailed = true
         } else if (msg.type === "GameStarted") {
             var lookingForOpponent = seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0
             var matchingLink = seekScreen.pendingAction.length === 0 && !seekScreen.waiting &&

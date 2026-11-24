@@ -115,9 +115,31 @@ TestCase {
     }
 
     function test_challengeRequiresAUsername() {
+        var pager = findChild(seek, "seekFlickable")
+        var section = findChild(seek, "playerChallengeSection")
+        var error = findChild(seek, "seekErrorText")
+        var back = findChild(seek, "matchBackButton")
+        pager.moveTo(section.y)
+        var offset = pager.contentY
+        verify(offset > 0)
+
         seek.submitChallenge()
         compare(sentMessages.length, 0)
         compare(seek.formError, "Enter the Lichess username you want to challenge.")
+        tryVerify(function() { return error.visible && error.y >= pager.y + pager.height })
+        verify(error.y + error.height <= back.y)
+        compare(pager.contentY, offset)
+
+        var username = findChild(seek, "usernameField")
+        username.forceActiveFocus()
+        verify(seek.keyboardActive)
+        username.text = "opponent"
+        verify(!error.visible)
+        seek.submitChallenge()
+        verify(!seek.keyboardActive)
+        compare(sentMessages.length, 1)
+        compare(sentMessages[0].type, "CreateChallenge")
+        compare(sentMessages[0].username, "opponent")
     }
 
     function test_pendingRequestBlocksDuplicateSubmissionsAndRecovers() {
