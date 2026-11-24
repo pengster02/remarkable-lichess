@@ -854,12 +854,11 @@ impl LichessBackend {
             };
             match session.try_move(&from, &to, promotion.as_deref()) {
                 Ok(uci) => match session.preview_move(&uci) {
-                    Ok(preview) => Ok((
-                        uci,
-                        session.game_id.clone(),
-                        session.state.moves.clone(),
-                        preview,
-                    )),
+                    Ok(preview) => {
+                        // A streamed update must not overtake the preview of this position.
+                        self.send(replier, &preview);
+                        Ok((uci, session.game_id.clone(), session.state.moves.clone()))
+                    }
                     Err(error) => Err(Box::new(BackendMessage::MoveRejected {
                         game_id: Some(session.game_id.clone()),
                         reason: error.to_string(),
@@ -869,9 +868,8 @@ impl LichessBackend {
             }
         };
         match result {
-            Ok((uci, game_id, expected_moves, preview)) => {
+            Ok((uci, game_id, expected_moves)) => {
                 let submitted_at = Instant::now();
-                self.send(replier, &preview);
                 let response = client.make_move(&game_id, &uci).await;
                 let elapsed = submitted_at.elapsed();
                 if elapsed >= Duration::from_millis(750) {

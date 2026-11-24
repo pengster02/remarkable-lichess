@@ -295,9 +295,14 @@ Rectangle {
 
     function showHistoryPosition(index) {
         if (boardScreen.positionHistory.length === 0) return
-        var bounded = Math.max(0, Math.min(index, boardScreen.positionHistory.length - 1))
+        var latest = boardScreen.positionHistory.length - 1
+        var bounded = Math.max(0, Math.min(index, latest))
+        // Clear only the displayed preview when going back. Keeping it could
+        // let a rejection replace a historical frame, while canceling the move
+        // gate would let a second request overtake an in-flight POST.
+        if (bounded < latest) boardScreen.rollbackMovePreview()
         boardScreen.historyIndex = bounded
-        boardScreen.fen = boardScreen.positionHistory[bounded]
+        boardScreen.fen = boardScreen.previewFen || boardScreen.positionHistory[bounded]
         boardScreen.selectedSquare = ""
         boardScreen.pendingPromotion = null
         boardScreen.pendingMoveConfirmation = null
@@ -1677,7 +1682,7 @@ Rectangle {
     }
 
     function completeGame(result, reason) {
-        boardScreen.previewFen = ""
+        boardScreen.rollbackMovePreview()
         boardScreen.returnToLive()
         boardScreen.whiteTimeMs = boardScreen.displayClockFor("white")
         boardScreen.blackTimeMs = boardScreen.displayClockFor("black")
@@ -1887,7 +1892,8 @@ Rectangle {
                 boardScreen.statusText = msg.message
             }
         } else if (msg.type === "MovePreview") {
-            if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0) return
+            if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0 ||
+                    boardScreen.viewingHistory || boardScreen.gameOver || boardScreen.streamError.length > 0) return
             var previewLastMove = msg.last_move || null
             var previewRefreshSquares = boardScreen.changedSquaresBetweenFens(
                 boardScreen.liveFen, msg.fen)
