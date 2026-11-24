@@ -7,6 +7,7 @@ Item {
     property var whiteMove: null
     property var blackMove: null
     property int currentIndex: 0
+    property bool selectionEnabled: true
     signal moveSelected(int fenIndex)
 
     Theme { id: theme; darkMode: moveRow.darkMode }
@@ -44,6 +45,7 @@ Item {
             darkMode: moveRow.darkMode
             moveData: moveRow.whiteMove
             currentIndex: moveRow.currentIndex
+            selectionEnabled: moveRow.selectionEnabled
             onSelected: (fenIndex) => moveRow.moveSelected(fenIndex)
         }
 
@@ -55,6 +57,7 @@ Item {
             darkMode: moveRow.darkMode
             moveData: moveRow.blackMove
             currentIndex: moveRow.currentIndex
+            selectionEnabled: moveRow.selectionEnabled
             onSelected: (fenIndex) => moveRow.moveSelected(fenIndex)
         }
     }

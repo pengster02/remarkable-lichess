@@ -228,6 +228,78 @@ TestCase {
         compare(move.to, "e4")
     }
 
+    function test_candidateNotationKeepsTheArchiveNavigationAndBaseMoveNumbers() {
+        width = 1620
+        height = 2160
+        var base = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 37"
+        var archiveFen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 38"
+        var candidateFen = "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 38"
+        var requestId = choose("candidate-notation")
+        endpoint.reply({type: "GameMoves", request_id: requestId,
+                        fens: [base, archiveFen], moves: ["e5"]})
+        var review = screen.item
+        review.beginExploration()
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: base, fen: base, legal_moves: [{from: "c7", to: "c5"}]})
+        verify(review.requestExplorationMove("c7", "c5"))
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: base, fen: candidateFen, san: "c5", legal_moves: []})
+        verify(waitForRendering(review))
+
+        var candidateRow = findChild(review, "candidateMoveRow")
+        compare(candidateRow.moveNumber, 37)
+        compare(candidateRow.whiteMove, null)
+        compare(candidateRow.blackMove.san, "c5")
+        verify(findChild(candidateRow, "blackMoveCell").isCurrent)
+        verify(!findChild(candidateRow, "blackMoveMouseArea").enabled)
+
+        var archiveRow = findChild(review, "archiveMoveRow")
+        var archiveMove = findChild(archiveRow, "blackMoveCell")
+        compare(archiveRow.moveNumber, 37)
+        compare(archiveRow.blackMove.san, "e5")
+        mouseClick(archiveMove, archiveMove.width / 2, archiveMove.height / 2)
+        compare(review.currentIndex, 1)
+        compare(review.variationMoves, [])
+        compare(review.currentFen(), archiveFen)
+        var rebase = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(rebase.type, "RequestAnalysisPosition")
+        compare(rebase.fen, archiveFen)
+        tryVerify(function() { return findChild(review, "candidateMoveRow") === null })
+    }
+
+    function test_exploreStatusReportsFailuresAndCheckmateAlongsideTheCandidate() {
+        var base = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"
+        var afterMate = "7k/6Q1/6K1/8/8/8/8/8 b - - 1 1"
+        var requestId = choose("candidate-status")
+        endpoint.reply({type: "GameMoves", request_id: requestId, fens: [base], moves: []})
+        var review = screen.item
+        var status = findChild(review, "reviewPositionStatus")
+        review.beginExploration()
+        compare(status.text, "Loading legal moves...")
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: base, fen: base, legal_moves: [{from: "f7", to: "g7"}]})
+        verify(review.requestExplorationMove("f7", "g7"))
+        compare(status.text, "Applying move...")
+
+        var firstAttempt = review.pendingAnalysisRequestId
+        endpoint.reply({type: "AnalysisFailed", request_id: firstAttempt, message: "Retry this move"})
+        compare(status.text, "Retry this move")
+        verify(review.requestExplorationMove("f7", "g7"))
+        endpoint.reply({type: "AnalysisFailed", request_id: firstAttempt, message: "stale error"})
+        compare(status.text, "Applying move...")
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: base, fen: afterMate, san: "Qg7#", legal_moves: [],
+                        status: "checkmate", in_check: true})
+        compare(status.text, "Checkmate — candidate line ends.")
+        compare(review.currentFen(), afterMate)
+        var row = findChild(review, "candidateMoveRow")
+        compare(row.whiteMove.san, "Qg7#")
+        review.undoExplorationMove()
+        compare(status.text, "Loading legal moves...")
+        compare(review.variationMoves, [])
+        compare(review.currentFen(), base)
+    }
+
     function latestHomeRequest() {
         var messages = endpoint.sentMessages.filter(function(message) {
             return message.type === "RequestHome"

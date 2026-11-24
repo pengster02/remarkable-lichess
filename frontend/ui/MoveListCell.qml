@@ -5,6 +5,7 @@ Rectangle {
     property bool darkMode: false
     property var moveData: null
     property int currentIndex: 0
+    property bool selectionEnabled: true
     property string mouseObjectName: ""
     signal selected(int fenIndex)
 
@@ -73,7 +74,7 @@ Rectangle {
         id: moveCellMouse
         objectName: moveCell.mouseObjectName
         anchors.fill: parent
-        enabled: moveCell.hasMove
+        enabled: moveCell.selectionEnabled && moveCell.hasMove
         onClicked: moveCell.selected(moveCell.moveData.fenIndex)
     }
 }

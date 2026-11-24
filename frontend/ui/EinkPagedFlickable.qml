@@ -54,6 +54,24 @@ Item {
         viewport.contentY = Math.max(0, Math.min(pager.maximumContentY, y))
     }
 
+    function rowPageStops(items) {
+        var lastOrigin = Math.max(0, pager.contentHeight - pager.pageHeight)
+        var stops = []
+        var origin = 0
+        if (pager.pageHeight < 1) return stops
+        // Fixed strides can split a row on both pages, and fixed row counts miss wrapped rows.
+        for (var index = 0; index < items.length && origin < lastOrigin; index++) {
+            var row = items[index]
+            if (!row.visible || row.height <= 0 || row.y + row.height <= origin + pager.pageHeight) continue
+            var nextOrigin = Math.min(row.y, lastOrigin)
+            if (nextOrigin > origin) {
+                origin = nextOrigin
+                stops.push(origin)
+            }
+        }
+        return stops
+    }
+
     function normalizedPageStops() {
         var stops = [0]
         var requested = pager.pageStops || []

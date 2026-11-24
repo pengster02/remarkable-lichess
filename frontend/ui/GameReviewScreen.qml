@@ -1,4 +1,4 @@
-import QtQuick 2.5
+import QtQuick 2.9
 
 // Read-only replay of a finished game's move list, opened from
 // GameHistoryScreen.
@@ -90,6 +90,9 @@ Rectangle {
     property var exploreLegalMoves: []
     property var variationFens: []
     property var variationMoves: []
+    readonly property string variationStartFen: variationFens[0] || ""
+    readonly property var candidateRows: chessDisplay.moveRows(variationMoves, [], [], variationStartFen)
+    onVariationMovesChanged: if (moveList) Qt.callLater(moveList.revealCurrentMove)
     property string selectedSquare: ""
     property var pendingPromotion: null
     property string exploreStatus: ""
@@ -304,17 +307,7 @@ Rectangle {
             return "Draw by insufficient material."
         }
         if (gameReviewScreen.exploreStatusCode === "check") return "Check — choose a legal reply."
-        return "Tap or drag a piece to explore a candidate line."
-    }
-
-    function explorationHeader() {
-        if (gameReviewScreen.variationMoves.length === 0) return gameReviewScreen.exploreStatus
-        var label = "Candidate: " + gameReviewScreen.variationMoves.join(" ")
-        if (gameReviewScreen.exploreStatusCode === "checkmate") return label + " — checkmate"
-        if (gameReviewScreen.exploreStatusCode === "stalemate") return label + " — stalemate"
-        if (gameReviewScreen.exploreStatusCode === "insufficient_material") return label + " — draw"
-        if (gameReviewScreen.exploreStatusCode === "check") return label + " — check"
-        return label
+        return "Tap or drag to explore."
     }
 
     function promotionOptionsFor(from, to) {
@@ -629,8 +622,9 @@ Rectangle {
         Row {
             spacing: theme.spacingSmall
             Text {
+                objectName: "reviewPositionStatus"
                 text: gameReviewScreen.exploreMode
-                    ? gameReviewScreen.explorationHeader()
+                    ? gameReviewScreen.exploreStatus
                     : (gameReviewScreen.currentIndex === 0
                         ? "Starting position"
                         : "Move " + gameReviewScreen.currentIndex + " of " +
@@ -638,6 +632,9 @@ Rectangle {
                 font.pixelSize: theme.fontLabel
                 font.bold: gameReviewScreen.exploreMode
                 width: gameReviewScreen.exploreMode ? boardArea.width : implicitWidth
+                textFormat: Text.PlainText
+                wrapMode: gameReviewScreen.exploreMode ? Text.Wrap : Text.NoWrap
+                maximumLineCount: gameReviewScreen.exploreMode ? 2 : 1
                 elide: Text.ElideRight
                 color: theme.text
             }
@@ -953,6 +950,7 @@ Rectangle {
 
     EinkPagedFlickable {
         id: moveList
+        objectName: "reviewMoveList"
         // Anchored between the board controls and the Back button (same
         // pattern as GameHistoryScreen's own ListView) rather than sized by
         // a fixed height -- a long finished game's move list (80+ plies for
@@ -966,15 +964,25 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: moveRowsColumn.height
+        onPageHeightChanged: updateMovePageStops()
+
+        function updateMovePageStops() {
+            if (!moveRowsColumn || !candidateRepeater) return
+            pageStops = candidateRepeater.count > 0 ? rowPageStops(moveRowsColumn.children) : []
+        }
 
         function revealCurrentMove() {
-            if (gameReviewScreen.currentIndex <= 0) {
+            var hasCandidate = candidateRepeater.count > 0
+            var index = hasCandidate ? gameReviewScreen.variationMoves.length : gameReviewScreen.currentIndex
+            if (index <= 0) {
                 if (moveList.contentY !== 0) moveList.moveTo(0)
                 return
             }
-            var rowIndex = chessDisplay.moveRowIndex(gameReviewScreen.currentIndex, gameReviewScreen.fens[0])
-            var item = moveRowRepeater.itemAt(rowIndex)
+            var startFen = hasCandidate ? gameReviewScreen.variationStartFen : gameReviewScreen.fens[0]
+            var rowIndex = chessDisplay.moveRowIndex(index, startFen)
+            var item = (hasCandidate ? candidateRepeater : moveRowRepeater).itemAt(rowIndex)
             if (!item) return
+            moveRowsColumn.forceLayout()
             moveList.reveal(item.y, item.height)
         }
 
@@ -982,11 +990,51 @@ Rectangle {
             id: moveRowsColumn
             width: parent.width
             spacing: 0
+            onPositioningComplete: moveList.updateMovePageStops()
+
+            // One pager keeps archived moves reachable. A wrapping header shifts the board,
+            // and separate panels need another way to switch between them.
+            Text {
+                width: parent.width
+                height: theme.fontSmall + theme.spacingXs
+                verticalAlignment: Text.AlignVCenter
+                visible: candidateRepeater.count > 0
+                text: "Candidate line"
+                font.pixelSize: theme.fontSmall
+                font.bold: true
+                color: theme.textMuted
+            }
+            Repeater {
+                id: candidateRepeater
+                model: gameReviewScreen.candidateRows
+                MoveListRow {
+                    required property var modelData
+                    objectName: "candidateMoveRow"
+                    selectionEnabled: false
+                    width: parent.width
+                    darkMode: gameReviewScreen.darkMode
+                    moveNumber: modelData.number
+                    whiteMove: modelData.white
+                    blackMove: modelData.black
+                    currentIndex: gameReviewScreen.variationMoves.length
+                }
+            }
+            Text {
+                width: parent.width
+                height: theme.fontSmall + theme.spacingXs
+                verticalAlignment: Text.AlignVCenter
+                visible: candidateRepeater.count > 0 && moveRowRepeater.count > 0
+                text: "Game moves"
+                font.pixelSize: theme.fontSmall
+                font.bold: true
+                color: theme.textMuted
+            }
             Repeater {
                 id: moveRowRepeater
                 model: gameReviewScreen.moveRows()
                 MoveListRow {
                     required property var modelData
+                    objectName: "archiveMoveRow"
                     width: parent.width
                     darkMode: gameReviewScreen.darkMode
                     moveNumber: modelData.number
