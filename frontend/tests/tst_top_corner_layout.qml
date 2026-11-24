@@ -240,18 +240,28 @@ TestCase {
     function test_clockRefreshCadence_data() {
         return [
             {tag: "two minutes", clockMs: 120000, firstMoveMs: null, interval: 10000},
-            {tag: "above one minute", clockMs: 65000, firstMoveMs: null, interval: 10000},
+            {tag: "nearing one minute", clockMs: 65000, firstMoveMs: null, interval: 5000},
+            {tag: "fraction above one minute", clockMs: 60123, firstMoveMs: null, interval: 1000},
+            {tag: "aged snapshot nearing one minute", clockMs: 64000, firstMoveMs: null, age: 2750, interval: 1250},
             {tag: "one minute", clockMs: 60000, firstMoveMs: null, interval: 5000},
+            {tag: "nearing fifteen seconds", clockMs: 18000, firstMoveMs: null, interval: 3000},
+            {tag: "fractional snapshot near fifteen seconds", clockMs: 18123, firstMoveMs: null, interval: 4000},
             {tag: "fifteen seconds", clockMs: 15000, firstMoveMs: null, interval: 1000},
             {tag: "first move in thirty seconds", clockMs: 120000, firstMoveMs: 30000, interval: 5000},
-            {tag: "first move in ten seconds", clockMs: 120000, firstMoveMs: 10000, interval: 1000}
+            {tag: "first move in eighteen seconds", clockMs: 120000, firstMoveMs: 18000, interval: 3000},
+            {tag: "aged fractional first-move deadline", clockMs: 120000, firstMoveMs: 15123, age: 875, interval: 125},
+            {tag: "first move in ten seconds", clockMs: 120000, firstMoveMs: 10000, interval: 1000},
+            {tag: "expired first move", clockMs: 120000, firstMoveMs: 0, interval: 1000}
         ]
     }
 
     function test_clockRefreshCadence(row) {
         board.initialClockMs = 600000
-        board.liveClock = {whiteMs: row.clockMs, blackMs: 600000, firstMoveMs: row.firstMoveMs, receivedAt: 0}
-        compare(board.clockRefreshIntervalMs(), row.interval)
+        board.liveClock = {whiteMs: row.clockMs, blackMs: 600000, firstMoveMs: row.firstMoveMs, receivedAt: 100000}
+        board.clockNowMs = 100000 + (row.age || 0)
+        var interval = board.clockRefreshIntervalMs()
+        board.clockNowMs = Qt.binding(function() { return Date.now() + board.clockPulse * 0 })
+        compare(interval, row.interval)
     }
 
     function test_metadataOnlyUpdateDoesNotWakeBoardCollections() {

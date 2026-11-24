@@ -221,7 +221,12 @@ Rectangle {
     property bool liveClockEnabled: true
     property int clockPulse: 0
     property double clockNowMs: Date.now() + boardScreen.clockPulse * 0
+    onDisplayedClockChanged: {
+        // A fresh snapshot shifts the tick phase even when the interval stays equal.
+        if (clockTimer.running) clockTimer.restart()
+    }
     Timer {
+        id: clockTimer
         interval: boardScreen.clockRefreshIntervalMs()
         repeat: true
         running: boardScreen.visible &&
@@ -485,10 +490,13 @@ Rectangle {
             : boardScreen.opponentFlair
     }
 
-    function clockElapsedMs() {
+    function clockAgeMs() {
         var receivedAt = boardScreen.displayedClock.receivedAt
-        if (receivedAt <= 0) return 0
-        return Math.floor(Math.max(0, boardScreen.clockNowMs - receivedAt) / 1000) * 1000
+        return receivedAt > 0 ? Math.max(0, boardScreen.clockNowMs - receivedAt) : 0
+    }
+
+    function clockElapsedMs() {
+        return Math.floor(boardScreen.clockAgeMs() / 1000) * 1000
     }
 
     function displayClockFor(color) {
@@ -505,14 +513,15 @@ Rectangle {
         return remaining === null ? null : Math.max(0, remaining - boardScreen.clockElapsedMs())
     }
 
-    // Faster only when the visible clock text is about to change often.
-    // Above one minute, 10s ticks are enough and much kinder to e-ink.
     function clockRefreshIntervalMs() {
         var ms = boardScreen.displayFirstMoveTimeMs()
         if (ms === null) ms = boardScreen.displayClockFor(boardScreen.turn)
         if (ms <= 15000) return 1000
-        if (ms <= 60000) return 5000
-        return 10000
+        var boundary = ms <= 60000 ? 15000 : 60000
+        var cadence = ms <= 60000 ? 5000 : 10000
+        // Whole-second crossings preserve the e-ink cadence. Other options: raw millisecond aging or continuous one-second polling.
+        var untilBoundary = Math.ceil((ms - boundary) / 1000) * 1000 - boardScreen.clockAgeMs() % 1000
+        return Math.min(cadence, untilBoundary)
     }
 
     function gameActionsLabel() {

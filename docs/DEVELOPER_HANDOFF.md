@@ -186,9 +186,10 @@ Minimum emulator smoke test:
   `opponentGone` remains the live source for disconnect and claim state.
 - Game-over result logic keeps Lichess's raw status internally, but the backend
   sends a human-readable termination label such as `Time forfeit` for display.
-- Live clocks refresh every 10 seconds above one minute, align one transition
-  refresh with the one-minute boundary, and refresh every second thereafter.
-  First-move deadlines use the same adaptive cadence.
+- Live clocks and first-move deadlines refresh every 10 seconds above 60 seconds,
+  every 5 seconds above 15 seconds through 60 seconds, and every second at 15
+  seconds or less.
+  A refresh is aligned with each transition into a faster cadence.
 - Page actions use the 144 px `AppButton`; the board strip uses the visually
   smaller 96 px `BoardToolButton`, still about a 9 mm touch target.
 - Overlays use `AppDialog`, promotion uses `PromotionDialog`, and live/review
