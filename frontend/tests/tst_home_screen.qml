@@ -18,7 +18,7 @@ TestCase {
         height: 2384
         backendSender: function(message) { testCase.sentMessages.push(message) }
         navigateTo: function() {}
-        expectNextGame: function(gameId) {
+        openGame: function(gameId) {
             testCase.expectedGameStarts++
             testCase.expectedGameId = gameId
         }
@@ -87,12 +87,15 @@ TestCase {
         compare(sentMessages.length, 1)
         compare(sentMessages[0].type, "AcceptChallenge")
         compare(home.pendingChallengeId, "abc123")
-        compare(expectedGameStarts, 1)
-        compare(expectedGameId, "abc123")
+        compare(expectedGameStarts, 0)
 
         home.handleMessage({type: "PendingChallenges", challenges: []})
+        compare(home.pendingChallengeId, "abc123")
+        home.handleMessage({type: "ChallengeAccepted", game_id: "abc123"})
         compare(home.pendingChallengeId, "")
         compare(home.pendingChallengeAction, "")
+        compare(expectedGameStarts, 1)
+        compare(expectedGameId, "abc123")
     }
 
     function test_successClearsAnEarlierConnectionError() {

@@ -1,5 +1,5 @@
 use crate::lichess::models::{
-    Account, ChallengeListResponse, ChallengeOpenJson, CloudEvaluation, GameExport,
+    Account, ChallengeListResponse, ChallengeOpenJson, CloudEvaluation, CreatedGame, GameExport,
     GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame,
     PlayingResponse, UserStatus,
 };
@@ -514,7 +514,7 @@ impl LichessClient {
         increment: u32,
         rated: bool,
         color: &str,
-    ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
+    ) -> Result<(String, std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>)> {
         let resp = self
             .send_stream_logged("create_challenge", self.bearer(self.http.post(format!("{}/api/challenge/{}", self.base_url, username)))
                 .form(&[
@@ -528,7 +528,19 @@ impl LichessClient {
         if !resp.status().is_success() {
             return Err(error_from_response("create_challenge", resp).await);
         }
-        Ok(response_to_lines(resp))
+        let mut lines = response_to_lines(resp);
+        let first_line = tokio::time::timeout(self.request_timeout, async {
+            while let Some(line) = lines.next().await {
+                if !line.trim().is_empty() {
+                    return Ok(line);
+                }
+            }
+            Err(anyhow!("Lichess closed the challenge before returning its ID"))
+        })
+        .await
+        .map_err(|_| anyhow!("Timed out waiting for the Lichess challenge ID"))??;
+        let challenge: CreatedGame = serde_json::from_str(&first_line)?;
+        Ok((challenge.id, lines))
     }
 
     /// Confirmed against lichess-org/api's api-challenge-ai.yaml: unlike seeks/user
@@ -536,9 +548,7 @@ impl LichessClient {
     /// long-poll to hold open) and isn't subject to the seek-only Rapid-speed floor
     /// (confirmed against lichess-org/lila's own SetupForm.scala/misc.scala -- that
     /// restriction only applies to `isBoardCompatible` seeks, not challenge/ai).
-    /// The started game is still reported on the account event stream's `gameStart`
-    /// like any other game, so no extra plumbing is needed beyond this POST.
-    pub async fn challenge_ai(&self, level: u8, minutes: u32, increment: u32) -> Result<()> {
+    pub async fn challenge_ai(&self, level: u8, minutes: u32, increment: u32) -> Result<String> {
         let resp = self
             .send_logged("challenge_ai", self.bearer(self.http.post(format!("{}/api/challenge/ai", self.base_url)))
                 .form(&[
@@ -550,7 +560,7 @@ impl LichessClient {
         if !resp.status().is_success() {
             return Err(error_from_response("challenge_ai", resp).await);
         }
-        Ok(())
+        Ok(resp.json::<CreatedGame>().await?.id)
     }
 
     /// Confirmed against lichess-org/api's ChallengeOpenJson.yaml: unlike
@@ -1209,12 +1219,14 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/challenge/opponent"))
-            .respond_with(ResponseTemplate::new(200))
+            .respond_with(ResponseTemplate::new(200).set_body_string("\n{\"id\":\"direct01\"}\n{\"done\":\"accepted\"}\n"))
             .mount(&server)
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let _stream = client.create_challenge("opponent", 10, 5, false, "random").await.unwrap();
+        let (id, mut lines) = client.create_challenge("opponent", 10, 5, false, "random").await.unwrap();
+        assert_eq!(id, "direct01");
+        assert_eq!(lines.next().await.as_deref(), Some(r#"{"done":"accepted"}"#));
     }
 
     #[tokio::test]
@@ -1225,12 +1237,12 @@ mod tests {
             .and(body_string_contains("level=3"))
             .and(body_string_contains("clock.limit=300"))
             .and(body_string_contains("clock.increment=2"))
-            .respond_with(ResponseTemplate::new(200))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "computer"})))
             .mount(&server)
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        client.challenge_ai(3, 5, 2).await.unwrap();
+        assert_eq!(client.challenge_ai(3, 5, 2).await.unwrap(), "computer");
     }
 
     #[tokio::test]
@@ -1243,7 +1255,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/challenge/opponent"))
             .and(body_string_contains("keepAliveStream=true"))
-            .respond_with(ResponseTemplate::new(200))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"id\":\"direct01\"}\n"))
             .mount(&server)
             .await;
 

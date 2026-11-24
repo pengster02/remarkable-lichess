@@ -41,7 +41,9 @@ mod tests {
     fn parses_a_valid_line() {
         let line = r#"{"type":"gameStart","game":{"id":"abcd1234"}}"#;
         let parsed: EventStreamMessage = parse_ndjson_line(line).unwrap();
-        assert_eq!(parsed, EventStreamMessage::GameStart { game: EventGame { id: "abcd1234".into() } });
+        assert_eq!(parsed, EventStreamMessage::GameStart {
+            game: EventGame { id: "abcd1234".into(), source: None, speed: None },
+        });
     }
 
     #[test]

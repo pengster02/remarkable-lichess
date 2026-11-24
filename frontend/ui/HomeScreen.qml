@@ -8,7 +8,7 @@ Rectangle {
     ChessDisplay { id: chessDisplay }
     property var backendSender
     property var navigateTo
-    property var expectNextGame: function() {}
+    property var openGame: function() {}
     property bool darkMode: false
     // Every now-playing game, not just one -- replaces the old singular
     // resumableGameId, which silently dropped every game past the first for
@@ -64,7 +64,6 @@ Rectangle {
         homeScreen.actionError = ""
         homeScreen.pendingChallengeId = challengeId
         homeScreen.pendingChallengeAction = action
-        if (action === "accept") homeScreen.expectNextGame(challengeId)
         homeScreen.backendSender({
             type: action === "accept" ? "AcceptChallenge" : "DeclineChallenge",
             id: challengeId
@@ -227,15 +226,7 @@ Rectangle {
                             width: parent.width
                             text: "Resume"
                             highlighted: modelData.is_my_turn
-                            onClicked: {
-                                // No BoardState flows for an already-in-progress game
-                                // until its stream is (re)attached server-side -- see
-                                // ResumeGame's own comment in protocol.rs. We still
-                                // navigate immediately after for a responsive UI
-                                // instead of waiting on the first BoardState.
-                                homeScreen.backendSender({type: "ResumeGame", game_id: modelData.game_id})
-                                homeScreen.navigateTo("BoardScreen.qml")
-                            }
+                            onClicked: homeScreen.openGame(modelData.game_id)
                         }
                     }
                 }
@@ -339,9 +330,17 @@ Rectangle {
             homeScreen.ratings = msg.ratings || []
         } else if (msg.type === "PendingChallenges") {
             homeScreen.challengesError = ""
+            if (homeScreen.pendingChallengeAction !== "accept") {
+                homeScreen.pendingChallengeId = ""
+                homeScreen.pendingChallengeAction = ""
+            }
+            homeScreen.pendingChallenges = msg.challenges || []
+        } else if (msg.type === "ChallengeAccepted") {
+            if (homeScreen.pendingChallengeAction !== "accept" ||
+                    msg.game_id !== homeScreen.pendingChallengeId) return
             homeScreen.pendingChallengeId = ""
             homeScreen.pendingChallengeAction = ""
-            homeScreen.pendingChallenges = msg.challenges || []
+            homeScreen.openGame(msg.game_id)
         } else if (msg.type === "ConnectivityState") {
             homeScreen.connectivityKnown = true
             homeScreen.online = msg.online || false
