@@ -10,7 +10,7 @@ use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
     GameAction, GameActionRequest, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
-    OpponentDeparture, PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
+    MoveRequest, OpponentDeparture, PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
@@ -243,12 +243,9 @@ impl ChallengeRequest {
 
 struct MoveSubmission {
     game_id: String,
-    request_id: Option<u32>,
     expected_moves: String,
     uci: String,
-    from: String,
-    to: String,
-    promotion: Option<String>,
+    request: MoveRequest,
     canceled: oneshot::Receiver<()>,
 }
 
@@ -1107,11 +1104,9 @@ impl LichessBackend {
         &mut self,
         replier: &BackendReplier<Self>,
         expected_game_id: Option<&str>,
-        from: String,
-        to: String,
-        promotion: Option<String>,
-        request_id: Option<u32>,
+        request: MoveRequest,
     ) {
+        let request_id = request.request_id;
         let reject = |game_id, reason| BackendMessage::MoveRejected {
             game_id, request_id, reason,
         };
@@ -1126,7 +1121,13 @@ impl LichessBackend {
                 return;
             }
             let session = guard.as_mut().expect("active game checked above");
-            let uci = match session.try_move(&from, &to, promotion.as_deref()) {
+            // The stream can change positions after the UI sends. Checking
+            // there misses queued updates, and checking after preview is too late.
+            if request.expected_position_id.is_some_and(|id| id != session.position_id) {
+                self.send(replier, &reject(Some(session.game_id.clone()), "Board changed.".into()));
+                return;
+            }
+            let uci = match session.try_move(&request.from, &request.to, request.promotion.as_deref()) {
                 Ok(uci) => uci,
                 Err(reason) => {
                     self.send(replier, &reject(Some(session.game_id.clone()), reason.into()));
@@ -1144,12 +1145,9 @@ impl LichessBackend {
             self.send(replier, &preview);
             MoveSubmission {
                 game_id: session.game_id.clone(),
-                request_id,
                 expected_moves: session.state.moves.clone(),
                 uci,
-                from,
-                to,
-                promotion,
+                request,
                 canceled,
             }
         };
@@ -1408,7 +1406,8 @@ async fn submit_move(
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
 ) {
-    let MoveSubmission { game_id, request_id, expected_moves, uci, from, to, promotion, mut canceled } = submission;
+    let MoveSubmission { game_id, expected_moves, uci, request, mut canceled } = submission;
+    let MoveRequest { request_id, from, to, promotion, .. } = request;
     let submitted_at = Instant::now();
     let response = tokio::select! {
         biased;
@@ -1926,8 +1925,8 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::CancelMatch { request_id: None } => {
                 stop_game_request(&mut self.pending_match).await;
             }
-            FrontendMessage::MakeMove { from, to, promotion, request_id } => {
-                self.handle_make_move(replier, expected_game_id, from, to, promotion, request_id).await
+            FrontendMessage::MakeMove { request } => {
+                self.handle_make_move(replier, expected_game_id, request).await
             }
             FrontendMessage::Resign { request_id } => {
                 let request = GameActionRequest::new(GameAction::Resign, request_id);

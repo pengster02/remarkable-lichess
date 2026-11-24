@@ -206,6 +206,10 @@ Minimum emulator smoke test:
 - Every move request passes through `MoveRequestGate`. The gate releases on a
   scoped rejection or a `BoardState` that settles the request, from either HTTP
   acceptance or an authoritative game stream update.
+  `MakeMove.expected_position_id` echoes the displayed live board's ID. The
+  backend checks it under the session lock before emitting a preview or starting
+  the POST. Clock and offer updates and unchanged reconnects preserve this ID.
+  A move, takeback, rewritten line, or new attachment gets a new ID.
   While a move preview is visible, keep its clocks and receipt time together.
   Same-position frames update the live snapshot used for rollback, including its
   receipt time and first-move deadline.

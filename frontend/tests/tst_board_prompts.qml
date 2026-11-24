@@ -94,6 +94,33 @@ TestCase {
         compare(control.armLevel, 0)
     }
 
+    function test_newPositionIdForTheSameLineClosesAnOldDraft() {
+        var snapshot = state([start], [], "white")
+        snapshot.position_id = 4294967293
+        snapshot.legal_moves = [{from: "e2", to: "e4", promotion: null}]
+        endpoint.reply(snapshot)
+        board.moveConfirmation = true
+        board.onSquareTapped("e2")
+        board.onSquareTapped("e4")
+        verify(board.pendingMoveConfirmation !== null)
+        var history = board.positionHistory
+        endpoint.reply(snapshot)
+        verify(board.pendingMoveConfirmation !== null)
+
+        snapshot.position_id += 1
+        endpoint.reply(snapshot)
+        compare(board.pendingMoveConfirmation, null)
+        verify(board.positionHistory === history)
+        board.confirmPendingMove()
+        compare(sentMoves().length, 0)
+
+        board.onSquareTapped("e2")
+        board.onSquareTapped("e4")
+        board.confirmPendingMove()
+        compare(sentMoves().length, 1)
+        compare(sentMoves()[0].expected_position_id, 4294967294)
+    }
+
     function test_opponentMoveClosesAnUnfinishedPremovePromotion() {
         var promotion = "7k/P7/8/8/8/8/8/4K3 b - - 0 1"
         endpoint.reply(state([promotion], [], "black"))
@@ -132,6 +159,7 @@ TestCase {
         var line = [start, afterE4, afterE5, afterNf3]
         var moves = ["e4", "e5", "Nf3"]
         var before = state(line, moves, "black")
+        before.position_id = 100
         endpoint.reply(before)
         board.premovesEnabled = true
         board.onSquareTapped("d2")
@@ -146,6 +174,7 @@ TestCase {
         var after = row.send
             ? state(line.concat([afterNc6]), moves.concat(["Nc6"]), "white")
             : state(line.slice(0, -1), moves.slice(0, -1), "white")
+        after.position_id = 104
         after.legal_moves = [{from: "d2", to: "d4", promotion: null}]
         if (row.append) {
             delete after.position_history
@@ -157,6 +186,9 @@ TestCase {
         endpoint.reply(after)
         compare(board.pendingPremove, null)
         compare(sentMoves().length, row.send ? 1 : 0)
-        if (row.send) compare(sentMoves()[0].to, "d4")
+        if (row.send) {
+            compare(sentMoves()[0].to, "d4")
+            compare(sentMoves()[0].expected_position_id, 104)
+        }
     }
 }
