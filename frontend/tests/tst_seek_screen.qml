@@ -6,6 +6,7 @@ TestCase {
     id: testCase
     name: "SeekScreen"
     when: windowShown
+    visible: true
     width: 960
     height: 1696
 
@@ -64,12 +65,12 @@ TestCase {
         var challenge = findChild(seek, "playerChallengeSection")
         verify(pager !== null)
         verify(challenge !== null)
+        tryCompare(pager, "pageCount", 2)
         pager.moveTo(0)
         pager.pageDown()
+        tryCompare(pager, "currentPage", 2)
         fuzzyCompare(pager.contentY, challenge.y, 1)
         fuzzyCompare(challenge.mapToItem(pager, 0, 0).y, 0, 1)
-        compare(pager.currentPage, 2)
-        compare(pager.pageCount, 2)
     }
 
     function test_timeControlUsesExplicitUnits() {

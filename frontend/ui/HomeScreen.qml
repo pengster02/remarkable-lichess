@@ -33,6 +33,12 @@ Rectangle {
     // nothing going on", which isn't true, it just hasn't loaded yet.
     property bool loadedOnce: false
     property int homeRequestId: 0
+    property int ratingsRequestId: 0
+    property bool gamesLoadPending: false
+    property bool gamesRefreshQueued: false
+    // Hide finished IDs until a later read confirms removal. Waiting for GET
+    // keeps a dead Resume button, and removing only the row lets GET restore it.
+    property var finishedGameIds: []
     property bool connectivityKnown: false
     property bool online: false
     property var wifiConnected: null
@@ -47,8 +53,21 @@ Rectangle {
     onBackendSenderChanged: homeScreen.refresh()
     onNextRequestIdChanged: homeScreen.refresh()
 
+    // Coalesce events while a list is loading. Restarting every read can starve
+    // the list, and a queue of every event repeats reads for the same snapshot.
+    Timer {
+        id: gameRefreshDelay
+        interval: 250
+        onTriggered: homeScreen.refreshGames(true)
+    }
+    Timer {
+        id: gameRetryDelay
+        onTriggered: homeScreen.queueGamesRefresh()
+    }
+
     function acceptsHomeReply(msg) {
-        return homeScreen.homeRequestId > 0 && msg.request_id === homeScreen.homeRequestId
+        var expected = msg.type === "HomeRatings" ? homeScreen.ratingsRequestId : homeScreen.homeRequestId
+        return expected > 0 && msg.request_id === expected
     }
 
     function refresh() {
@@ -57,14 +76,28 @@ Rectangle {
         if (homeScreen.refreshGames()) homeScreen.backendSender({type: "RequestChallenges"})
     }
 
-    function refreshGames() {
+    function refreshGames(gamesOnly) {
         if (!homeScreen.backendSender || !homeScreen.nextRequestId) return false
-        homeScreen.loadedOnce = false
-        homeScreen.connectivityKnown = false
-        homeScreen.loadError = ""
+        gameRefreshDelay.stop()
+        homeScreen.gamesRefreshQueued = false
+        homeScreen.gamesLoadPending = true
         homeScreen.homeRequestId = homeScreen.nextRequestId()
-        homeScreen.backendSender({type: "RequestHome", request_id: homeScreen.homeRequestId})
+        var request = {type: "RequestHome", request_id: homeScreen.homeRequestId}
+        if (gamesOnly) {
+            request.games_only = true
+        } else {
+            homeScreen.loadedOnce = false
+            homeScreen.connectivityKnown = false
+            homeScreen.loadError = ""
+            homeScreen.ratingsRequestId = homeScreen.homeRequestId
+        }
+        homeScreen.backendSender(request)
         return true
+    }
+
+    function queueGamesRefresh() {
+        homeScreen.gamesRefreshQueued = true
+        if (!homeScreen.gamesLoadPending && !gameRetryDelay.running) gameRefreshDelay.start()
     }
 
     function refreshChallenges() {
@@ -344,12 +377,47 @@ Rectangle {
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
             if (!homeScreen.acceptsHomeReply(msg)) return
+            homeScreen.gamesLoadPending = false
             homeScreen.loadedOnce = true
             homeScreen.loadError = ""
-            homeScreen.ongoingGames = msg.ongoing_games || []
+            gameRetryDelay.stop()
+            var games = msg.ongoing_games || []
+            var next = games.filter(function(game) {
+                return homeScreen.finishedGameIds.indexOf(game.game_id) === -1
+            })
+            var shown = homeScreen.ongoingGames
+            // An equal snapshot should keep the Resume delegates and their input state.
+            if (next.length !== shown.length || next.some(function(game, index) {
+                var old = shown[index]
+                return game.game_id !== old.game_id || game.opponent_name !== old.opponent_name ||
+                    game.opponent_rating !== old.opponent_rating || game.is_my_turn !== old.is_my_turn
+            })) homeScreen.ongoingGames = next
+            if (homeScreen.gamesRefreshQueued) {
+                homeScreen.queueGamesRefresh()
+            } else {
+                var listedIds = games.map(function(game) { return game.game_id })
+                homeScreen.finishedGameIds = homeScreen.finishedGameIds.filter(function(id) {
+                    return listedIds.indexOf(id) !== -1
+                })
+            }
         } else if (msg.type === "HomeRatings") {
             if (!homeScreen.acceptsHomeReply(msg)) return
             homeScreen.ratings = msg.ratings || []
+        } else if (msg.type === "GameStarted") {
+            var alreadyListed = homeScreen.ongoingGames.some(function(game) { return game.game_id === msg.game_id })
+            if (!alreadyListed && homeScreen.finishedGameIds.indexOf(msg.game_id) === -1) {
+                homeScreen.queueGamesRefresh()
+            }
+        } else if (msg.type === "GameFinished") {
+            if (homeScreen.finishedGameIds.indexOf(msg.game_id) !== -1) return
+            var remaining = homeScreen.ongoingGames.filter(function(game) { return game.game_id !== msg.game_id })
+            var removed = remaining.length !== homeScreen.ongoingGames.length
+            if (!removed && !homeScreen.gamesLoadPending && !homeScreen.gamesRefreshQueued) return
+            homeScreen.finishedGameIds = homeScreen.finishedGameIds.concat([msg.game_id])
+            if (removed) homeScreen.ongoingGames = remaining
+            homeScreen.queueGamesRefresh()
+        } else if (msg.type === "AccountEventsResumed") {
+            homeScreen.queueGamesRefresh()
         } else if (msg.type === "PendingChallenges") {
             homeScreen.challengesError = ""
             homeScreen.pendingChallenges = msg.challenges || []
@@ -369,9 +437,17 @@ Rectangle {
             homeScreen.connectionMessage = msg.message || ""
         } else if (msg.type === "HomeLoadFailed") {
             if (!homeScreen.acceptsHomeReply(msg)) return
+            homeScreen.gamesLoadPending = false
             homeScreen.loadedOnce = true
             homeScreen.loadError = msg.message ||
                 "Couldn't load your games. Check Wi-Fi and retry."
+            if (msg.retry_after_ms > 0) {
+                gameRetryDelay.interval = msg.retry_after_ms
+                gameRetryDelay.restart()
+                homeScreen.gamesRefreshQueued = true
+            } else if (homeScreen.gamesRefreshQueued) {
+                homeScreen.queueGamesRefresh()
+            }
         } else if (msg.type === "ChallengesLoadFailed") {
             homeScreen.challengesError = msg.message ||
                 "Couldn't load challenges."
