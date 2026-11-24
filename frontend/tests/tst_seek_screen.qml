@@ -26,6 +26,7 @@ TestCase {
         sentMessages = []
         seek.pendingAction = ""
         seek.formError = ""
+        seek.selectedColor = "random"
         seek.openChallengeUrls = null
         seek.clearWaiting()
         seek.seekEnded = false
@@ -186,9 +187,11 @@ TestCase {
         compare(seek.formError, "Computer level must be a whole number from 1 to 8.")
 
         findChild(seek, "aiLevelField").text = "8"
+        seek.selectedColor = "black"
         seek.submitComputerGame()
         compare(sentMessages.length, 1)
         compare(sentMessages[0].type, "ChallengeAi")
         compare(sentMessages[0].level, 8)
+        compare(sentMessages[0].color, "black")
     }
 }

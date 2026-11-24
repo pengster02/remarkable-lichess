@@ -113,7 +113,14 @@ pub enum FrontendMessage {
         username: String, minutes: u32, increment: u32, rated: bool, color: String,
         request_id: Option<u32>,
     },
-    ChallengeAi { level: u8, minutes: u32, increment: u32, request_id: Option<u32> },
+    ChallengeAi {
+        level: u8,
+        minutes: u32,
+        increment: u32,
+        // Omission keeps the legacy random choice. A required field breaks older clients, and a wire enum drops invalid choices before the scoped reply.
+        color: Option<String>,
+        request_id: Option<u32>,
+    },
     #[serde(alias = "CancelSeek")]
     CancelMatch { request_id: Option<u32> },
     MakeMove { #[serde(flatten)] request: MoveRequest },
@@ -1002,6 +1009,29 @@ mod tests {
                 color: Some("white".into())
             }
         );
+    }
+
+    #[test]
+    fn computer_challenge_accepts_explicit_and_legacy_color_choices() {
+        for color in [None, Some("white"), Some("black"), Some("random")] {
+            let mut payload = serde_json::json!({
+                "type": "ChallengeAi", "level": 3, "minutes": 10,
+                "increment": 2, "request_id": 7,
+            });
+            if let Some(color) = color {
+                payload["color"] = serde_json::json!(color);
+            }
+            assert_eq!(
+                serde_json::from_value::<FrontendMessage>(payload).unwrap(),
+                FrontendMessage::ChallengeAi {
+                    level: 3,
+                    minutes: 10,
+                    increment: 2,
+                    color: color.map(str::to_owned),
+                    request_id: Some(7),
+                },
+            );
+        }
     }
 
     #[test]

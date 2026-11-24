@@ -88,7 +88,7 @@ impl GameRequest {
 enum MatchKind {
     Seek { rated: bool, color: String },
     Direct { username: String, rated: bool, color: String },
-    Computer { level: u8 },
+    Computer { level: u8, color: String },
     Open { rated: bool },
 }
 
@@ -112,9 +112,12 @@ impl MatchRequest {
         if self.minutes == 0 && self.increment == 0 {
             return Err("Choose some starting time or an increment.");
         }
-        if let MatchKind::Computer { level } = self.kind {
-            if !(1..=8).contains(&level) {
+        if let MatchKind::Computer { level, color } = &self.kind {
+            if !(1..=8).contains(level) {
                 return Err("Computer level must be a whole number from 1 to 8.");
+            }
+            if !matches!(color.as_str(), "white" | "black" | "random") {
+                return Err("Choose White, Black, or Random.");
             }
         }
         Ok(())
@@ -1514,7 +1517,7 @@ async fn run_match_request(
             }
             Err(error) => request.failure(error.to_string()),
         },
-        MatchKind::Computer { level } => match client.challenge_ai(*level, minutes, increment).await {
+        MatchKind::Computer { level, color } => match client.challenge_ai(*level, minutes, increment, color).await {
             Ok(game_id) => BackendMessage::ComputerGameCreated { game_id, request_id },
             Err(error) => request.failure(error.to_string()),
         },
@@ -1915,9 +1918,10 @@ impl AppLoadBackend for LichessBackend {
                     kind: MatchKind::Direct { username, rated, color }, minutes, increment, request_id,
                 }).await;
             }
-            FrontendMessage::ChallengeAi { level, minutes, increment, request_id } => {
+            FrontendMessage::ChallengeAi { level, minutes, increment, color, request_id } => {
                 self.start_match_request(replier, MatchRequest {
-                    kind: MatchKind::Computer { level }, minutes, increment, request_id,
+                    kind: MatchKind::Computer { level, color: color.unwrap_or_else(|| "random".into()) },
+                    minutes, increment, request_id,
                 }).await;
             }
             FrontendMessage::CancelMatch { request_id: Some(request_id) } => {

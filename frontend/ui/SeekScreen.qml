@@ -13,7 +13,7 @@ Rectangle {
     property string waitingLabel: ""
     property bool rated: false
     // "white"/"black"/"random" -- same enum Lichess's own ChallengeColor.yaml
-    // uses for both /api/board/seek and /api/challenge/{username}.
+    // uses for seeks, direct challenges, and computer games.
     property string selectedColor: "random"
     // The returned link remains usable after leaving this screen.
     property var openChallengeUrls: null
@@ -191,7 +191,8 @@ Rectangle {
             request_id: matchRequestId,
             level: level,
             minutes: wholeNumber(minutesField.text),
-            increment: wholeNumber(incrementField.text)
+            increment: wholeNumber(incrementField.text),
+            color: selectedColor
         })
     }
 

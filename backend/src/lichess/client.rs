@@ -595,13 +595,14 @@ impl LichessClient {
     /// long-poll to hold open) and isn't subject to the seek-only Rapid-speed floor
     /// (confirmed against lichess-org/lila's own SetupForm.scala/misc.scala -- that
     /// restriction only applies to `isBoardCompatible` seeks, not challenge/ai).
-    pub async fn challenge_ai(&self, level: u8, minutes: u32, increment: u32) -> Result<String> {
+    pub async fn challenge_ai(&self, level: u8, minutes: u32, increment: u32, color: &str) -> Result<String> {
         let resp = self
             .send_logged("challenge_ai", self.bearer(self.http.post(format!("{}/api/challenge/ai", self.base_url)))
                 .form(&[
                     ("level", level.to_string()),
                     ("clock.limit", (minutes * 60).to_string()),
                     ("clock.increment", increment.to_string()),
+                    ("color", color.to_owned()),
                 ]))
             .await?;
         if !resp.status().is_success() {
@@ -1399,19 +1400,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn challenge_ai_posts_level_and_clock() {
+    async fn challenge_ai_posts_level_clock_and_color() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/challenge/ai"))
             .and(body_string_contains("level=3"))
             .and(body_string_contains("clock.limit=300"))
             .and(body_string_contains("clock.increment=2"))
+            .and(body_string_contains("color=black"))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "computer"})))
             .mount(&server)
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        assert_eq!(client.challenge_ai(3, 5, 2).await.unwrap(), "computer");
+        assert_eq!(client.challenge_ai(3, 5, 2, "black").await.unwrap(), "computer");
     }
 
     #[tokio::test]
