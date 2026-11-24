@@ -1517,6 +1517,7 @@ Rectangle {
                 anchors.fill: parent
                 darkMode: boardScreen.darkMode
                 title: "Moves"
+                pageByRow: true
                 onDismissed: boardScreen.showMoves = false
 
                 Text {
@@ -1527,42 +1528,49 @@ Rectangle {
                     horizontalAlignment: Text.AlignHCenter
                     color: theme.textMuted
                 }
-                AppButton {
-                    width: parent.width
-                    text: "Return to live position"
-                    highlighted: true
-                    visible: boardScreen.viewingHistory
-                    onClicked: {
-                        boardScreen.returnToLive()
-                        boardScreen.showMoves = false
-                    }
-                }
-                Column {
-                    width: parent.width
-                    spacing: 0
+                Repeater {
+                    model: boardScreen.moveRows()
 
-                    Repeater {
-                        model: boardScreen.moveRows()
-
-                        MoveListRow {
-                            required property var modelData
-                            width: parent.width
-                            darkMode: boardScreen.darkMode
-                            moveNumber: modelData.number
-                            whiteMove: modelData.white
-                            blackMove: modelData.black
-                            currentIndex: boardScreen.historyIndex
-                            onMoveSelected: (fenIndex) => {
-                                boardScreen.showHistoryPosition(fenIndex)
-                                boardScreen.showMoves = false
-                            }
+                    MoveListRow {
+                        required property var modelData
+                        objectName: "liveMoveRow"
+                        width: parent.width
+                        darkMode: boardScreen.darkMode
+                        moveNumber: modelData.number
+                        whiteMove: modelData.white
+                        blackMove: modelData.black
+                        currentIndex: boardScreen.historyIndex
+                        onMoveSelected: (fenIndex) => {
+                            boardScreen.showHistoryPosition(fenIndex)
+                            boardScreen.showMoves = false
                         }
                     }
                 }
-                AppButton {
-                    width: parent.width
-                    text: "Close"
-                    onClicked: boardScreen.showMoves = false
+
+                // A pinned footer keeps the actions reachable. Inline actions
+                // scroll away, and repeating them adds controls to every page.
+                footer: Row {
+                    spacing: theme.spacingXs
+                    readonly property real buttonWidth: boardScreen.viewingHistory
+                        ? (width - spacing) / 2 : width
+
+                    AppButton {
+                        objectName: "historyReturnToLiveButton"
+                        width: parent.buttonWidth
+                        text: "Return to live"
+                        highlighted: true
+                        visible: boardScreen.viewingHistory
+                        onClicked: {
+                            boardScreen.returnToLive()
+                            boardScreen.showMoves = false
+                        }
+                    }
+                    AppButton {
+                        objectName: "historyCloseButton"
+                        width: parent.buttonWidth
+                        text: "Close"
+                        onClicked: boardScreen.showMoves = false
+                    }
                 }
             }
         }

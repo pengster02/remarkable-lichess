@@ -267,6 +267,131 @@ TestCase {
         tryVerify(function() { return findChild(review, "candidateMoveRow") === null })
     }
 
+    function test_liveMovesPagesWholeRowsWithActionsAlwaysAvailable_data() {
+        return [
+            {tag: "Paper Pro Move", width: 954, height: 1696},
+            {tag: "Paper Pro", width: 1620, height: 2160}
+        ]
+    }
+
+    function test_liveMovesPagesWholeRowsWithActionsAlwaysAvailable(data) {
+        width = data.width
+        height = data.height
+        app.openGame("live-score-sheet")
+        var snapshot = boardState("live-score-sheet")
+        var boards = [
+            "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - ",
+            "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - ",
+            "rnbqkb1r/pppppppp/5n2/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - ",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - "
+        ]
+        var notation = ["Nf3", "Nf6", "Ng1", "Ng8"]
+        for (var ply = 1; ply <= 64; ply++) {
+            snapshot.move_history.push(notation[(ply - 1) % 4])
+            snapshot.position_history.push(boards[(ply - 1) % 4] + ply + " " + (1 + Math.floor(ply / 2)))
+        }
+        snapshot.fen = snapshot.position_history[64]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var open = findChild(board, "boardToolbar").children[1]
+        var loader = findChild(board, "moveHistoryLoader")
+        verify(waitForRendering(board))
+        mouseClick(open, open.width / 2, open.height / 2)
+        var dialog = loader.item
+        var pager = findChild(dialog, "dialogPager")
+        var close = findChild(dialog, "historyCloseButton")
+        var goLive = findChild(dialog, "historyReturnToLiveButton")
+        verify(!goLive.visible)
+        tryVerify(function() { return pager.pageCount > 1 })
+        var closeY = close.mapToItem(dialog, 0, 0).y
+        verify(closeY >= 0 && closeY + close.height <= dialog.height)
+        var rows = []
+        function collectRows(item) {
+            if (item.objectName === "liveMoveRow") rows.push(item)
+            for (var i = 0; i < item.children.length; i++) collectRows(item.children[i])
+        }
+        collectRows(pager)
+        compare(rows.length, 32)
+        var next = findChild(pager, "pageDownButton")
+        var seen = {}
+        for (var page = 1; page <= pager.pageCount; page++) {
+            compare(pager.currentPage, page)
+            compare(close.mapToItem(dialog, 0, 0).y, closeY)
+            for (var row = 0; row < rows.length; row++) {
+                var y = rows[row].mapToItem(pager, 0, 0).y
+                if (y >= -0.5 && y + rows[row].height <= pager.pageHeight + 0.5)
+                    seen[row] = true
+            }
+            if (page < pager.pageCount) mouseClick(next, next.width / 2, next.height / 2)
+        }
+        compare(Object.keys(seen).length, 32)
+        var lastWhite = findChild(rows[31], "whiteMoveCell")
+        verify(findChild(rows[31], "blackMoveCell").isCurrent)
+        mouseClick(lastWhite, lastWhite.width / 2, lastWhite.height / 2)
+        tryCompare(loader, "item", null)
+        verify(board.viewingHistory)
+        compare(board.fen, snapshot.position_history[63])
+
+        mouseClick(open, open.width / 2, open.height / 2)
+        dialog = loader.item
+        pager = findChild(dialog, "dialogPager")
+        goLive = findChild(dialog, "historyReturnToLiveButton")
+        verify(goLive.visible && !goLive.contentItem.truncated)
+        next = findChild(pager, "pageDownButton")
+        tryVerify(function() { return next.visible && next.enabled })
+        mouseClick(next, next.width / 2, next.height / 2)
+        compare(pager.currentPage, 2)
+        snapshot.white_time_ms -= 500
+        endpoint.reply(snapshot)
+        compare(loader.item, dialog)
+        compare(board.fen, snapshot.position_history[63])
+        mouseClick(goLive, goLive.width / 2, goLive.height / 2)
+        tryCompare(loader, "item", null)
+        verify(!board.viewingHistory)
+        compare(board.fen, snapshot.fen)
+
+        mouseClick(open, open.width / 2, open.height / 2)
+        close = findChild(loader.item, "historyCloseButton")
+        mouseClick(close, close.width / 2, close.height / 2)
+        tryCompare(loader, "item", null)
+        compare(board.fen, snapshot.fen)
+    }
+
+    function test_liveMovesEmptyOrShortHistoryFitsWithoutPaging_data() {
+        return [{tag: "empty", plies: 0}, {tag: "one move", plies: 1}]
+    }
+
+    function test_liveMovesEmptyOrShortHistoryFitsWithoutPaging(data) {
+        app.openGame("short-score-sheet")
+        var snapshot = boardState("short-score-sheet")
+        if (data.plies > 0) {
+            snapshot.fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+            snapshot.turn = "black"
+            snapshot.move_history.push("e4")
+            snapshot.position_history.push(snapshot.fen)
+        }
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var open = findChild(board, "boardToolbar").children[1]
+        var loader = findChild(board, "moveHistoryLoader")
+        verify(waitForRendering(board))
+        mouseClick(open, open.width / 2, open.height / 2)
+        var pager = findChild(loader.item, "dialogPager")
+        verify(waitForRendering(loader.item))
+        compare(pager.pageCount, 1)
+        verify(!pager.pagingNeeded)
+        var row = findChild(pager, "liveMoveRow")
+        if (data.plies > 0) {
+            compare(row.whiteMove.san, "e4")
+            verify(findChild(row, "whiteMoveCell").isCurrent)
+        } else {
+            compare(row, null)
+        }
+        var close = findChild(loader.item, "historyCloseButton")
+        mouseClick(close, close.width / 2, close.height / 2)
+        tryCompare(loader, "item", null)
+    }
+
     function test_archiveReplayPagesWholeMoveRows_data() {
         return [
             {tag: "Paper Pro Move timed", width: 954, height: 1696, timedPlies: 24},
