@@ -169,6 +169,8 @@ Minimum emulator smoke test:
 - Result, termination, speed, variant, clock, annotation, and move-row display
   mappings live in `ChessDisplay.qml`. Live and review history both render the
   same `MoveListRow`; do not reintroduce screen-specific move tokens.
+  Game History cards keep result and ratings in view, elide long opponent
+  names, and omit the analysis line when the game has no analysis.
 - Live play keeps a fixed two-control strip below the board: Actions and Moves.
   Draw/takeback offers and disconnect claims change and highlight the Actions
   label.
