@@ -150,6 +150,84 @@ TestCase {
         compare(move.to, "e4")
     }
 
+    function test_replayAndExploreApplyBoardDisplayPreferences_data() {
+        return [{tag: "saved before opening replay", beforeLoad: true},
+                {tag: "received during replay", beforeLoad: false}]
+    }
+
+    function test_replayAndExploreApplyBoardDisplayPreferences(data) {
+        var settings = {type: "SettingsState", show_coordinates: false, highlight_last_move: false}
+        if (data.beforeLoad) endpoint.reply(settings)
+
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var requestId = choose("display-settings")
+        endpoint.reply({type: "GameMoves", request_id: requestId,
+                        fens: [startFen, afterE4], moves: ["e4"]})
+        var review = screen.item
+        verify(waitForRendering(review))
+        var files = findChild(review, "boardFileLabels")
+        var ranks = findChild(review, "boardRankLabels")
+        var pawn = findChild(review, "boardSquare-e4")
+        var squarePosition = pawn.mapToItem(review, 0, 0)
+        review.goNext()
+        verify(pawn.flashRefresh)
+        if (!data.beforeLoad) {
+            verify(files.visible && ranks.visible)
+            verify(pawn.isLastMove)
+            endpoint.reply(settings)
+        }
+        verify(!files.visible && !ranks.visible)
+        verify(!pawn.isLastMove)
+        verify(pawn.flashRefresh)
+        compare(pawn.mapToItem(review, 0, 0), squarePosition)
+
+        review.beginExploration()
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: afterE4, fen: afterE4,
+                        legal_moves: [{from: "e7", to: "e5"}]})
+        verify(review.requestExplorationMove("e7", "e5"))
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: afterE4, fen: afterE5, san: "e5", legal_moves: []})
+        var candidate = findChild(review, "boardSquare-e5")
+        var candidatePosition = candidate.mapToItem(review, 0, 0)
+        compare(review.variationMoves, ["e5"])
+        verify(!candidate.isLastMove)
+        verify(!files.visible && !ranks.visible)
+
+        endpoint.reply({type: "SettingsState", show_coordinates: true, highlight_last_move: true})
+        verify(files.visible && ranks.visible)
+        verify(candidate.isLastMove && findChild(review, "boardSquare-e7").isLastMove)
+        compare(candidate.mapToItem(review, 0, 0), candidatePosition)
+        compare(review.currentFen(), afterE5)
+    }
+
+    function test_exploreMinimalHighlightsOnlyChangesTheVisibleTargets() {
+        endpoint.reply({type: "SettingsState", minimal_highlights: true})
+        var requestId = choose("minimal-highlights")
+        endpoint.reply({type: "GameMoves", request_id: requestId, fens: [startFen], moves: []})
+        var review = screen.item
+        review.beginExploration()
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: startFen, fen: startFen,
+                        legal_moves: [{from: "e2", to: "e4"}]})
+        verify(waitForRendering(review))
+        var source = findChild(review, "boardSquare-e2")
+        var destination = findChild(review, "boardSquare-e4")
+        mouseClick(source, source.width / 2, source.height / 2)
+        verify(source.isSelected && source.isHighlighted)
+        verify(!destination.isLegalDestination && !destination.isHighlighted)
+        endpoint.reply({type: "SettingsState", minimal_highlights: false})
+        verify(destination.isLegalDestination && destination.isHighlighted)
+        endpoint.reply({type: "SettingsState", minimal_highlights: true})
+        verify(!destination.isLegalDestination && !destination.isHighlighted)
+        mouseClick(destination, destination.width / 2, destination.height / 2)
+        var move = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(move.type, "MakeAnalysisMove")
+        compare(move.from, "e2")
+        compare(move.to, "e4")
+    }
+
     function latestHomeRequest() {
         var messages = endpoint.sentMessages.filter(function(message) {
             return message.type === "RequestHome"
