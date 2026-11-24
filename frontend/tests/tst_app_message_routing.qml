@@ -132,6 +132,24 @@ TestCase {
         compare(screen.item.moves, ["e4"])
     }
 
+    function test_leavingHistoryCancelsThePendingFilter() {
+        var request = screen.item.pendingHistoryRequest
+        verify(request > 0)
+        app.navigateTo("HomeScreen.qml")
+        tryVerify(function() {
+            return endpoint.sentMessages.some(function(message) {
+                return message.type === "CancelGameHistory" && message.request_id === request
+            })
+        })
+        app.navigateTo("GameHistoryScreen.qml")
+        var current = screen.item.pendingHistoryRequest
+        verify(current > request)
+        endpoint.reply({type: "GameHistory", request_id: request, games: [{game_id: "old"}]})
+        verify(screen.item.loading)
+        endpoint.reply({type: "GameHistory", request_id: current, games: []})
+        verify(!screen.item.loading)
+    }
+
     function test_backCancelsAndReopeningSameGameUsesADifferentRequest() {
         var abandoned = choose("same")
         app.navigateTo("HomeScreen.qml")

@@ -376,7 +376,7 @@ Rectangle {
                        msg.type === "OpenChallengeCreated" ||
                        msg.type === "PendingChallenges" ||
                        msg.type === "ChallengesLoadFailed" ||
-                       msg.type === "GameHistory") {
+                       msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
                 if (root.hasToken && (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined")) {
                     var resolved = msg.game_id || msg.challenge_id
                     if (root.resolvedChallengeIds.indexOf(resolved) === -1)

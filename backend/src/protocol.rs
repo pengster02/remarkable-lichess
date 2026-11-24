@@ -120,16 +120,10 @@ pub enum FrontendMessage {
     // and resets to the logged-out state -- there was previously no in-app way
     // to do this at all short of editing files on the device directly.
     LogOut,
-    // Sent on-demand (from HomeScreen's "Game history" button, and again by
-    // GameHistoryScreen itself whenever a filter changes), not pushed
-    // automatically on login like RequestHome/RequestSettings -- fetching and
-    // replaying up to 20 games' SAN history is real work nobody needs paid up
-    // front just to reach the Home screen. Backend fixes the page size
-    // server-side (see backend_app.rs's handle_request_game_history); `rated`/
-    // `speed`/`color` are optional filters passed straight through to GET
-    // /api/games/user's own query params (None = that endpoint's own default
-    // of "no filter", not "false"/empty-string).
+    // Match replies to one filter request. Comparing filter values fails
+    // when a filter is reused, while FIFO replies can expose stale rows.
     RequestGameHistory {
+        request_id: Option<u32>,
         #[serde(default)]
         rated: Option<bool>,
         #[serde(default)]
@@ -137,6 +131,7 @@ pub enum FrontendMessage {
         #[serde(default)]
         color: Option<String>,
     },
+    CancelGameHistory { request_id: u32 },
     // POST /api/challenge/open -- a shareable link either side can open to start
     // the game, no destination username needed (unlike CreateChallenge). Uses
     // the same minutes/increment/rated fields as CreateSeek/CreateChallenge; no
@@ -515,7 +510,12 @@ pub enum BackendMessage {
         highlight_last_move: bool,
         confirm_resign: bool,
     },
-    GameHistory { games: Vec<HistoryGameSummary> },
+    GameHistory {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+        games: Vec<HistoryGameSummary>,
+    },
+    GameHistoryFailed { request_id: u32, message: String },
     // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- `url` opens
     // to a color-choice/random assignment, `url_white`/`url_black` claim that
     // color outright. Shown as plain text on SeekScreen for the user to read/
@@ -809,14 +809,15 @@ mod tests {
     fn request_game_history_parses_with_and_without_filters() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"RequestGameHistory"}"#).unwrap(),
-            FrontendMessage::RequestGameHistory { rated: None, speed: None, color: None }
+            FrontendMessage::RequestGameHistory { request_id: None, rated: None, speed: None, color: None }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
-                r#"{"type":"RequestGameHistory","rated":true,"speed":"rapid","color":"white"}"#
+                r#"{"type":"RequestGameHistory","request_id":8,"rated":true,"speed":"rapid","color":"white"}"#
             )
             .unwrap(),
             FrontendMessage::RequestGameHistory {
+                request_id: Some(8),
                 rated: Some(true),
                 speed: Some("rapid".into()),
                 color: Some("white".into())
