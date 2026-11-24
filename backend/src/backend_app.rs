@@ -1,3 +1,4 @@
+use crate::game::outcome::{outcome, termination_label};
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
 use crate::lichess::client::{LichessClient, LICHESS_BASE_URL};
@@ -811,20 +812,12 @@ impl LichessBackend {
                                 | Some(EventStreamMessage::ChallengeDeclined) => {
                                     send_pending_challenges(&client, &replier, &write_lock).await;
                                 }
-                                // Best-effort match against whatever game is currently
-                                // tracked, same "not exhaustive, server/session is still
-                                // authoritative" posture as e.g. the Abort button's own
-                                // comment -- if a new game has already replaced `session`
-                                // by the time this arrives (or this event is for some
-                                // other game entirely), silently drop it rather than
-                                // misattribute a rating change to the wrong game.
                                 Some(EventStreamMessage::GameFinish { game }) => {
                                     if let Some(rating_diff) = game.rating_diff {
-                                        let is_current_game =
-                                            session_handle.lock().await.as_ref().is_some_and(|s| s.game_id == game.id);
-                                        if is_current_game {
-                                            send_locked(&replier, &write_lock, &BackendMessage::RatingDiff { rating_diff });
-                                        }
+                                        send_locked(&replier, &write_lock, &BackendMessage::RatingDiff {
+                                            game_id: game.id,
+                                            rating_diff,
+                                        });
                                     }
                                 }
                             _ => {}
@@ -903,33 +896,6 @@ async fn replace_game_stream_handle(
         old.abort();
     }
     *guard = Some(new_handle);
-}
-
-/// The live board stream's own equivalent of history_game_to_summary's
-/// win/loss/draw derivation -- kept as its own function (not inlined at each
-/// of GameOver's two call sites below) so both stay in sync. Distinct from
-/// that history-side function's exact return shape though: this one has to
-/// match BoardScreen.qml's existing GameOver contract, where `result` is
-/// either a winning color ("white"/"black") or "draw", not "win"/"loss"/
-/// "draw" from your own point of view -- `winner.unwrap_or_else(|| "draw")`
-/// (the previous behavior here) mislabeled every no-winner, non-draw ending
-/// (aborted, noStart, cheat, ...) as a draw. Falls back to the raw status
-/// itself for those, same as history_game_to_summary's own fallback --
-/// BoardScreen.qml's outcome text already handles a non-color/non-"draw"
-/// result by just capitalizing it.
-fn game_over_result(status: &str, winner: &Option<String>) -> String {
-    match winner {
-        Some(w) => w.clone(),
-        None if matches!(status, "draw" | "stalemate") => "draw".to_string(),
-        None => status.to_string(),
-    }
-}
-
-fn game_over_message(status: &str, winner: &Option<String>) -> BackendMessage {
-    BackendMessage::GameOver {
-        result: game_over_result(status, winner),
-        reason: termination_label(Some(status)),
-    }
 }
 
 async fn next_stream_line(
@@ -1029,16 +995,8 @@ fn spawn_game_stream(
                                             }
                                             if full.state.status != "started" {
                                                 game_over = true;
-                                                // Don't bother storing a session for a
-                                                // game that's already over -- and clear
-                                                // whatever stale one might still be here
-                                                // from an earlier finished game (see the
-                                                // clearing below, same reasoning).
                                                 *guard = None;
-                                                Some(game_over_message(
-                                                    &full.state.status,
-                                                    &full.state.winner,
-                                                ))
+                                                Some(board_msg)
                                             } else {
                                                 if !player_status_requested {
                                                     let ids = [s.your_player.id.clone(), s.opponent_player.id.clone()]
@@ -1066,45 +1024,29 @@ fn spawn_game_stream(
                                     }
                                 }
                                 GameStreamMessage::State(state) => match guard.as_mut() {
-                                    Some(s) => {
+                                    Some(s) if s.game_id == game_id => {
                                         let is_over = state.status != "started";
-                                        if is_over {
-                                            game_over = true;
-                                        }
-                                        // Taken before apply_state_update consumes `state`,
-                                        // and only when the game actually ended, so the
-                                        // common in-progress update still clones nothing.
-                                        let outcome = is_over
-                                            .then(|| (state.status.clone(), state.winner.clone()));
+                                        let fallback = is_over.then(|| outcome(&state.status, state.winner.as_deref()));
                                         let result = match s.apply_state_update(state) {
                                             Ok(msg) => Some(msg),
                                             Err(error) => {
                                                 log::warn!(
                                                     "couldn't apply gameState for {game_id}: {error}"
                                                 );
-                                                None
+                                                fallback.map(|outcome| BackendMessage::GameOver {
+                                                    game_id: game_id.clone(),
+                                                    result: outcome.result,
+                                                    reason: outcome.reason,
+                                                })
                                             }
                                         };
-                                        if let Some((status, winner)) = outcome {
-                                            let msg = Some(game_over_message(&status, &winner));
-                                            // Otherwise this finished game's session sits
-                                            // here indefinitely: handle_resume_game's
-                                            // already_tracking check keys off `session`
-                                            // being non-empty for this exact game_id, so a
-                                            // stale entry here silently blocked ever
-                                            // re-attaching a stream to it (e.g. tapping
-                                            // Resume again on a game that just ended),
-                                            // and current_game_id() would keep pointing
-                                            // in-game actions (resign/draw/takeback) at a
-                                            // dead game in the gap before the next one's
-                                            // own Full snapshot overwrites this.
+                                        if is_over {
+                                            game_over = true;
                                             *guard = None;
-                                            msg
-                                        } else {
-                                            result
                                         }
+                                        result
                                     }
-                                    None => None,
+                                    _ => None,
                                 },
                                 // Doesn't touch `guard` -- opponent-connection status is
                                 // orthogonal to the cached position/session state.
@@ -1454,124 +1396,6 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         speed: game.speed,
         opening_name: game.opening.map(|o| o.name),
         created_at_ms: game.created_at,
-    }
-}
-
-/// Human-readable form of Lichess's own GameStatusName -- distinct from
-/// `result` (win/loss/draw) above, since two "win"s can still differ in how
-/// they actually happened (checkmate vs. an opponent resigning vs. running
-/// out the clock), which win/loss/draw alone can't convey. Falls back to a
-/// title-cased copy of the raw status for anything not explicitly listed here
-/// (e.g. a future status Lichess adds) rather than hiding it as "unknown".
-fn termination_label(status: Option<&str>) -> String {
-    match status {
-        Some("created") => "Game created".to_string(),
-        Some("started") => "In progress".to_string(),
-        Some("aborted") => "Aborted".to_string(),
-        Some("mate") => "Checkmate".to_string(),
-        Some("resign") => "Resignation".to_string(),
-        Some("stalemate") => "Stalemate".to_string(),
-        Some("timeout") => "Opponent left".to_string(),
-        Some("outoftime") => "Time forfeit".to_string(),
-        Some("draw") => "Draw".to_string(),
-        Some("cheat") => "Cheat detected".to_string(),
-        Some("noStart") => "Opponent didn't join".to_string(),
-        Some("unknownFinish") => "Unknown finish".to_string(),
-        Some("insufficientMaterialClaim") => "Insufficient material".to_string(),
-        Some("variantEnd") => "Variant ending".to_string(),
-        Some(other) => humanize_identifier(other),
-        None => "Unknown".to_string(),
-    }
-}
-
-fn humanize_identifier(value: &str) -> String {
-    let mut spaced = String::new();
-    for character in value.chars() {
-        if character == '_' || character == '-' {
-            if !spaced.ends_with(' ') {
-                spaced.push(' ');
-            }
-        } else {
-            if character.is_uppercase() && !spaced.is_empty() && !spaced.ends_with(' ') {
-                spaced.push(' ');
-            }
-            spaced.push(character);
-        }
-    }
-
-    let mut characters = spaced.chars();
-    match characters.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
-        None => "Unknown".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod game_over_result_tests {
-    use super::{game_over_message, game_over_result, termination_label};
-    use crate::protocol::BackendMessage;
-
-    #[test]
-    fn a_real_winner_is_reported_as_their_color_regardless_of_status() {
-        assert_eq!(game_over_result("mate", &Some("white".to_string())), "white");
-        assert_eq!(game_over_result("resign", &Some("black".to_string())), "black");
-        assert_eq!(game_over_result("outoftime", &Some("white".to_string())), "white");
-    }
-
-    #[test]
-    fn a_genuine_no_winner_draw_or_stalemate_is_reported_as_draw() {
-        assert_eq!(game_over_result("draw", &None), "draw");
-        assert_eq!(game_over_result("stalemate", &None), "draw");
-    }
-
-    #[test]
-    fn game_over_reason_is_human_readable() {
-        assert_eq!(
-            game_over_message("outoftime", &Some("black".to_string())),
-            BackendMessage::GameOver {
-                result: "black".to_string(),
-                reason: "Time forfeit".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn every_official_game_status_has_a_readable_label() {
-        let cases = [
-            ("created", "Game created"),
-            ("started", "In progress"),
-            ("aborted", "Aborted"),
-            ("mate", "Checkmate"),
-            ("resign", "Resignation"),
-            ("stalemate", "Stalemate"),
-            ("timeout", "Opponent left"),
-            ("draw", "Draw"),
-            ("outoftime", "Time forfeit"),
-            ("cheat", "Cheat detected"),
-            ("noStart", "Opponent didn't join"),
-            ("unknownFinish", "Unknown finish"),
-            ("insufficientMaterialClaim", "Insufficient material"),
-            ("variantEnd", "Variant ending"),
-        ];
-
-        for (status, label) in cases {
-            assert_eq!(termination_label(Some(status)), label);
-        }
-
-        assert_eq!(
-            termination_label(Some("futureFinishReason")),
-            "Future Finish Reason"
-        );
-    }
-
-    #[test]
-    fn a_no_winner_non_draw_status_is_reported_as_itself_not_mislabeled_a_draw() {
-        // The E7 regression this guards: an aborted game has no winner but
-        // was never a draw either -- BoardScreen previously showed
-        // "Game over: Draw (aborted)", which is simply wrong.
-        assert_eq!(game_over_result("aborted", &None), "aborted");
-        assert_eq!(game_over_result("noStart", &None), "noStart");
-        assert_eq!(game_over_result("cheat", &None), "cheat");
     }
 }
 

@@ -411,9 +411,11 @@ TestCase {
     }
 
     function test_gameOverReasonIsReadable() {
+        board.gameId = "g1"
         board.yourColor = "white"
         board.handleMessage({
             type: "GameOver",
+            game_id: "g1",
             result: "black",
             reason: "Time forfeit"
         })

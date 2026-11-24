@@ -244,7 +244,7 @@ pub struct HistoryGameSummary {
     // "noStart") for the rare case where there's no winner and it wasn't a draw.
     pub result: String,
     // How the game actually ended -- "Checkmate"/"Resignation"/"Time forfeit"/
-    // etc. (see backend_app.rs's termination_label), distinct from `result`
+    // etc. (see game::outcome::termination_label), distinct from `result`
     // above: two "win"s can still differ in how they happened, which
     // win/loss/draw alone can't convey.
     pub termination: String,
@@ -279,6 +279,12 @@ pub struct MoveAnalysis {
     // shown as-is rather than reconstructed from separate best-move/variation
     // fields this app doesn't otherwise model.
     pub judgment_comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GameOutcome {
+    pub result: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -383,8 +389,12 @@ pub enum BackendMessage {
         // fixed number of seconds remaining). None for an untimed/correspondence
         // game.
         initial_clock_ms: Option<Box<u64>>,
+        // Pair the outcome with the final position and clocks. Separate messages can
+        // execute a queued premove between updates, while a second snapshot type duplicates board data.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<Box<GameOutcome>>,
     },
-    GameOver { result: String, reason: String },
+    GameOver { game_id: String, result: String, reason: String },
     GameActionCompleted { action: GameAction },
     MovePreview {
         game_id: String,
@@ -472,16 +482,9 @@ pub enum BackendMessage {
         status: String,
     },
     // Sent when the account event stream's `gameFinish` (see
-    // lichess::models::GameFinishInfo) arrives for the currently-tracked
-    // game and carries a rating change (rated games only -- casual games
-    // never send this at all, see backend_app.rs's GameFinish handling).
-    // Arrives independently of (and in no guaranteed order relative to)
-    // `GameOver`, which comes from a different stream (the per-game board
-    // stream's terminal GameState update) that has no rating info at all --
-    // deliberately two separate messages rather than trying to force them
-    // into one, since one can arrive without the other (e.g. a casual game
-    // never gets this one) or in either order.
-    RatingDiff { rating_diff: i32 },
+    // lichess::models::GameFinishInfo) can arrive before or after the final board,
+    // whose stream carries no rating change.
+    RatingDiff { game_id: String, rating_diff: i32 },
 }
 
 #[cfg(test)]
@@ -769,8 +772,12 @@ mod tests {
 
     #[test]
     fn rating_diff_serializes_with_type_tag_including_negative_values() {
-        let json = serde_json::to_string(&BackendMessage::RatingDiff { rating_diff: -9 }).unwrap();
+        let json = serde_json::to_string(&BackendMessage::RatingDiff {
+            game_id: "g1".into(),
+            rating_diff: -9,
+        }).unwrap();
         assert!(json.contains(r#""type":"RatingDiff""#));
+        assert!(json.contains(r#""game_id":"g1""#));
         assert!(json.contains(r#""rating_diff":-9"#));
     }
 
@@ -843,6 +850,7 @@ mod tests {
             game_description: "Casual Rapid • 10 min + 0 sec/move".into(),
             first_move_time_ms: None,
             initial_clock_ms: Some(Box::new(600_000)),
+            outcome: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));

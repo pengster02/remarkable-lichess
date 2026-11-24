@@ -2,7 +2,7 @@ import QtQuick 2.5
 import QtTest 1.2
 
 TestCase {
-    name: "ReviewRequestRouting"
+    name: "AppMessageRouting"
     when: windowShown
     width: 954
     height: 1696
@@ -65,5 +65,42 @@ TestCase {
         verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
         compare(screen.item.errorMessage, "Game unavailable")
         verify(!screen.item.openingReview)
+    }
+
+    function test_terminalNoticeCannotNavAwayFromHistory() {
+        endpoint.reply({type: "GameOver", game_id: "other", result: "draw", reason: "Draw"})
+        verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
+    }
+
+    function test_finalBoardOpensWithTheLastMoveAndFrozenClocks() {
+        app.navigateTo("HomeScreen.qml")
+        app.expectNextGame("g1")
+        var finalFen = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+        var finalBoard = {
+            type: "BoardState", game_id: "g1", fen: finalFen,
+            turn: "white", your_color: "white", in_check: true,
+            white_time_ms: 597000, black_time_ms: 598240, initial_clock_ms: 600000,
+            last_move: ["d8", "h4"], legal_moves: [],
+            move_history: ["f3", "e5", "g4", "Qh4#"],
+            position_history: [startFen, finalFen],
+            outcome: {result: "black", reason: "Checkmate"}
+        }
+        endpoint.reply(finalBoard)
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        verify(screen.item.gameOver)
+        compare(screen.item.fen, finalFen)
+        compare(screen.item.lastMove, ["d8", "h4"])
+        compare(screen.item.moveHistory[3], "Qh4#")
+        compare(screen.item.displayClockFor("white"), 597000)
+        compare(screen.item.displayClockFor("black"), 598240)
+        verify(screen.item.canNavigateHome)
+
+        endpoint.reply({type: "RatingDiff", game_id: "other", rating_diff: -12})
+        compare(screen.item.statusText, "You lost · Checkmate")
+        endpoint.reply({type: "RatingDiff", game_id: "g1", rating_diff: -5})
+        compare(screen.item.statusText, "You lost · Checkmate · -5 rating")
+        endpoint.reply({type: "BoardState", game_id: "g1", fen: startFen})
+        verify(screen.item.gameOver)
+        compare(screen.item.fen, finalFen)
     }
 }

@@ -1635,11 +1635,52 @@ Rectangle {
         }
     }
 
+    function completeGame(result, reason) {
+        boardScreen.previewFen = ""
+        boardScreen.returnToLive()
+        boardScreen.whiteTimeMs = boardScreen.displayClockFor("white")
+        boardScreen.blackTimeMs = boardScreen.displayClockFor("black")
+        boardScreen.lastClockSyncMs = 0
+        var outcome
+        if (result === "draw") {
+            outcome = "Draw"
+            boardScreen.gameResult = "draw"
+        } else if (result === "white" || result === "black") {
+            outcome = result === boardScreen.yourColor ? "You won" : "You lost"
+            boardScreen.gameResult = result === boardScreen.yourColor ? "win" : "loss"
+        } else {
+            outcome = reason && reason.length > 0
+                ? reason
+                : chessDisplay.resultLabel(result)
+            boardScreen.gameResult = result
+        }
+        boardScreen.gameOver = true
+        boardScreen.gameReason = reason
+        boardScreen.selectedSquare = ""
+        boardScreen.legalMoves = []
+        boardScreen.pendingPromotion = null
+        boardScreen.pendingMoveConfirmation = null
+        moveRequestGate.clear()
+        boardScreen.pendingPremove = null
+        boardScreen.resetGameActionControls()
+        boardScreen.pendingGameAction = ""
+        boardScreen.statusText = outcome
+        if (reason && reason.length > 0 && reason !== outcome) {
+            boardScreen.statusText += " · " + reason
+        }
+        if (boardScreen.pendingRatingDiffText.length > 0) {
+            boardScreen.statusText += boardScreen.pendingRatingDiffText
+            boardScreen.pendingRatingDiffText = ""
+        }
+        boardScreen.showGameOverDialog = true
+    }
+
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
             var nextLastMove = msg.last_move || null
             var nextGameId = msg.game_id || ""
             var gameChanged = boardScreen.gameId !== nextGameId
+            if (!gameChanged && boardScreen.gameOver) return
             var positionChanged = boardScreen.liveFen !== msg.fen ||
                 gameChanged
             var previewConfirmed = boardScreen.previewFen.length > 0 &&
@@ -1664,7 +1705,10 @@ Rectangle {
                 boardFlashTimer.restart()
             }
             if (positionChanged) boardScreen.clearAnnotations()
-            if (gameChanged) boardScreen.resetPlayerStatuses()
+            if (gameChanged) {
+                boardScreen.resetPlayerStatuses()
+                boardScreen.pendingRatingDiffText = ""
+            }
             boardScreen.gameId = nextGameId
             if (positionChanged) {
                 boardScreen.liveFen = msg.fen
@@ -1700,7 +1744,7 @@ Rectangle {
             boardScreen.blackTimeMs = msg.black_time_ms
             boardScreen.liveWhiteTimeMs = msg.white_time_ms
             boardScreen.liveBlackTimeMs = msg.black_time_ms
-            boardScreen.lastClockSyncMs = Date.now()
+            boardScreen.lastClockSyncMs = msg.outcome ? 0 : Date.now()
             boardScreen.clockPulse += 1
             boardScreen.initialClockMs = msg.initial_clock_ms !== undefined ? msg.initial_clock_ms : null
             boardScreen.yourColor = msg.your_color || "white"
@@ -1733,16 +1777,15 @@ Rectangle {
                 ? msg.first_move_time_ms
                 : null
             boardScreen.resetGameActionControls()
-            // A RatingDiff for a previous game that never got consumed (its
-            // own GameOver never arrived on this screen, e.g. after a
-            // Back-to-Home-and-Resume round trip) must not bleed into this
-            // new game's eventual GameOver text.
-            boardScreen.pendingRatingDiffText = ""
             boardScreen.statusText = ""
             boardScreen.gameOver = false
             boardScreen.showGameOverDialog = false
             boardScreen.gameResult = ""
             boardScreen.gameReason = ""
+            if (msg.outcome) {
+                boardScreen.completeGame(msg.outcome.result, msg.outcome.reason)
+                return
+            }
             moveRequestGate.resolve(boardScreen.gameId, nextLastMove)
             if (boardScreen.pendingPremove !== null &&
                     boardScreen.pendingPremove.gameId !== boardScreen.gameId) {
@@ -1756,51 +1799,10 @@ Rectangle {
                 boardScreen.applyPlayerStatus(players[playerIndex])
             }
         } else if (msg.type === "GameOver") {
-            boardScreen.previewFen = ""
-            boardScreen.returnToLive()
-            boardScreen.whiteTimeMs = boardScreen.displayClockFor("white")
-            boardScreen.blackTimeMs = boardScreen.displayClockFor("black")
-            boardScreen.lastClockSyncMs = 0
-            // msg.result is "draw", the winning color, or -- for a no-winner
-            // ending that wasn't actually a draw either (aborted, noStart,
-            // cheat, ...) -- the raw status itself (see backend_app.rs's
-            // game_over_result). Shown from the local player's own
-            // perspective (yourColor) rather than raw white/black for an
-            // actual win/loss, so "you resigned" reads as "You lost", not
-            // just an opaque color name.
-            var outcome
-            if (msg.result === "draw") {
-                outcome = "Draw"
-                boardScreen.gameResult = "draw"
-            } else if (msg.result === "white" || msg.result === "black") {
-                outcome = msg.result === boardScreen.yourColor ? "You won" : "You lost"
-                boardScreen.gameResult = msg.result === boardScreen.yourColor ? "win" : "loss"
-            } else {
-                outcome = msg.reason && msg.reason.length > 0
-                    ? msg.reason
-                    : chessDisplay.resultLabel(msg.result)
-                boardScreen.gameResult = msg.result
-            }
-            boardScreen.gameOver = true
-            boardScreen.gameReason = msg.reason
-            boardScreen.selectedSquare = ""
-            boardScreen.legalMoves = []
-            boardScreen.pendingPromotion = null
-            boardScreen.pendingMoveConfirmation = null
-            moveRequestGate.clear()
-            boardScreen.pendingPremove = null
-            boardScreen.resetGameActionControls()
-            boardScreen.pendingGameAction = ""
-            boardScreen.statusText = outcome
-            if (msg.reason && msg.reason.length > 0 && msg.reason !== outcome) {
-                boardScreen.statusText += " · " + msg.reason
-            }
-            if (boardScreen.pendingRatingDiffText.length > 0) {
-                boardScreen.statusText += boardScreen.pendingRatingDiffText
-                boardScreen.pendingRatingDiffText = ""
-            }
-            boardScreen.showGameOverDialog = true
+            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
+            boardScreen.completeGame(msg.result, msg.reason)
         } else if (msg.type === "RatingDiff") {
+            if (msg.game_id !== boardScreen.gameId) return
             var diffText = " · " + (msg.rating_diff > 0 ? "+" : "") +
                 msg.rating_diff + " rating"
             if (boardScreen.gameOver) {

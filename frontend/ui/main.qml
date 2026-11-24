@@ -357,7 +357,7 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "BoardState" || msg.type === "GameOver" || msg.type === "MoveRejected") {
+            } else if (msg.type === "BoardState") {
                 // Never force-navigate away from Home: a user who explicitly went
                 // back to Home (or never left it yet) should stay there even if a
                 // still-running per-game stream keeps delivering messages -- this
@@ -367,14 +367,13 @@ Rectangle {
                 // Board itself) still auto-advances to Board normally, since that's
                 // the desired flow for a freshly-started/still-loading game.
                 var showingHome = screenLoader.source.toString().indexOf("HomeScreen") !== -1
-                var isExpectedHomeGame = msg.type === "BoardState" &&
-                    root.expectedHomeGameId.length > 0 &&
+                var isExpectedHomeGame = root.expectedHomeGameId.length > 0 &&
                     msg.game_id === root.expectedHomeGameId
                 if (!showingHome || isExpectedHomeGame) {
                     root.expectedHomeGameId = ""
                     if (screenLoader.source.toString().indexOf("BoardScreen") === -1) {
                         screenLoader.source = "BoardScreen.qml"
-                    } else if (msg.type === "BoardState" && root.pendingReview &&
+                    } else if (root.pendingReview &&
                                root.pendingReview.gameId !== msg.game_id) {
                         root.pendingReview = null
                     }
@@ -382,7 +381,8 @@ Rectangle {
                         screenLoader.item.handleMessage(msg)
                     }
                 }
-            } else if (msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
+            } else if (msg.type === "GameOver" || msg.type === "MoveRejected" ||
+                       msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
                        msg.type === "RatingDiff" || msg.type === "GameActionCompleted" ||
                        msg.type === "MovePreview" || msg.type === "MoveSubmitted") {
                 // Deliberately never navigates on its own (confirmed via the PC
