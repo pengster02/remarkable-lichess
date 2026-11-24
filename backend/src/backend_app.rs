@@ -424,7 +424,7 @@ impl LichessBackend {
     }
 
     /// Fetches a finished game's move list and replays it once via
-    /// `game::replay::fens_for_moves` -- a pure, stateless operation
+    /// `game::replay::fens_for_export` -- a pure, stateless operation
     /// independent of `self.session` (which models the *live*, currently
     /// in-progress game, if any) so reviewing an old game can never disturb
     /// whatever's actually being played right now.
@@ -457,6 +457,15 @@ impl LichessBackend {
             }
         };
         let moves: Vec<String> = export.moves.split_whitespace().map(str::to_string).collect();
+        let fens = match crate::game::replay::fens_for_export(
+            export.variant.as_deref(), export.initial_fen.as_deref(), &moves,
+        ) {
+            Ok(fens) => fens,
+            Err(e) => {
+                fail(format!("Could not replay this game: {e}"));
+                return;
+            }
+        };
         // Centiseconds (Lichess's own export unit, confirmed against
         // game-export-gameId.yaml) -> ms, matching every other clock field in
         // this protocol (white_time_ms/black_time_ms/initial_clock_ms/...).
@@ -471,10 +480,7 @@ impl LichessBackend {
                 judgment_comment: a.judgment.map(|j| j.comment),
             })
             .collect();
-        match crate::game::replay::fens_for_moves(&moves) {
-            Ok(fens) => self.send(replier, &BackendMessage::GameMoves { request_id, moves, fens, clock_ms, analysis }),
-            Err(e) => fail(format!("replaying game moves: {e}")),
-        }
+        self.send(replier, &BackendMessage::GameMoves { request_id, moves, fens, clock_ms, analysis });
     }
 
     async fn handle_request_cloud_evaluation(

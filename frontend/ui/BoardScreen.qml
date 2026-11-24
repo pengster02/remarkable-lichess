@@ -274,7 +274,7 @@ Rectangle {
     }
 
     function moveRows() {
-        return chessDisplay.moveRows(boardScreen.moveHistory, [], [])
+        return chessDisplay.moveRows(boardScreen.moveHistory, [], [], boardScreen.positionHistory[0])
     }
 
     function showHistoryPosition(index) {

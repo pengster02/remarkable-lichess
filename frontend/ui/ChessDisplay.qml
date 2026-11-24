@@ -85,12 +85,24 @@ QtObject {
         }
     }
 
-    function moveRows(moves, clocks, analysis) {
+    function moveListStart(initialFen) {
+        // The starting snapshot already carries both values. Fixed numbering
+        // mislabels custom games, and sending a second copy can drift from replay.
+        var fields = String(initialFen || "").trim().split(/\s+/)
+        return { number: parseInt(fields[5], 10) || 1, blackOffset: fields[1] === "b" ? 1 : 0 }
+    }
+
+    function moveRowIndex(fenIndex, initialFen) {
+        return Math.floor((fenIndex - 1 + moveListStart(initialFen).blackOffset) / 2)
+    }
+
+    function moveRows(moves, clocks, analysis, initialFen) {
         var rows = []
-        if (!moves) return rows
-        for (var plyIndex = 0; plyIndex < moves.length; plyIndex += 2) {
+        if (!moves || moves.length === 0) return rows
+        var start = moveListStart(initialFen)
+        for (var plyIndex = -start.blackOffset; plyIndex < moves.length; plyIndex += 2) {
             rows.push({
-                number: Math.floor(plyIndex / 2) + 1,
+                number: start.number + rows.length,
                 white: moveEntry(moves, clocks, analysis, plyIndex),
                 black: moveEntry(moves, clocks, analysis, plyIndex + 1)
             })

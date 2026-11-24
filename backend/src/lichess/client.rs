@@ -917,23 +917,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn export_game_sends_accept_json_header_and_parses_moves() {
+    async fn export_game_sends_accept_json_header_and_parses_custom_position() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/game/export/abcd1234"))
             .and(header("Accept", "application/json"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "abcd1234",
-                "rated": true,
-                "status": "mate",
-                "moves": "e4 e5 Nf3 Nc6"
+                "rated": false,
+                "status": "resign",
+                "variant": "fromPosition",
+                "initialFen": "4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17",
+                "moves": "e5 a4"
             })))
             .mount(&server)
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let export = client.export_game("abcd1234").await.unwrap();
-        assert_eq!(export.moves, "e4 e5 Nf3 Nc6");
+        assert_eq!(export.moves, "e5 a4");
+        assert_eq!(export.variant.as_deref(), Some("fromPosition"));
+        assert_eq!(export.initial_fen.as_deref(), Some("4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17"));
     }
 
     #[tokio::test]

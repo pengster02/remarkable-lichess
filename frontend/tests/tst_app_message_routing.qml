@@ -83,6 +83,24 @@ TestCase {
         verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
     }
 
+    function test_customReviewStartsFromTheExportedPosition() {
+        var request = choose("custom-start")
+        var base = "4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17"
+        var afterBlack = "4k3/8/8/4p3/8/8/P7/4K3 w - - 0 18"
+        var afterWhite = "4k3/8/8/4p3/P7/8/8/4K3 b - - 0 18"
+        endpoint.reply({type: "GameMoves", request_id: request,
+                        moves: ["e5", "a4"], fens: [base, afterBlack, afterWhite]})
+        verify(String(screen.source).endsWith("GameReviewScreen.qml"))
+        compare(screen.item.fens[0], base)
+        var rows = screen.item.moveRows()
+        compare(rows[0].number, 17)
+        compare(rows[0].black.san, "e5")
+        compare(rows[1].number, 18)
+        compare(rows[1].white.san, "a4")
+        screen.item.goNext()
+        compare(screen.item.fens[screen.item.currentIndex], afterBlack)
+    }
+
     function test_boardOnlyOpensFromAScreenThatExpectsPlay() {
         choose("selected-review")
         endpoint.reply(boardState("background"))
