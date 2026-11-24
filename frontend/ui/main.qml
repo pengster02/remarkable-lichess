@@ -387,7 +387,9 @@ Rectangle {
                 if (msg.type === "GameMovesFailed") {
                     screenLoader.item.handleMessage(msg)
                 } else {
-                    root.reviewGame = request.game
+                    root.reviewGame = request.game && typeof msg.rating_diff === "number"
+                        ? Object.assign({}, request.game, {rating_diff: msg.rating_diff})
+                        : request.game
                     root.reviewMoves = msg.moves || []
                     root.reviewFens = msg.fens || []
                     root.reviewClockMs = msg.clock_ms || []
@@ -406,11 +408,20 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
+            } else if (msg.type === "RatingDiff") {
+                if (!root.hasToken || typeof msg.rating_diff !== "number") return
+                var pending = root.pendingReview
+                if (pending && pending.game && pending.gameId === msg.game_id) {
+                    pending.game = Object.assign({}, pending.game, {rating_diff: msg.rating_diff})
+                }
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
+                }
             } else if (msg.type === "LogoutFailed" ||
                        msg.type === "GameOver" || msg.type === "MoveRejected" ||
                        msg.type === "GameStreamReconnecting" || msg.type === "GameStreamFailed" ||
                        msg.type === "OpponentGone" ||
-                       msg.type === "RatingDiff" || msg.type === "GameActionCompleted" ||
+                       msg.type === "GameActionCompleted" ||
                        msg.type === "GameActionFailed" ||
                        msg.type === "MovePreview" || msg.type === "MoveSubmitted") {
                 // Deliberately never navigates on its own (confirmed via the PC

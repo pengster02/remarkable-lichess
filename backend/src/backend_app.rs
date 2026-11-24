@@ -476,6 +476,13 @@ impl LichessBackend {
                 return;
             }
         };
+        let rating_diff = self.my_id.as_deref().and_then(|my_id| {
+            let players = export.players.as_ref()?;
+            [&players.white, &players.black]
+                .into_iter()
+                .find(|side| side.user.as_ref().is_some_and(|user| user.id.as_deref() == Some(my_id)))
+                .and_then(|side| side.rating_diff)
+        });
         let moves: Vec<String> = export.moves.split_whitespace().map(str::to_string).collect();
         let fens = match crate::game::replay::fens_for_export(
             export.variant.as_deref(), export.initial_fen.as_deref(), &moves,
@@ -500,7 +507,9 @@ impl LichessBackend {
                 judgment_comment: a.judgment.map(|j| j.comment),
             })
             .collect();
-        self.send(replier, &BackendMessage::GameMoves { request_id, moves, fens, clock_ms, analysis });
+        self.send(replier, &BackendMessage::GameMoves {
+            request_id, moves, fens, clock_ms, analysis, rating_diff,
+        });
     }
 
     async fn handle_request_cloud_evaluation(

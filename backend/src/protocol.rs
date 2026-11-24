@@ -519,6 +519,10 @@ pub enum BackendMessage {
         fens: Vec<String>,
         clock_ms: Vec<u32>,
         analysis: Vec<MoveAnalysis>,
+        // The same export can recover a rating after a missed account event.
+        // Waiting for that event can leave it blank, and a separate lookup adds latency.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rating_diff: Option<i32>,
     },
     GameMovesFailed { request_id: u32, message: String },
     CloudEvaluation {
@@ -840,11 +844,13 @@ mod tests {
             fens: vec!["startpos".into(), "after-e4".into(), "after-e5".into()],
             clock_ms: vec![],
             analysis: vec![],
+            rating_diff: Some(0),
         })
         .unwrap();
         assert!(json.contains(r#""type":"GameMoves""#));
         assert!(json.contains(r#""request_id":7"#));
         assert!(json.contains(r#""moves":["e4","e5"]"#));
+        assert!(json.contains(r#""rating_diff":0"#));
 
         let failure = serde_json::to_value(BackendMessage::GameMovesFailed {
             request_id: 7,
@@ -868,6 +874,7 @@ mod tests {
                 judgment: Some("Blunder".into()),
                 judgment_comment: Some("Blunder. Nxg6 was best.".into()),
             }],
+            rating_diff: None,
         })
         .unwrap();
         assert!(!json.contains("request_id"));

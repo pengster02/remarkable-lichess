@@ -996,7 +996,12 @@ Rectangle {
     }
 
     function handleMessage(msg) {
-        if (msg.type === "AnalysisPosition") {
+        if (msg.type === "RatingDiff") {
+            if (gameReviewScreen.game && gameReviewScreen.game.game_id === msg.game_id) {
+                gameReviewScreen.game = Object.assign({}, gameReviewScreen.game,
+                    {rating_diff: msg.rating_diff})
+            }
+        } else if (msg.type === "AnalysisPosition") {
             if (!gameReviewScreen.exploreMode ||
                     msg.request_id !== gameReviewScreen.pendingAnalysisRequestId ||
                     msg.requested_fen !== gameReviewScreen.exploreFen) return

@@ -414,6 +414,7 @@ pub struct MoveJudgment {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GameExport {
     pub variant: Option<String>,
+    pub players: Option<GamePlayers>,
     #[serde(rename = "initialFen")]
     pub initial_fen: Option<String>,
     #[serde(default)]
