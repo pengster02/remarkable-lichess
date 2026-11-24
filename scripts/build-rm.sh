@@ -21,7 +21,7 @@ export CROSS_CONTAINER_OPTS="${CROSS_CONTAINER_OPTS:---platform linux/amd64}"
 # actually compiled, since the dev machine used for Tasks 1-9 had no Linux target.
 # `production` turns logging on for the shipped build only (see backend/Cargo.toml);
 # without it a release build compiles every log call out.
-cross build --release --target aarch64-unknown-linux-gnu --features transport,production --bin backend
+cross build --locked --release --target aarch64-unknown-linux-gnu --features transport,production --bin backend
 
 mkdir -p ../dist/remarkable-lichess/backend
 cp target/aarch64-unknown-linux-gnu/release/backend ../dist/remarkable-lichess/backend/entry
@@ -29,11 +29,28 @@ cp target/aarch64-unknown-linux-gnu/release/backend ../dist/remarkable-lichess/b
 cd ../frontend
 cp manifest.json ../dist/remarkable-lichess/manifest.json
 
+# A local rcc can emit the same resource format as the wheel. Using it avoids
+# pulling a compiler image for a stub or installing Qt packages in a container.
+if [ -z "${RCC_BIN:-}" ] && command -v rcc >/dev/null && rcc --version >/dev/null 2>&1; then
+  RCC_BIN="$(command -v rcc)"
+fi
+if [ -z "${RCC_BIN:-}" ] && command -v qmake6 >/dev/null; then
+  if qt_libexec="$(qmake6 -query QT_HOST_LIBEXECS 2>/dev/null)" && [ -x "${qt_libexec}/rcc" ]; then
+    RCC_BIN="${qt_libexec}/rcc"
+  fi
+fi
+if [ -n "${RCC_BIN:-}" ]; then
+  echo "Using Qt resource compiler ${RCC_BIN}"
+  "${RCC_BIN}" --binary -o resources.rcc application.qrc
+  cp resources.rcc ../dist/remarkable-lichess/resources.rcc
+  exit 0
+fi
+
 # AppLoad loads QML from a compiled Qt resource bundle (resources.rcc), not
 # loose .qml files on disk -- confirmed on-device (Task 14): it requests
 # qrc:/<app-namespace>/ui/main.qml, which only resolves if a real .rcc exists.
-# No Qt toolchain on the macOS dev machine, so compile it via containers
-# instead -- but NOT by apt-installing qt6-base-dev in an Ubuntu container
+# When a local Qt compiler is unavailable, compile via containers without
+# apt-installing qt6-base-dev in an Ubuntu container
 # (the original approach here): some build environments can reach PyPI,
 # crates.io, and Docker Hub just fine but not Debian/Ubuntu's own package
 # mirrors at all (confirmed live in one such environment: every apt mirror,

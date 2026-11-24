@@ -269,6 +269,9 @@ TABLET_HOST=10.11.99.1 ./scripts/deploy.sh
 validates each copy under `/home/root/xovi/exthome/appload-backups`. It then
 installs the bundle and keeps the previously installed version there for rollback.
 
+The build uses a local Qt resource compiler when available. Set `RCC_BIN` to
+select a particular `rcc` executable.
+
 A new backend binary needs a full AppLoad relaunch, not just a file copy.
 
 > Keep staging and rollback directories outside AppLoad's app root. AppLoad
