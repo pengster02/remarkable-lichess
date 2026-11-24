@@ -195,14 +195,13 @@ Minimum emulator smoke test:
 - Accepting or claiming a draw and gifting clock time also use
   `ConfirmAction`. Critical confirmations use the shared dark full-fill state;
   do not add screen-local warning colors.
-- Every server-backed live action returns the typed `GameActionCompleted`
-  message. `BoardScreen.requestGameAction` owns pending state and duplicate-tap
-  prevention; new action endpoints should use the same path.
-- Every move request passes through `MoveRequestGate`. The move endpoint returns
-  a typed `MoveSubmitted` acknowledgement, but the gate remains closed until the
-  exact move appears in the authoritative game stream. This prevents duplicate
-  submissions without adding an extra e-ink redraw between HTTP acceptance and
-  the resulting `BoardState`.
+- `BoardScreen.requestGameAction` assigns a request ID. The backend runs one
+  action per board at a time and returns a matching `GameActionCompleted` or
+  `GameActionFailed` while the board remains active. A resumed snapshot carries
+  the pending action, and the app does not automatically retry the POST.
+- Every move request passes through `MoveRequestGate`. The gate releases on a
+  scoped rejection or a `BoardState` that settles the request, from either HTTP
+  acceptance or an authoritative game stream update.
 - One-shot Lichess requests have a 20-second total deadline so move and action
   gates cannot remain pending forever after a dropped response. Held-open event,
   game, seek, and challenge streams use the separate unbounded stream path.
