@@ -366,14 +366,60 @@ TestCase {
     function test_acceptChallengeWaitsForTheMatchingAcknowledgment() {
         app.navigateTo("HomeScreen.qml")
         screen.item.submitChallengeAction("accept", "incoming")
+        var requestId = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
         endpoint.reply({type: "GameStarted", game_id: "incoming", from_realtime_lobby: false})
         endpoint.reply({type: "PendingChallenges", challenges: []})
-        endpoint.reply({type: "ChallengeAccepted", game_id: "previous"})
+        endpoint.reply({type: "ChallengeAccepted", game_id: "previous", request_id: requestId})
         compare(screen.item.pendingChallengeId, "incoming")
-        endpoint.reply({type: "ChallengeAccepted", game_id: "incoming"})
+        endpoint.reply({type: "ChallengeAccepted", game_id: "incoming", request_id: requestId})
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "incoming"})
         verify(String(screen.source).endsWith("BoardScreen.qml"))
+    }
+
+    function test_declineWaitsForItsReplyAndStaleListsCannotRestoreTheRow() {
+        app.navigateTo("HomeScreen.qml")
+        var incoming = [{id: "target", challenger: "Target", limit_seconds: 600, increment_seconds: 0},
+                        {id: "other", challenger: "Other", limit_seconds: 600, increment_seconds: 0}]
+        var stale = {type: "PendingChallenges", challenges: incoming}
+        endpoint.reply(stale)
+        screen.item.submitChallengeAction("decline", "target")
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply(stale)
+        compare(screen.item.pendingChallengeId, "target")
+
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: "target", request_id: request.request_id})
+        compare(screen.item.pendingChallengeId, "")
+        compare(screen.item.pendingChallenges.length, 1)
+        compare(screen.item.pendingChallenges[0].id, "other")
+
+        app.navigateTo("GameHistoryScreen.qml")
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply(stale)
+        compare(screen.item.pendingChallenges.length, 1)
+        compare(screen.item.pendingChallenges[0].id, "other")
+        endpoint.reply({type: "PendingChallenges", challenges: [incoming[1]]})
+        compare(app.resolvedChallengeIds.length, 0)
+    }
+
+    function test_challengeFailureOnlyMatchesTheCurrentRequestForThatId() {
+        app.navigateTo("HomeScreen.qml")
+        screen.item.submitChallengeAction("accept", "same-id")
+        var oldRequest = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        app.navigateTo("GameHistoryScreen.qml")
+        app.navigateTo("HomeScreen.qml")
+        screen.item.submitChallengeAction("accept", "same-id")
+        var currentRequest = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        verify(oldRequest !== currentRequest)
+
+        endpoint.reply({type: "ChallengeActionFailed", challenge_id: "same-id", request_id: oldRequest,
+                        message: "Old error"})
+        compare(screen.item.pendingChallengeId, "same-id")
+        compare(screen.item.actionError, "")
+        endpoint.reply({type: "ChallengeActionFailed", challenge_id: "same-id", request_id: currentRequest,
+                        message: "Challenge expired"})
+        compare(screen.item.pendingChallengeId, "")
+        compare(screen.item.actionError, "Challenge expired")
     }
 
     function test_startupRetryKeepsTheSavedSignInFlow() {

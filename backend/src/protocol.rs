@@ -90,8 +90,8 @@ pub enum FrontendMessage {
     ClaimVictory,
     ClaimDraw,
     RequestChallenges,
-    AcceptChallenge { id: String },
-    DeclineChallenge { id: String },
+    AcceptChallenge { id: String, request_id: Option<u32> },
+    DeclineChallenge { id: String, request_id: Option<u32> },
     RequestSettings,
     SaveSettings {
         auto_queen_promotion: bool,
@@ -355,7 +355,17 @@ pub enum BackendMessage {
     },
     ChallengeCreated { game_id: String },
     ChallengeResolved { game_id: String, error: Option<String> },
-    ChallengeAccepted { game_id: String },
+    ChallengeAccepted {
+        game_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
+    ChallengeDeclined {
+        challenge_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
+    ChallengeActionFailed { challenge_id: String, request_id: u32, message: String },
     ComputerGameCreated { game_id: String },
     // An account event cannot select a board. Alternatives were one stream per
     // account game, or silently replacing the current stream on every gameStart.
