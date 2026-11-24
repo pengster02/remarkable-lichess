@@ -1,6 +1,5 @@
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub fn token_path(config_dir: Option<OsString>) -> PathBuf {
@@ -12,28 +11,13 @@ pub fn token_path(config_dir: Option<OsString>) -> PathBuf {
 }
 
 pub(crate) fn save(path: &Path, token: &str) -> io::Result<()> {
-    // A private sibling keeps the old token intact until rename. Truncating in place
-    // risks partial writes, and a shared temporary name would collide across writers.
-    let mut nonce = [0; 16];
-    getrandom::fill(&mut nonce).map_err(|error| io::Error::other(error.to_string()))?;
-    let temporary = path.with_file_name(format!(".token-{:032x}.tmp", u128::from_ne_bytes(nonce)));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&temporary)?;
-    let write = file.write_all(token.as_bytes()).and_then(|()| file.sync_all());
-    drop(file);
-    let result = write.and_then(|()| fs::rename(&temporary, path));
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    crate::storage::replace(path, token.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn uses_the_configured_directory_or_the_existing_tablet_path() {
