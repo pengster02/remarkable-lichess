@@ -152,6 +152,7 @@ pub enum FrontendMessage {
         #[serde(default)]
         request_id: Option<u32>,
     },
+    CancelGameReview { request_id: u32 },
     RequestCloudEvaluation { fen: String, request_id: Option<u32> },
     RequestAnalysisPosition { fen: String, request_id: Option<u32> },
     MakeAnalysisMove {
@@ -854,6 +855,12 @@ mod tests {
                 "type": "RequestGameMoves", "game_id": "abcd1234", "request_id": 7,
             })).unwrap(),
             FrontendMessage::RequestGameMoves { game_id: "abcd1234".into(), request_id: Some(7) }
+        );
+        assert_eq!(
+            serde_json::from_str::<FrontendMessage>(
+                r#"{"type":"CancelGameReview","request_id":7}"#
+            ).unwrap(),
+            FrontendMessage::CancelGameReview { request_id: 7 }
         );
         let json = serde_json::to_string(&BackendMessage::GameMoves {
             request_id: Some(7),

@@ -135,6 +135,10 @@ TestCase {
     function test_backCancelsAndReopeningSameGameUsesADifferentRequest() {
         var abandoned = choose("same")
         app.navigateTo("HomeScreen.qml")
+        var cancellations = endpoint.sentMessages.filter(function(message) {
+            return message.type === "CancelGameReview"
+        })
+        compare(cancellations, [{type: "CancelGameReview", request_id: abandoned}])
         replyWithMoves(abandoned, "d4")
         verify(String(screen.source).endsWith("HomeScreen.qml"))
         app.navigateTo("GameHistoryScreen.qml")
