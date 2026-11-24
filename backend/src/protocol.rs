@@ -66,7 +66,13 @@ pub enum FrontendMessage {
     ResumeGame { game_id: String },
     // `color` is "white"/"black"/"random" -- same enum Lichess's own
     // ChallengeColor.yaml uses for both /api/board/seek and /api/challenge/{username}.
-    CreateSeek { minutes: u32, increment: u32, rated: bool, color: String },
+    CreateSeek {
+        minutes: u32,
+        increment: u32,
+        rated: bool,
+        color: String,
+        request_id: Option<u32>,
+    },
     CreateChallenge { username: String, minutes: u32, increment: u32, rated: bool, color: String },
     ChallengeAi { level: u8, minutes: u32, increment: u32 },
     CancelSeek,
@@ -338,7 +344,15 @@ pub enum BackendMessage {
     },
     HomeLoadFailed { message: String },
     ChallengesLoadFailed { message: String },
-    SeekCreated,
+    SeekCreated {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
+    SeekFailed { request_id: u32, message: String },
+    SeekEnded {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
     ChallengeCreated { game_id: String },
     ChallengeResolved { game_id: String, error: Option<String> },
     ChallengeAccepted { game_id: String },

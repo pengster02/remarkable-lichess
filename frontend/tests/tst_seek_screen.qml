@@ -10,12 +10,14 @@ TestCase {
     height: 1696
 
     property var sentMessages: []
+    property int requestSequence: 0
 
     SeekScreen {
         id: seek
         width: 960
         height: 1696
         backendSender: function(message) { testCase.sentMessages.push(message) }
+        nextRequestId: function() { return ++testCase.requestSequence }
         navigateTo: function() {}
     }
 
@@ -122,7 +124,8 @@ TestCase {
         compare(seek.pendingAction, "seek")
         compare(findChild(seek, "findOpponentButton").enabled, false)
 
-        seek.handleMessage({type: "ErrorMsg", message: "Rate limited"})
+        seek.handleMessage({type: "SeekFailed", request_id: sentMessages[0].request_id,
+                            message: "Rate limited"})
         compare(seek.pendingAction, "")
         compare(seek.formError, "Rate limited")
         compare(findChild(seek, "findOpponentButton").enabled, true)
