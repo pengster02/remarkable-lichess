@@ -736,6 +736,48 @@ TestCase {
         compare(board.topStatusText(), "Move rejected: try again")
     }
 
+    function test_liveClockTimerReachesCadenceBoundaryAfterResync_data() {
+        return [
+            {tag: "main clock at one minute", mainMs: 60400, firstMoveMs: null,
+             before: "1:00", after: "0:59"},
+            {tag: "main clock at fifteen seconds", mainMs: 15400, firstMoveMs: null,
+             before: "0:15", after: "0:14"},
+            {tag: "first move at fifteen seconds", mainMs: 600000, firstMoveMs: 15400,
+             before: "Move in ~16s", after: "Move in ~15s"}
+        ]
+    }
+
+    function test_liveClockTimerReachesCadenceBoundaryAfterResync(data) {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        snapshot.initial_clock_ms = 600000
+        snapshot.white_time_ms = data.mainMs
+        snapshot.first_move_time_ms = data.firstMoveMs
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var mainClock = data.firstMoveMs === null
+        var bar = findChild(board, mainClock ? "bottomPlayerBar" : "topPlayerBar")
+        var label = findChild(bar, mainClock ? "playerClockText" : "playerStatusText")
+        verify(label.visible)
+        compare(label.text, data.before)
+        wait(650)
+        endpoint.reply(snapshot)
+        var pulse = board.clockPulse
+        wait(550)
+        compare(board.clockPulse, pulse)
+        compare(label.text, data.before)
+        tryCompare(label, "text", data.after, 2400)
+        compare(board.displayClockFor("black"), 600000)
+
+        snapshot.first_move_time_ms = null
+        snapshot.outcome = {result: "draw", reason: "Agreement"}
+        endpoint.reply(snapshot)
+        verify(board.gameOver)
+        pulse = board.clockPulse
+        wait(1200)
+        compare(board.clockPulse, pulse)
+    }
+
     function test_mainClockStartsOnlyAfterTheAuthoritativeOpeningUpdate() {
         app.openGame("active")
         var board = screen.item
