@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, Mutex};
 
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const MOVE_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
 struct StreamReconnectDelay {
@@ -1182,9 +1183,15 @@ fn spawn_game_stream(
             }
             if let Ok(mut lines) = response {
                 let connected_at = Instant::now();
-                while let Ok(Some(line)) =
-                    next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
-                {
+                let mut resync_deadline: Option<Instant> = None;
+                loop {
+                    let timeout = resync_deadline.map_or(STREAM_IDLE_TIMEOUT, |deadline| {
+                        deadline.saturating_duration_since(Instant::now())
+                    });
+                    if timeout.is_zero() {
+                        break;
+                    }
+                    let Ok(Some(line)) = next_stream_line(&mut lines, timeout).await else { break };
                     received_for = connected_at.elapsed();
                     if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
                             let mut status_ids = None;
@@ -1200,6 +1207,7 @@ fn spawn_game_stream(
                                         });
                                     match GameSession::from_game_full(&full, &my_id) {
                                         Ok((mut s, mut board_msg)) => {
+                                            resync_deadline = None;
                                             if was_berserked {
                                                 s.mark_berserked();
                                                 board_msg = s.board_state();
@@ -1238,8 +1246,19 @@ fn spawn_game_stream(
                                     Some(s) if s.game_id == game_id => {
                                         let is_over = state.status != "started";
                                         let fallback = is_over.then(|| outcome(&state.status, state.winner.as_deref()));
-                                        let result = match s.apply_state_update(state) {
-                                            Ok(msg) => Some(msg),
+                                        let result = match s.apply_stream_update(state) {
+                                            Ok(Some(msg)) => {
+                                                resync_deadline = None;
+                                                Some(msg)
+                                            }
+                                            Ok(None) => {
+                                                // This may be an old frame or a missed takeback.
+                                                // Applying it immediately can undo the accepted move;
+                                                // ignoring it indefinitely can leave a stale board.
+                                                // If the stream stays ambiguous, reopen for a full snapshot.
+                                                resync_deadline.get_or_insert_with(|| Instant::now() + MOVE_RECONCILIATION_TIMEOUT);
+                                                None
+                                            }
                                             Err(error) => {
                                                 log::warn!(
                                                     "couldn't apply gameState for {game_id}: {error}"

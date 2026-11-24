@@ -11,6 +11,7 @@ pub struct GameSession {
     // Treating any board as recovery, or sending an independent recovery event,
     // could leave the UI showing a connection that the snapshot did not have.
     game_stream_connected: bool,
+    prior_moves_before_prediction: Option<String>,
     pub initial_fen: String,
     pub position: Chess,
     pub legal: Vec<LegalMove>,
@@ -278,6 +279,7 @@ impl GameSession {
         let session = GameSession {
             game_id: full.id.clone(),
             game_stream_connected: true,
+            prior_moves_before_prediction: None,
             initial_fen: full.initial_fen.clone(),
             position,
             legal,
@@ -321,7 +323,18 @@ impl GameSession {
     }
 
     pub fn apply_state_update(&mut self, state: GameState) -> anyhow::Result<BackendMessage> {
-        self.update_state(state, true)
+        let board = self.update_state(state, true)?;
+        self.prior_moves_before_prediction = None;
+        Ok(board)
+    }
+
+    pub fn apply_stream_update(&mut self, state: GameState) -> anyhow::Result<Option<BackendMessage>> {
+        if state.status == "started" &&
+            self.prior_moves_before_prediction.as_deref() == Some(state.moves.as_str())
+        {
+            return Ok(None);
+        }
+        self.apply_state_update(state).map(Some)
     }
 
     fn update_state(&mut self, state: GameState, game_stream_connected: bool) -> anyhow::Result<BackendMessage> {
@@ -395,7 +408,9 @@ impl GameSession {
         } else {
             format!("{} {}", expected_moves.trim(), uci)
         };
-        self.update_state(state, self.game_stream_connected).map(Some)
+        let board = self.update_state(state, self.game_stream_connected)?;
+        self.prior_moves_before_prediction = Some(expected_moves.to_owned());
+        Ok(Some(board))
     }
 
     pub fn preview_move(&self, uci: &str) -> anyhow::Result<BackendMessage> {
@@ -672,6 +687,32 @@ mod tests {
 
         let recovered = session.apply_state_update(session.state.clone()).unwrap();
         assert!(matches!(recovered, BackendMessage::BoardState { game_stream_connected: true, .. }));
+    }
+
+    #[test]
+    fn an_old_frame_cannot_undo_a_prediction_but_a_later_takeback_can() {
+        let full = sample_full("");
+        let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        session.apply_accepted_move("", "e2e4").unwrap().unwrap();
+
+        assert!(session.apply_stream_update(full.state.clone()).unwrap().is_none());
+        assert_eq!(session.state.moves, "e2e4");
+        assert!(session.apply_stream_update(session.state.clone()).unwrap().is_some());
+        assert!(session.apply_stream_update(full.state).unwrap().is_some());
+        assert!(session.state.moves.is_empty());
+    }
+
+    #[test]
+    fn a_terminal_stream_frame_is_authoritative_while_a_move_is_predicted() {
+        let full = sample_full("");
+        let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        session.apply_accepted_move("", "e2e4").unwrap().unwrap();
+        let mut terminal = full.state;
+        terminal.status = "draw".into();
+
+        let result = session.apply_stream_update(terminal).unwrap().unwrap();
+        assert!(matches!(result, BackendMessage::BoardState { outcome: Some(_), .. }));
+        assert!(session.state.moves.is_empty());
     }
 
     #[test]
