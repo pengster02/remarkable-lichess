@@ -392,6 +392,148 @@ TestCase {
         tryCompare(loader, "item", null)
     }
 
+    function test_liveHistoryClearUsesTheVisiblePiecesAndMoveMarks_data() {
+        return [
+            {tag: "marks on", showMarks: true, expected: ["b8", "c6", "f3", "g1"]},
+            {tag: "marks off", showMarks: false, expected: ["b8", "c6"]}
+        ]
+    }
+
+    function test_liveHistoryClearUsesTheVisiblePiecesAndMoveMarks(data) {
+        var fens = [
+            startFen,
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
+        ]
+        endpoint.reply({type: "SettingsState", highlight_last_move: data.showMarks})
+        app.openGame("live-history-clear")
+        var snapshot = boardState("live-history-clear")
+        snapshot.fen = fens[4]
+        snapshot.position_history = fens
+        snapshot.move_history = ["e4", "e5", "Nf3", "Nc6"]
+        snapshot.last_move = ["b8", "c6"]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        compare(board.flashSquares, [])
+
+        board.showHistoryPosition(3)
+        compare(board.flashSquares.slice().sort(), data.expected)
+        var previousMark = findChild(board, "boardSquare-g1")
+        compare(previousMark.isLastMove, data.showMarks)
+        compare(previousMark.flashRefresh, data.showMarks)
+        board.returnToLive()
+        compare(board.flashSquares.slice().sort(), data.expected)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+        board.returnToLive()
+        compare(board.flashSquares, [])
+
+        board.showHistoryPosition(3)
+        board.showHistoryPosition(2)
+        compare(board.flashSquares.slice().sort(), data.showMarks
+                ? ["b8", "c6", "e5", "e7", "f3", "g1"] : ["b8", "c6", "f3", "g1"])
+        board.showHistoryPosition(1)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+        var liveFen = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3"
+        var advance = boardState("live-history-clear")
+        advance.fen = liveFen
+        advance.turn = "black"
+        advance.position_history = null
+        advance.move_history = null
+        advance.appended_move = "Bc4"
+        advance.last_move = ["f1", "c4"]
+        endpoint.reply(advance)
+        compare(board.fen, liveFen)
+        compare(board.historyIndex, 5)
+        compare(board.flashSquares.slice().sort(), data.showMarks
+                ? ["b8", "c4", "c6", "e2", "e4", "e5", "e7", "f1", "f3", "g1"]
+                : ["b8", "c4", "c6", "e5", "e7", "f1", "f3", "g1"])
+    }
+
+    function test_liveHistoryClearsCheckMarksWithoutMovingAPiece() {
+        var sameBoard = "4k3/8/8/8/8/8/4r3/4K3 w - - 1 2"
+        app.openGame("live-history-check")
+        var snapshot = boardState("live-history-check")
+        snapshot.fen = sameBoard
+        snapshot.position_history = [sameBoard, sameBoard]
+        snapshot.move_history = ["Re2+"]
+        snapshot.in_check = true
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var king = findChild(board, "boardSquare-e1")
+        verify(king.isCheckSquare)
+        board.showHistoryPosition(0)
+        verify(!king.isCheckSquare && king.flashRefresh)
+        compare(board.flashSquares, ["e1"])
+        tryVerify(function() { return board.flashSquares.length === 0 })
+        board.returnToLive()
+        verify(king.isCheckSquare && king.flashRefresh)
+        compare(board.flashSquares, ["e1"])
+    }
+
+    function test_livePreviewConfirmationOnlyClearsAChangedBoard() {
+        app.openGame("preview-refresh")
+        var snapshot = boardState("preview-refresh")
+        snapshot.legal_moves = [{from: "e2", to: "e4"}]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.requestMove("e2", "e4", null)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "MakeMove")
+        var after = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        endpoint.reply({type: "MovePreview", game_id: "preview-refresh", request_id: request.request_id,
+                        fen: after, turn: "black", last_move: ["e2", "e4"],
+                        white_time_ms: 100000, black_time_ms: 100000})
+        compare(board.fen, after)
+        compare(board.flashSquares.slice().sort(), ["e2", "e4"])
+        tryVerify(function() { return board.flashSquares.length === 0 })
+
+        snapshot.fen = after
+        snapshot.turn = "black"
+        snapshot.position_history = [startFen, after]
+        snapshot.move_history = ["e4"]
+        snapshot.last_move = ["e2", "e4"]
+        snapshot.resolved_move_request_id = request.request_id
+        endpoint.reply(snapshot)
+        compare(board.fen, after)
+        compare(board.previewFen, "")
+        compare(board.flashSquares, [])
+    }
+
+    function test_liveHistoryClearsThePreviewWithoutReintroducingItOnRejection() {
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var afterNf3 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"
+        app.openGame("preview-history")
+        var snapshot = boardState("preview-history")
+        snapshot.fen = afterE5
+        snapshot.position_history = [startFen, afterE4, afterE5]
+        snapshot.move_history = ["e4", "e5"]
+        snapshot.last_move = ["e7", "e5"]
+        snapshot.legal_moves = [{from: "g1", to: "f3"}]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.requestMove("g1", "f3", null)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "MakeMove")
+        endpoint.reply({type: "MovePreview", game_id: "preview-history", request_id: request.request_id,
+                        fen: afterNf3, turn: "black", last_move: ["g1", "f3"],
+                        white_time_ms: 100000, black_time_ms: 100000})
+        compare(board.fen, afterNf3)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+
+        board.showHistoryPosition(1)
+        compare(board.fen, afterE4)
+        compare(board.previewFen, "")
+        compare(board.flashSquares.slice().sort(), ["e2", "e4", "e5", "e7", "f3", "g1"])
+        tryVerify(function() { return board.flashSquares.length === 0 })
+        endpoint.reply({type: "MoveRejected", game_id: "preview-history",
+                        request_id: request.request_id, reason: "stale move"})
+        compare(board.fen, afterE4)
+        compare(board.flashSquares, [])
+    }
+
     function test_archiveReplayPagesWholeMoveRows_data() {
         return [
             {tag: "Paper Pro Move timed", width: 954, height: 1696, timedPlies: 24},
