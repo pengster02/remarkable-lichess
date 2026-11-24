@@ -320,6 +320,51 @@ TestCase {
         compare(screen.item.statusText, "try again")
     }
 
+    function test_moveRepliesCannotAffectANewerSameGameSubmission() {
+        app.openGame("active")
+        endpoint.reply(boardState("active"))
+        verify(screen.item.submitMove("e2", "e4", null))
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        var advanced = boardState("active")
+        advanced.fen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        advanced.last_move = ["e7", "e5"]
+        advanced.position_history = [startFen, advanced.fen]
+        advanced.move_history = ["e4", "e5"]
+        advanced.resolved_move_request_id = first
+        endpoint.reply(advanced)
+
+        verify(screen.item.submitMove("g1", "f3", null))
+        var second = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        verify(second > first)
+        var preview = {
+            type: "MovePreview", game_id: "active", request_id: first,
+            fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+            turn: "black", last_move: ["g1", "f3"], white_time_ms: 597000, black_time_ms: 598000
+        }
+        endpoint.reply(preview)
+        compare(screen.item.previewFen, "")
+        preview.request_id = second
+        endpoint.reply(preview)
+        compare(screen.item.fen, preview.fen)
+
+        endpoint.reply({type: "MoveRejected", game_id: "active", request_id: first, reason: "late failure"})
+        compare(screen.item.fen, preview.fen)
+        compare(screen.item.topStatusText(), "Submitting g1–f3")
+        verify(!screen.item.submitMove("d2", "d4", null))
+        endpoint.reply({type: "MoveRejected", game_id: "active", request_id: second, reason: "try again"})
+        compare(screen.item.fen, advanced.fen)
+        compare(screen.item.statusText, "Move rejected: try again")
+
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("active")
+        endpoint.reply(advanced)
+        verify(screen.item.submitMove("g1", "f3", null))
+        var afterReopen = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        verify(afterReopen > second)
+        endpoint.reply({type: "MoveRejected", game_id: "active", request_id: second, reason: "old visit"})
+        compare(screen.item.topStatusText(), "Submitting g1–f3")
+    }
+
     function test_backgroundBoardStateDoesNotReplaceTheSelectedBoard() {
         app.navigateTo("HomeScreen.qml")
         app.openGame("active")

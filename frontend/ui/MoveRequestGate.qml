@@ -4,21 +4,21 @@ QtObject {
     id: gate
     property string gameId: ""
     property var pending: null
-    property bool accepted: false
     signal submitRequested(var message)
 
-    function submit(from, to, promotion) {
+    function submit(from, to, promotion, requestId) {
         if (gate.gameId.length === 0 || gate.pending !== null) return false
         gate.pending = {
             gameId: gate.gameId,
+            id: requestId,
             from: from,
             to: to,
             promotion: promotion
         }
-        gate.accepted = false
         gate.submitRequested({
             type: "MakeMove",
             expected_game_id: gate.pending.gameId,
+            request_id: requestId,
             from: from,
             to: to,
             promotion: promotion
@@ -26,29 +26,15 @@ QtObject {
         return true
     }
 
-    function matches(gameId, from, to, promotion) {
+    function matches(gameId, requestId) {
         return gate.pending !== null &&
             gate.pending.gameId === gameId &&
-            gate.pending.from === from &&
-            gate.pending.to === to &&
-            (gate.pending.promotion || null) === (promotion || null)
+            gate.pending.id === requestId
     }
 
-    function acknowledge(gameId, from, to, promotion) {
-        if (!gate.matches(gameId, from, to, promotion)) return false
-        gate.accepted = true
-        return true
-    }
-
-    function resolve(boardGameId, lastMove) {
+    function resolve(boardGameId, requestId) {
         if (gate.pending === null) return false
-        if (gate.pending.gameId !== boardGameId) {
-            gate.clear()
-            return true
-        }
-        if (lastMove !== null &&
-                gate.pending.from === lastMove[0] &&
-                gate.pending.to === lastMove[1]) {
+        if (gate.pending.gameId !== boardGameId || gate.matches(boardGameId, requestId)) {
             gate.clear()
             return true
         }
@@ -57,6 +43,5 @@ QtObject {
 
     function clear() {
         gate.pending = null
-        gate.accepted = false
     }
 }

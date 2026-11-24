@@ -4,6 +4,13 @@ use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{BackendMessage, LegalMove, OpponentDeparture, PlayerIdentity, PlayerStatusSummary};
 use shakmaty::{Chess, Position};
 use std::time::Instant;
+use tokio::sync::oneshot;
+
+struct PendingMove {
+    request_id: Option<u32>,
+    // Closing this channel cancels the HTTP wait. A flag leaves it running and an IPC cancel can arrive out of order.
+    _cancel_on_drop: oneshot::Sender<()>,
+}
 
 pub struct GameSession {
     pub game_id: String,
@@ -13,6 +20,7 @@ pub struct GameSession {
     game_stream_connected: bool,
     pub opponent_departure: Option<OpponentDeparture>,
     prior_moves_before_prediction: Option<String>,
+    pending_move: Option<PendingMove>,
     pub initial_fen: String,
     pub position: Chess,
     pub legal: Vec<LegalMove>,
@@ -202,6 +210,7 @@ fn to_board_state(
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
         game_stream_connected: session.game_stream_connected,
+        resolved_move_request_id: None,
         opponent_departure: if active { session.opponent_departure.map(Box::new) } else { None },
         fen: shakmaty::fen::Fen::from_position(&session.position, shakmaty::EnPassantMode::Legal)
             .to_string(),
@@ -291,6 +300,7 @@ impl GameSession {
             game_stream_connected: true,
             opponent_departure: None,
             prior_moves_before_prediction: None,
+            pending_move: None,
             initial_fen: full.initial_fen.clone(),
             position,
             legal,
@@ -341,7 +351,11 @@ impl GameSession {
     }
 
     pub fn apply_state_update(&mut self, state: GameState) -> anyhow::Result<BackendMessage> {
-        let board = self.update_state(state, true)?;
+        let changed = state.status != "started" || state.moves != self.state.moves;
+        let mut board = self.update_state(state, true)?;
+        if changed {
+            self.resolve_move(&mut board);
+        }
         self.prior_moves_before_prediction = None;
         Ok(board)
     }
@@ -426,12 +440,42 @@ impl GameSession {
         } else {
             format!("{} {}", expected_moves.trim(), uci)
         };
-        let board = self.update_state(state, self.game_stream_connected)?;
+        let mut board = self.update_state(state, self.game_stream_connected)?;
+        self.resolve_move(&mut board);
         self.prior_moves_before_prediction = Some(expected_moves.to_owned());
         Ok(Some(board))
     }
 
-    pub fn preview_move(&self, uci: &str) -> anyhow::Result<BackendMessage> {
+    pub fn begin_move(
+        &mut self,
+        uci: &str,
+        request_id: Option<u32>,
+    ) -> anyhow::Result<(BackendMessage, oneshot::Receiver<()>)> {
+        anyhow::ensure!(self.pending_move.is_none(), "A move is already being submitted.");
+        let preview = self.preview_move(uci, request_id)?;
+        let (cancel_on_drop, canceled) = oneshot::channel();
+        self.pending_move = Some(PendingMove { request_id, _cancel_on_drop: cancel_on_drop });
+        Ok((preview, canceled))
+    }
+
+    pub fn cancel_move(&mut self) {
+        self.pending_move = None;
+    }
+
+    fn resolve_move(&mut self, board: &mut BackendMessage) {
+        if let BackendMessage::BoardState { resolved_move_request_id, .. } = board {
+            *resolved_move_request_id = self.pending_move.take().and_then(|move_| move_.request_id);
+        }
+    }
+
+    pub fn inherit_pending_move(&mut self, previous: &mut Self, board: &mut BackendMessage) {
+        self.pending_move = previous.pending_move.take();
+        if self.state.status != "started" || self.state.moves != previous.state.moves {
+            self.resolve_move(board);
+        }
+    }
+
+    fn preview_move(&self, uci: &str, request_id: Option<u32>) -> anyhow::Result<BackendMessage> {
         anyhow::ensure!(self.state.status == "started", "game is not active");
         let mover = self.position.turn();
         let position = apply_uci_move(&self.position, uci)?;
@@ -452,6 +496,7 @@ impl GameSession {
         }
         Ok(BackendMessage::MovePreview {
             game_id: self.game_id.clone(),
+            request_id,
             fen: shakmaty::fen::Fen::from_position(
                 &position,
                 shakmaty::EnPassantMode::Legal,
@@ -465,14 +510,15 @@ impl GameSession {
         })
     }
 
-    /// Returns the UCI string to submit to Lichess, or a MoveRejected message
-    /// if `from`/`to`/`promotion` isn't in the cached legal-move list.
     pub fn try_move(
         &self,
         from: &str,
         to: &str,
         promotion: Option<&str>,
-    ) -> Result<String, Box<BackendMessage>> {
+    ) -> Result<String, &'static str> {
+        if (self.your_color == "white") != self.position.turn().is_white() {
+            return Err("It is not your turn.");
+        }
         let found = self
             .legal
             .iter()
@@ -487,16 +533,10 @@ impl GameSession {
                 // before trusting it, in case of a stale-cache race with an opponent move.
                 match apply_uci_move(&self.position, &uci) {
                     Ok(_) => Ok(uci),
-                    Err(_) => Err(Box::new(BackendMessage::MoveRejected {
-                        game_id: Some(self.game_id.clone()),
-                        reason: "stale board state, please retry".into(),
-                    })),
+                    Err(_) => Err("stale board state, please retry"),
                 }
             }
-            None => Err(Box::new(BackendMessage::MoveRejected {
-                game_id: Some(self.game_id.clone()),
-                reason: "not a legal move".into(),
-            })),
+            None => Err("not a legal move"),
         }
     }
 }
@@ -751,10 +791,55 @@ mod tests {
     }
 
     #[test]
+    fn stream_releases_only_the_pending_move_after_a_valid_board_change() {
+        let full = sample_full("");
+        let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let (preview, mut first) = session.begin_move("e2e4", Some(21)).unwrap();
+        assert!(matches!(preview, BackendMessage::MovePreview { request_id: Some(21), .. }));
+        assert!(session.begin_move("d2d4", Some(22)).is_err());
+        let mut clock_update = full.state.clone();
+        clock_update.wtime -= 1000;
+        let board = session.apply_stream_update(clock_update).unwrap().unwrap();
+        assert!(matches!(board, BackendMessage::BoardState { resolved_move_request_id: None, .. }));
+        let mut invalid = full.state.clone();
+        invalid.moves = "invalid".into();
+        assert!(session.apply_stream_update(invalid).is_err());
+        assert_eq!(first.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let mut played = full.state;
+        played.moves = "e2e4 e7e5".into();
+        let board = session.apply_stream_update(played).unwrap().unwrap();
+        assert!(matches!(board, BackendMessage::BoardState { resolved_move_request_id: Some(21), .. }));
+        let (_, mut second) = session.begin_move("g1f3", Some(22)).unwrap();
+        assert_eq!(first.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+        assert_eq!(second.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+        let accepted = session.apply_accepted_move("e2e4 e7e5", "g1f3").unwrap().unwrap();
+        assert!(matches!(accepted, BackendMessage::BoardState { resolved_move_request_id: Some(22), .. }));
+        assert_eq!(second.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+    }
+
+    #[test]
+    fn reconnect_keeps_pending_move_only_while_the_submitted_position_is_current() {
+        let full = sample_full("");
+        let (mut previous, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let (_, mut canceled) = previous.begin_move("e2e4", Some(21)).unwrap();
+        let (mut reconnected, mut same) = GameSession::from_game_full(&full, "my-id").unwrap();
+        reconnected.inherit_pending_move(&mut previous, &mut same);
+        assert!(matches!(same, BackendMessage::BoardState { resolved_move_request_id: None, .. }));
+        assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let different = sample_full("d2d4 d7d5");
+        let (mut replacement, mut changed) = GameSession::from_game_full(&different, "my-id").unwrap();
+        replacement.inherit_pending_move(&mut reconnected, &mut changed);
+        assert!(matches!(changed, BackendMessage::BoardState { resolved_move_request_id: Some(21), .. }));
+        assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+    }
+
+    #[test]
     fn move_preview_does_not_mutate_authoritative_session() {
         let full = sample_full("");
         let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
-        let preview = session.preview_move("e2e4").unwrap();
+        let preview = session.preview_move("e2e4", None).unwrap();
         match preview {
             BackendMessage::MovePreview { turn, last_move, .. } => {
                 assert_eq!(turn, "black");
@@ -780,7 +865,7 @@ mod tests {
         let full = sample_full("");
         let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
         let result = session.try_move("e2", "e5", None);
-        assert!(matches!(result.as_ref().map_err(|b| b.as_ref()), Err(BackendMessage::MoveRejected { .. })));
+        assert_eq!(result, Err("not a legal move"));
     }
 
     #[test]

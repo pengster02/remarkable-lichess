@@ -79,7 +79,7 @@ pub enum FrontendMessage {
     },
     ChallengeAi { level: u8, minutes: u32, increment: u32 },
     CancelSeek { request_id: Option<u32> },
-    MakeMove { from: String, to: String, promotion: Option<String> },
+    MakeMove { from: String, to: String, promotion: Option<String>, request_id: Option<u32> },
     Resign,
     // `accept: true` offers a draw/takeback when none is pending, or accepts the
     // opponent's pending offer; `accept: false` declines it -- same split Lichess's
@@ -409,6 +409,9 @@ pub enum BackendMessage {
     BoardState {
         game_id: String,
         game_stream_connected: bool,
+        // Pair release with its position. A separate acknowledgement can race premoves; last-move squares can match another line.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_move_request_id: Option<u32>,
         // Include the latest departure in the same snapshot as the position.
         // A separate resume event can arrive late, while inferring it from
         // profile presence can expose claim buttons without a game event.
@@ -485,6 +488,8 @@ pub enum BackendMessage {
     GameActionFailed { game_id: String, action: GameAction, message: String },
     MovePreview {
         game_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
         fen: String,
         turn: String,
         white_time_ms: u64,
@@ -501,6 +506,8 @@ pub enum BackendMessage {
     MoveRejected {
         #[serde(skip_serializing_if = "Option::is_none")]
         game_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
         reason: String,
     },
     GameStreamReconnecting { game_id: String },
@@ -610,7 +617,7 @@ mod tests {
         let parsed: FrontendMessage = serde_json::from_str(json).unwrap();
         assert_eq!(
             parsed,
-            FrontendMessage::MakeMove { from: "e2".into(), to: "e4".into(), promotion: None }
+            FrontendMessage::MakeMove { from: "e2".into(), to: "e4".into(), promotion: None, request_id: None }
         );
         let json = serde_json::to_string(&BackendMessage::MoveSubmitted {
             game_id: "g1".into(),
@@ -966,6 +973,7 @@ mod tests {
         let msg = BackendMessage::BoardState {
             game_id: "g1".into(),
             game_stream_connected: false,
+            resolved_move_request_id: None,
             opponent_departure: None,
             fen: "startpos".into(),
             turn: "white".into(),

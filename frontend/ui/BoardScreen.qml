@@ -12,6 +12,7 @@ Rectangle {
         onSubmitRequested: (message) => boardScreen.backendSender(message)
     }
     property var backendSender
+    property var nextRequestId
     property var navigateTo
     property var openGameReview: function() {}
     property bool openingReview: false
@@ -235,8 +236,10 @@ Rectangle {
     }
 
     function submitMove(from, to, promotion) {
-        if (!moveRequestGate.submit(from, to, promotion)) return false
+        if (!boardScreen.nextRequestId || moveRequestGate.pending !== null) return false
+        if (!moveRequestGate.submit(from, to, promotion, boardScreen.nextRequestId())) return false
         boardScreen.selectedSquare = ""
+        boardScreen.statusMessage = ""
         return true
     }
 
@@ -1870,7 +1873,7 @@ Rectangle {
                 boardScreen.completeGame(msg.outcome.result, msg.outcome.reason)
                 return
             }
-            moveRequestGate.resolve(boardScreen.gameId, nextLastMove)
+            moveRequestGate.resolve(boardScreen.gameId, msg.resolved_move_request_id)
             if (boardScreen.pendingPremove !== null &&
                     boardScreen.pendingPremove.gameId !== boardScreen.gameId) {
                 boardScreen.cancelPremove()
@@ -1909,6 +1912,7 @@ Rectangle {
         } else if (msg.type === "MovePreview") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0 ||
                     boardScreen.viewingHistory || boardScreen.gameOver || boardScreen.streamError.length > 0) return
+            if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
             var previewLastMove = msg.last_move || null
             var previewRefreshSquares = boardScreen.changedSquaresBetweenFens(
                 boardScreen.liveFen, msg.fen)
@@ -1931,11 +1935,9 @@ Rectangle {
             boardScreen.clockPulse += 1
             boardScreen.lastMove = previewLastMove
             boardScreen.inCheck = msg.in_check || false
-        } else if (msg.type === "MoveSubmitted") {
-            moveRequestGate.acknowledge(
-                msg.game_id, msg.from, msg.to, msg.promotion || null)
         } else if (msg.type === "MoveRejected") {
             if (boardScreen.gameOver || (msg.game_id && msg.game_id !== boardScreen.gameId)) return
+            if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
             boardScreen.rollbackMovePreview()
             boardScreen.statusMessage = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""

@@ -10,6 +10,7 @@ TestCase {
     width: 1696
     height: 2384
     property var boardMessages: []
+    property int moveRequestSequence: 0
 
     Theme {
         id: theme
@@ -25,6 +26,7 @@ TestCase {
         width: 1696
         height: 2384
         backendSender: function(message) { testCase.boardMessages.push(message) }
+        nextRequestId: function() { return ++testCase.moveRequestSequence }
     }
 
     function init() {
