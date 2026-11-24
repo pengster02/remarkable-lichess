@@ -7,6 +7,7 @@ Rectangle {
     Theme { id: theme; darkMode: seekScreen.darkMode }
     property var backendSender
     property var navigateTo
+    property var openGame: function() {}
     property bool darkMode: false
     // Set once SeekCreated/ChallengeCreated confirms the long-poll connection
     // backing the seek/challenge is actually held open server-side (see
@@ -17,14 +18,15 @@ Rectangle {
     // "white"/"black"/"random" -- same enum Lichess's own ChallengeColor.yaml
     // uses for both /api/board/seek and /api/challenge/{username}.
     property string selectedColor: "random"
-    // {url, url_white, url_black} once OpenChallengeCreated arrives, else null.
+    // {game_id, url, url_white, url_black} once OpenChallengeCreated arrives, else null.
     // Unlike waiting/waitingLabel above, an open challenge has no held-open
     // connection backing it (see backend_app.rs's create_open_challenge) --
     // the link stays valid on Lichess's side independent of this screen, so
     // there's deliberately no "Cancel" for it, just Back to Home.
     property var openChallengeUrls: null
     property string pendingAction: ""
-    readonly property bool awaitingGame: waiting || pendingAction.length > 0 || openChallengeUrls !== null
+    property string waitingChallengeGameId: ""
+    property string seekMatchBeforeAckId: ""
     property string formError: ""
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
@@ -77,6 +79,7 @@ Rectangle {
         // 60s cap hides valid seeks, while separate duplicate forms add drift.
         if (pendingAction.length > 0 || !validateTimeControl(180)) return
         dismissKeyboard()
+        seekMatchBeforeAckId = ""
         pendingAction = "seek"
         backendSender({
             type: "CreateSeek",
@@ -422,11 +425,6 @@ Rectangle {
                     ? "Starting game…"
                     : "Start computer game"
                 enabled: seekScreen.pendingAction.length === 0
-                // Starts immediately -- no accept/decline step, so unlike the
-                // seek/challenge buttons above there's no "waiting" state to enter;
-                // the game arrives the same way any other game does, via the
-                // account event stream's gameStart, and main.qml's router switches
-                // to BoardScreen on the first BoardState like normal.
                 onClicked: seekScreen.submitComputerGame()
             }
         }
@@ -445,31 +443,49 @@ Rectangle {
             onClicked: {
                 seekScreen.backendSender({type: "CancelSeek"})
                 seekScreen.waiting = false
-                seekScreen.pendingAction = ""
+                seekScreen.waitingChallengeGameId = ""
             }
         }
         }
     }
 
     function handleMessage(msg) {
-        // The actual transition to BoardScreen happens when main.qml's router
-        // sees the first BoardState message arrive from the background game
-        // stream once an opponent is found -- these two just confirm the
-        // seek/challenge's long-poll connection is now held open server-side.
         if (msg.type === "SeekCreated") {
+            if (seekScreen.pendingAction !== "seek") return
             seekScreen.pendingAction = ""
             seekScreen.formError = ""
             seekScreen.waiting = true
             seekScreen.waitingLabel = "Waiting for an opponent..."
+            if (seekScreen.seekMatchBeforeAckId) seekScreen.openGame(seekScreen.seekMatchBeforeAckId)
         } else if (msg.type === "ChallengeCreated") {
+            if (seekScreen.pendingAction !== "challenge") return
             seekScreen.pendingAction = ""
             seekScreen.formError = ""
             seekScreen.waiting = true
+            seekScreen.waitingChallengeGameId = msg.game_id
             seekScreen.waitingLabel = "Challenge sent, waiting for a reply..."
+        } else if (msg.type === "ChallengeResolved") {
+            if (!seekScreen.waiting || msg.game_id !== seekScreen.waitingChallengeGameId) return
+            seekScreen.waiting = false
+            seekScreen.waitingChallengeGameId = ""
+            if (msg.error) seekScreen.formError = msg.error
+            else seekScreen.openGame(msg.game_id)
+        } else if (msg.type === "ComputerGameCreated") {
+            if (seekScreen.pendingAction === "computer") seekScreen.openGame(msg.game_id)
         } else if (msg.type === "OpenChallengeCreated") {
+            if (seekScreen.pendingAction !== "open") return
             seekScreen.pendingAction = ""
             seekScreen.formError = ""
-            seekScreen.openChallengeUrls = {url: msg.url, url_white: msg.url_white, url_black: msg.url_black}
+            seekScreen.openChallengeUrls = msg
+        } else if (msg.type === "GameStarted") {
+            var lookingForOpponent = seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0
+            var matchingLink = seekScreen.pendingAction.length === 0 && !seekScreen.waiting &&
+                seekScreen.openChallengeUrls && msg.game_id === seekScreen.openChallengeUrls.game_id
+            if ((lookingForOpponent && msg.from_realtime_lobby) || matchingLink)
+                seekScreen.openGame(msg.game_id)
+            else if (seekScreen.pendingAction === "seek" && msg.from_realtime_lobby &&
+                     !seekScreen.seekMatchBeforeAckId)
+                seekScreen.seekMatchBeforeAckId = msg.game_id
         } else if (msg.type === "ErrorMsg") {
             seekScreen.pendingAction = ""
             seekScreen.formError = msg.message || "Lichess could not create that game."

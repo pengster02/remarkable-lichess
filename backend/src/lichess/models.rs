@@ -186,6 +186,26 @@ pub enum GameStreamMessage {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct EventGame {
     pub id: String,
+    pub source: Option<String>,
+    pub speed: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreatedGame {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChallengeResolution {
+    Accepted,
+    Declined,
+    Canceled,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChallengeResult {
+    pub done: ChallengeResolution,
 }
 
 // The `game` payload of the account event stream's `gameFinish` event
@@ -456,9 +476,11 @@ mod tests {
 
     #[test]
     fn parses_game_start_event() {
-        let json = r#"{"type":"gameStart","game":{"id":"abcd1234"}}"#;
+        let json = r#"{"type":"gameStart","game":{"id":"abcd1234","gameId":"abcd1234","source":"pool","speed":"rapid"}}"#;
         let msg: EventStreamMessage = serde_json::from_str(json).unwrap();
-        assert_eq!(msg, EventStreamMessage::GameStart { game: EventGame { id: "abcd1234".into() } });
+        assert_eq!(msg, EventStreamMessage::GameStart {
+            game: EventGame { id: "abcd1234".into(), source: Some("pool".into()), speed: Some("rapid".into()) },
+        });
     }
 
     #[test]

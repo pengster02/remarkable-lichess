@@ -59,9 +59,9 @@ Rectangle {
     property bool online: false
     property var wifiConnected: null
     property string connectionMessage: ""
-    // A game ID is safer than a broad "next game" flag: always navigating breaks
-    // Back-to-Home, while a boolean can let an unrelated background game win a race.
-    property string expectedHomeGameId: ""
+    // Bind replies to the selected board even while it loads. Trusting the next
+    // snapshot or waiting to set the ID until the first frame both allow a stale board.
+    property string selectedGameId: ""
 
     function connectivityLabel() {
         if (!root.connectivityKnown) return "Connecting…"
@@ -90,15 +90,18 @@ Rectangle {
         return root.requestSequence
     }
 
-    function expectNextGame(gameId) {
-        root.expectedHomeGameId = gameId
+    function openGame(gameId) {
+        if (!root.hasToken || !gameId) return
+        screenLoader.source = "BoardScreen.qml"
+        root.selectedGameId = gameId
+        root.sendToBackend({type: "ResumeGame", game_id: gameId})
     }
 
     function requireAuthentication() {
         root.hasToken = false
         root.authenticationState = "required"
         root.username = ""
-        root.expectedHomeGameId = ""
+        root.selectedGameId = ""
         root.pendingReview = null
         root.reviewGame = null
         root.reviewMoves = []
@@ -346,6 +349,8 @@ Rectangle {
                 }
             } else if (msg.type === "HomeState" || msg.type === "HomeLoadFailed" ||
                        msg.type === "SeekCreated" || msg.type === "ChallengeCreated" ||
+                       msg.type === "GameStarted" || msg.type === "ComputerGameCreated" ||
+                       msg.type === "ChallengeResolved" || msg.type === "ChallengeAccepted" ||
                        msg.type === "OpenChallengeCreated" ||
                        msg.type === "PendingChallenges" ||
                        msg.type === "ChallengesLoadFailed" ||
@@ -375,21 +380,7 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "BoardState") {
-                if (!root.hasToken) return
-                // Opening a board requires play intent. Automatically opening one
-                // interrupts review, while an explicit Resume for every seek adds a tap.
-                var screen = screenLoader.source.toString().split("/").pop()
-                var showingBoard = screen === "BoardScreen.qml"
-                var expectingHomeGame = screen === "HomeScreen.qml" &&
-                    msg.game_id === root.expectedHomeGameId && root.expectedHomeGameId.length > 0
-                var awaitingSeek = screen === "SeekScreen.qml" && screenLoader.item &&
-                    screenLoader.item.awaitingGame
-                if (!showingBoard && !expectingHomeGame && !awaitingSeek) return
-                if (!showingBoard) {
-                    screenLoader.source = "BoardScreen.qml"
-                } else if (root.pendingReview && root.pendingReview.gameId !== msg.game_id) {
-                    root.pendingReview = null
-                }
+                if (!root.hasToken || !root.selectedGameId || msg.game_id !== root.selectedGameId) return
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
@@ -408,9 +399,6 @@ Rectangle {
                 }
             } else if (msg.type === "ErrorMsg") {
                 console.warn("Backend error: " + msg.message)
-                if (screenLoader.source.toString().indexOf("HomeScreen") !== -1) {
-                    root.expectedHomeGameId = ""
-                }
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
@@ -437,7 +425,7 @@ Rectangle {
         source: "StartupScreen.qml"
         onSourceChanged: {
             root.pendingReview = null
-            root.expectedHomeGameId = ""
+            root.selectedGameId = ""
         }
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
@@ -551,8 +539,8 @@ Rectangle {
             if (item.hasOwnProperty("openingReview")) {
                 item.openingReview = Qt.binding(function() { return root.pendingReview !== null })
             }
-            if (item.hasOwnProperty("expectNextGame")) {
-                item.expectNextGame = root.expectNextGame
+            if (item.hasOwnProperty("openGame")) {
+                item.openGame = root.openGame
             }
         }
     }

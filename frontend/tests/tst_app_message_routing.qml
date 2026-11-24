@@ -170,23 +170,31 @@ TestCase {
 
     function test_boardOnlyOpensFromAScreenThatExpectsPlay() {
         choose("selected-review")
+        endpoint.reply({type: "GameStarted", game_id: "background", from_realtime_lobby: true})
         endpoint.reply(boardState("background"))
         verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
         verify(screen.item.openingReview)
 
         app.navigateTo("SeekScreen.qml")
-        endpoint.reply(boardState("background"))
+        endpoint.reply({type: "GameStarted", game_id: "background", from_realtime_lobby: true})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
         screen.item.submitComputerGame()
-        verify(screen.item.awaitingGame)
-        endpoint.reply(boardState("requested"))
+        endpoint.reply({type: "GameStarted", game_id: "external-ai", from_realtime_lobby: false})
+        endpoint.reply(boardState("external-ai"))
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+        endpoint.reply({type: "ComputerGameCreated", game_id: "requested"})
         verify(String(screen.source).endsWith("BoardScreen.qml"))
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "requested"})
+        endpoint.reply(boardState("previous"))
+        compare(screen.item.gameId, "")
+        endpoint.reply(boardState("requested"))
         compare(screen.item.gameId, "requested")
     }
 
     function test_onlyAnActionReplyForThisBoardChangesItsState() {
         app.navigateTo("HomeScreen.qml")
-        app.expectNextGame("active")
+        app.openGame("active")
         endpoint.reply(boardState("active"))
         screen.item.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
         var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
@@ -203,6 +211,92 @@ TestCase {
         endpoint.reply({type: "GameActionFailed", game_id: "active", action: "AddTime", message: "try again"})
         compare(screen.item.pendingGameAction, "")
         compare(screen.item.statusText, "try again")
+    }
+
+    function test_backgroundBoardStateDoesNotReplaceTheSelectedBoard() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("active")
+        endpoint.reply(boardState("active"))
+        compare(screen.item.gameId, "active")
+
+        var before = endpoint.sentMessages.length
+        endpoint.reply({type: "GameStarted", game_id: "background", from_realtime_lobby: true})
+        compare(endpoint.sentMessages.length, before)
+        endpoint.reply(boardState("background"))
+        compare(screen.item.gameId, "active")
+    }
+
+    function test_seekIgnoresAnUnrelatedChallengeAndOpensItsMatch() {
+        app.navigateTo("SeekScreen.qml")
+        screen.item.submitSeek()
+        endpoint.reply({type: "SeekCreated"})
+        verify(screen.item.waiting)
+        endpoint.reply({type: "GameStarted", game_id: "challenge", from_realtime_lobby: false})
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+        endpoint.reply({type: "GameStarted", game_id: "pool-match", from_realtime_lobby: true})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "pool-match"})
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+    }
+
+    function test_seekMatchBeforeTheAckWaitsForSuccess() {
+        app.navigateTo("SeekScreen.qml")
+        screen.item.submitSeek()
+        endpoint.reply({type: "GameStarted", game_id: "old-match", from_realtime_lobby: true})
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+        endpoint.reply({type: "ErrorMsg", message: "Could not create seek"})
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+
+        screen.item.submitSeek()
+        endpoint.reply({type: "GameStarted", game_id: "new-match", from_realtime_lobby: true})
+        endpoint.reply({type: "SeekCreated"})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "new-match"})
+    }
+
+    function test_directChallengeOpensOnlyItsAcceptedGame() {
+        app.navigateTo("SeekScreen.qml")
+        findChild(screen.item, "usernameField").text = "opponent"
+        screen.item.submitChallenge()
+        endpoint.reply({type: "ChallengeCreated", game_id: "outgoing"})
+        endpoint.reply({type: "GameStarted", game_id: "outgoing", from_realtime_lobby: false})
+        endpoint.reply({type: "GameStarted", game_id: "unrelated", from_realtime_lobby: true})
+        endpoint.reply({type: "ChallengeResolved", game_id: "previous", error: "Old challenge"})
+        verify(screen.item.waiting)
+        endpoint.reply({type: "ChallengeResolved", game_id: "outgoing", error: "Challenge declined."})
+        compare(screen.item.formError, "Challenge declined.")
+        verify(!screen.item.waiting)
+
+        screen.item.submitChallenge()
+        endpoint.reply({type: "ChallengeCreated", game_id: "accepted"})
+        endpoint.reply({type: "ChallengeResolved", game_id: "accepted", error: null})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "accepted"})
+    }
+
+    function test_openChallengeMatchesTheShareableLink() {
+        app.navigateTo("SeekScreen.qml")
+        screen.item.submitOpenChallenge()
+        endpoint.reply({type: "OpenChallengeCreated", game_id: "link",
+                        url: "https://lichess.org/game/link", url_white: "white", url_black: "black"})
+        endpoint.reply({type: "GameStarted", game_id: "other", from_realtime_lobby: false})
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+        endpoint.reply({type: "GameStarted", game_id: "link", from_realtime_lobby: false})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "link"})
+    }
+
+    function test_acceptChallengeWaitsForTheMatchingAcknowledgment() {
+        app.navigateTo("HomeScreen.qml")
+        screen.item.submitChallengeAction("accept", "incoming")
+        endpoint.reply({type: "GameStarted", game_id: "incoming", from_realtime_lobby: false})
+        endpoint.reply({type: "PendingChallenges", challenges: []})
+        endpoint.reply({type: "ChallengeAccepted", game_id: "previous"})
+        compare(screen.item.pendingChallengeId, "incoming")
+        endpoint.reply({type: "ChallengeAccepted", game_id: "incoming"})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "incoming"})
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
     }
 
     function test_startupRetryKeepsTheSavedSignInFlow() {
@@ -254,7 +348,7 @@ TestCase {
 
     function test_finalBoardOpensWithTheLastMoveAndFrozenClocks() {
         app.navigateTo("HomeScreen.qml")
-        app.expectNextGame("g1")
+        app.openGame("g1")
         var finalFen = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
         var finalBoard = {
             type: "BoardState", game_id: "g1", fen: finalFen,

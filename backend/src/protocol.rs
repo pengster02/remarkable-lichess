@@ -339,7 +339,13 @@ pub enum BackendMessage {
     HomeLoadFailed { message: String },
     ChallengesLoadFailed { message: String },
     SeekCreated,
-    ChallengeCreated,
+    ChallengeCreated { game_id: String },
+    ChallengeResolved { game_id: String, error: Option<String> },
+    ChallengeAccepted { game_id: String },
+    ComputerGameCreated { game_id: String },
+    // An account event cannot select a board. Alternatives were one stream per
+    // account game, or silently replacing the current stream on every gameStart.
+    GameStarted { game_id: String, from_realtime_lobby: bool },
     BoardState {
         game_id: String,
         fen: String,
@@ -460,7 +466,7 @@ pub enum BackendMessage {
     // to a color-choice/random assignment, `url_white`/`url_black` claim that
     // color outright. Shown as plain text on SeekScreen for the user to read/
     // share manually (this app has no clipboard/share-sheet integration).
-    OpenChallengeCreated { url: String, url_white: String, url_black: String },
+    OpenChallengeCreated { game_id: String, url: String, url_white: String, url_black: String },
     // `fens[0]` is the starting position, `fens[i]` is the position after SAN
     // move `moves[i-1]` -- always `fens.len() == moves.len() + 1` (see
     // game::replay::fens_for_export). Sent once per RequestGameMoves, not
@@ -770,6 +776,7 @@ mod tests {
             FrontendMessage::CreateOpenChallenge { minutes: 10, increment: 0, rated: false }
         );
         let json = serde_json::to_string(&BackendMessage::OpenChallengeCreated {
+            game_id: "ovdODEHx".into(),
             url: "https://lichess.org/abc".into(),
             url_white: "https://lichess.org/abc?color=white".into(),
             url_black: "https://lichess.org/abc?color=black".into(),
