@@ -127,6 +127,7 @@ pub struct LichessBackend {
     // its response open. Closing the response cancels the outstanding request.
     pending_seek: Option<tokio::task::JoinHandle<()>>,
     account_stream: Option<AccountStream>,
+    home_refresh: Option<tokio::task::JoinHandle<()>>,
     // The detached task waiting on the OAuth callback (see handle_start_login).
     // Held so CancelLogin -- and any restart of the flow -- can drop it, which
     // closes the listening port with it. Detached rather than awaited inline
@@ -158,6 +159,7 @@ impl LichessBackend {
             session: Arc::new(Mutex::new(None)),
             pending_seek: None,
             account_stream: None,
+            home_refresh: None,
             login_handle: None,
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
@@ -178,7 +180,7 @@ impl LichessBackend {
                 // way (a pasted token, or a restart picking up the saved file)
                 // while a QR sign-in is still waiting on its redirect.
                 stop_task(&mut self.login_handle).await;
-                self.stop_game_activity().await;
+                self.stop_authenticated_activity().await;
                 if let Err(error) = credentials::save(&self.token_path, &token) {
                     log::warn!("could not persist verified sign-in: {error}");
                 }
@@ -210,7 +212,7 @@ impl LichessBackend {
     }
 
     /// The top status bar is on every screen, but every other connectivity
-    /// report comes out of handle_request_home, which returns early without a
+    /// report comes out of Home loading, which returns early without a
     /// token -- so before sign-in nothing ever set it and it sat on
     /// "Connecting..." forever. Detached so the sign-in QR isn't held up behind
     /// a network round trip.
@@ -323,70 +325,17 @@ impl LichessBackend {
         }
     }
 
-    async fn handle_request_home(&mut self, replier: &BackendReplier<Self>) {
+    async fn start_home_refresh(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>) {
         let Some(client) = self.client.clone() else {
             self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
             return;
         };
-        let (playing_result, account_result) =
-            tokio::join!(client.get_playing(), client.get_account());
-        let ongoing_games = match playing_result {
-            Ok(games) => games
-                .into_iter()
-                .map(|g| OngoingGameSummary {
-                    game_id: g.game_id,
-                    // `username` is absent for the built-in AI (only `ai` -- its
-                    // level -- is present then, see PlayingOpponent's own comment),
-                    // hence the same level-based fallback as game history's AI games.
-                    opponent_name: g.opponent.as_ref().and_then(|o| {
-                        o.username.clone().or_else(|| o.ai.map(|level| format!("Stockfish level {level}")))
-                    }),
-                    opponent_rating: g.opponent.as_ref().and_then(|o| o.rating),
-                    is_my_turn: g.is_my_turn,
-                })
-                .collect(),
-            Err(e) => {
-                let wifi_connected = wifi_link_state();
-                let message = if wifi_connected == Some(false) {
-                    "Wi-Fi is disconnected"
-                } else {
-                    "Can't reach Lichess"
-                };
-                self.send(
-                    replier,
-                    &BackendMessage::ConnectivityState {
-                        online: false,
-                        wifi_connected,
-                        message: Some(message.to_string()),
-                    },
-                );
-                log::warn!("couldn't load Home: {e}");
-                self.send(
-                    replier,
-                    &BackendMessage::HomeLoadFailed {
-                        message: format!("{message}. Check your connection and retry."),
-                    },
-                );
-                return;
-            }
-        };
-        // A fresh snapshot on every Home visit (not just cached from login) --
-        // ratings change from games played elsewhere while this app wasn't open.
-        // Not fatal if this second call fails: the ongoing-games list above is
-        // the part Home actually needs to be useful.
-        let ratings = match account_result {
-            Ok(account) => ratings_from_perfs(account.perfs),
-            Err(_) => Vec::new(),
-        };
-        self.send(
-            replier,
-            &BackendMessage::ConnectivityState {
-                online: true,
-                wifi_connected: wifi_link_state(),
-                message: None,
-            },
-        );
-        self.send(replier, &BackendMessage::HomeState { ongoing_games, ratings });
+        // A single owned task keeps dispatch free for ResumeGame and cancels
+        // both requests on refresh. Detached requests could outlive logout.
+        stop_task(&mut self.home_refresh).await;
+        self.home_refresh = Some(tokio::spawn(refresh_home(
+            client, replier.clone(), self.write_lock.clone(), request_id,
+        )));
     }
 
     async fn handle_resume_game(&mut self, replier: &BackendReplier<Self>, game_id: String) {
@@ -774,14 +723,15 @@ impl LichessBackend {
                 return;
             }
         }
-        self.stop_game_activity().await;
+        self.stop_authenticated_activity().await;
         self.client = None;
         self.my_id = None;
         self.username = None;
         self.send(replier, &BackendMessage::AuthenticationRequired);
     }
 
-    async fn stop_game_activity(&mut self) {
+    async fn stop_authenticated_activity(&mut self) {
+        stop_task(&mut self.home_refresh).await;
         stop_task(&mut self.pending_seek).await;
         if let Some(account) = self.account_stream.as_mut() {
             abort_task(&mut account.task).await;
@@ -1080,6 +1030,54 @@ async fn send_pending_challenges(
         }
     };
     send_locked(replier, write_lock, &msg);
+}
+
+async fn refresh_home(
+    client: LichessClient,
+    replier: BackendReplier<LichessBackend>,
+    write_lock: Arc<std::sync::Mutex<()>>,
+    request_id: Option<u32>,
+) {
+    let games = async {
+        let playing = client.get_playing().await;
+        let wifi_connected = wifi_link_state();
+        let reply = match playing {
+            Ok(games) => BackendMessage::HomeState {
+                request_id,
+                wifi_connected,
+                ongoing_games: games.into_iter().map(|g| OngoingGameSummary {
+                    game_id: g.game_id,
+                    // The built-in AI omits the username.
+                    opponent_name: g.opponent.as_ref().and_then(|o| {
+                        o.username.clone().or_else(|| o.ai.map(|level| format!("Stockfish level {level}")))
+                    }),
+                    opponent_rating: g.opponent.as_ref().and_then(|o| o.rating),
+                    is_my_turn: g.is_my_turn,
+                }).collect(),
+            },
+            Err(error) => {
+                log::warn!("couldn't load Home: {error}");
+                let message = if wifi_connected == Some(false) {
+                    "Wi-Fi is disconnected"
+                } else {
+                    "Can't reach Lichess"
+                };
+                BackendMessage::HomeLoadFailed {
+                    request_id,
+                    message: format!("{message}. Check your connection and retry."),
+                    wifi_connected,
+                }
+            }
+        };
+        send_locked(&replier, &write_lock, &reply);
+    };
+    let ratings = async {
+        if let Ok(account) = client.get_account().await {
+            let ratings = ratings_from_perfs(account.perfs);
+            send_locked(&replier, &write_lock, &BackendMessage::HomeRatings { request_id, ratings });
+        }
+    };
+    tokio::join!(games, ratings);
 }
 
 async fn stop_task(slot: &mut Option<tokio::task::JoinHandle<()>>) {
@@ -1431,6 +1429,8 @@ mod stream_watchdog_tests {
 impl AppLoadBackend for LichessBackend {
     async fn handle_message(&mut self, replier: &BackendReplier<Self>, message: Message) {
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
+            // The new frontend starts its request sequence over.
+            stop_task(&mut self.home_refresh).await;
             if self.client.is_none() {
                 self.check_saved_sign_in(replier).await;
             } else if let Some(username) = self.username.clone() {
@@ -1468,7 +1468,7 @@ impl AppLoadBackend for LichessBackend {
                 }
             }
             FrontendMessage::SaveToken { token } => self.handle_save_token(replier, token).await,
-            FrontendMessage::RequestHome => self.handle_request_home(replier).await,
+            FrontendMessage::RequestHome { request_id } => self.start_home_refresh(replier, request_id).await,
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
             FrontendMessage::CreateSeek { minutes, increment, rated, color, request_id } => {
                 self.handle_create_seek(replier, minutes, increment, rated, color, request_id).await

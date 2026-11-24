@@ -31,6 +31,7 @@ Rectangle {
     // the user anything is even happening) indistinguishable from "you have
     // nothing going on", which isn't true, it just hasn't loaded yet.
     property bool loadedOnce: false
+    property int homeRequestId: 0
     property bool connectivityKnown: false
     property bool online: false
     property var wifiConnected: null
@@ -42,17 +43,22 @@ Rectangle {
     property string pendingChallengeAction: ""
     property int pendingChallengeRequestId: 0
 
-    onBackendSenderChanged: {
-        if (homeScreen.backendSender) homeScreen.refresh()
+    onBackendSenderChanged: homeScreen.refresh()
+    onNextRequestIdChanged: homeScreen.refresh()
+
+    function acceptsHomeReply(msg) {
+        return homeScreen.homeRequestId > 0 && msg.request_id === homeScreen.homeRequestId
     }
 
     function refresh() {
+        if (!homeScreen.backendSender || !homeScreen.nextRequestId) return
         homeScreen.loadedOnce = false
         homeScreen.connectivityKnown = false
         homeScreen.loadError = ""
         homeScreen.challengesError = ""
         homeScreen.actionError = ""
-        homeScreen.backendSender({type: "RequestHome"})
+        homeScreen.homeRequestId = homeScreen.nextRequestId()
+        homeScreen.backendSender({type: "RequestHome", request_id: homeScreen.homeRequestId})
         homeScreen.backendSender({type: "RequestChallenges"})
     }
 
@@ -183,29 +189,6 @@ Rectangle {
 
             SectionCard {
                 darkMode: homeScreen.darkMode
-                title: "Your ratings"
-                visible: homeScreen.ratings.length > 0
-                Flow {
-                    width: parent.width
-                    spacing: theme.spacingSmall
-                    Repeater {
-                        model: homeScreen.ratings
-                        Text {
-                            required property var modelData
-                            // Rating number bold and a size class up from its
-                            // label -- the number is what someone actually
-                            // opens Home to check.
-                            text: chessDisplay.speedLabel(modelData.speed) + "  <b>" + modelData.rating + "</b>"
-                            textFormat: Text.StyledText
-                            font.pixelSize: theme.fontBody
-                            color: theme.text
-                        }
-                    }
-                }
-            }
-
-            SectionCard {
-                darkMode: homeScreen.darkMode
                 title: "Your games"
                 visible: homeScreen.ongoingGames.length > 0
                 Repeater {
@@ -229,6 +212,7 @@ Rectangle {
                             color: theme.text
                         }
                         AppButton {
+                            objectName: "homeResumeButton"
                             // Full-width row, not a shrink-wrapped button --
                             // the e-ink list convention (KOReader et al.):
                             // a row's hittability comes from spanning the
@@ -329,14 +313,37 @@ Rectangle {
                     onClicked: homeScreen.refresh()
                 }
             }
+
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Your ratings"
+                visible: homeScreen.ratings.length > 0
+                Flow {
+                    width: parent.width
+                    spacing: theme.spacingSmall
+                    Repeater {
+                        model: homeScreen.ratings
+                        Text {
+                            required property var modelData
+                            text: chessDisplay.speedLabel(modelData.speed) + "  <b>" + modelData.rating + "</b>"
+                            textFormat: Text.StyledText
+                            font.pixelSize: theme.fontBody
+                            color: theme.text
+                        }
+                    }
+                }
+            }
         }
     }
 
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
+            if (!homeScreen.acceptsHomeReply(msg)) return
             homeScreen.loadedOnce = true
             homeScreen.loadError = ""
             homeScreen.ongoingGames = msg.ongoing_games || []
+        } else if (msg.type === "HomeRatings") {
+            if (!homeScreen.acceptsHomeReply(msg)) return
             homeScreen.ratings = msg.ratings || []
         } else if (msg.type === "PendingChallenges") {
             homeScreen.challengesError = ""
@@ -364,6 +371,7 @@ Rectangle {
                 : null
             homeScreen.connectionMessage = msg.message || ""
         } else if (msg.type === "HomeLoadFailed") {
+            if (!homeScreen.acceptsHomeReply(msg)) return
             homeScreen.loadedOnce = true
             homeScreen.loadError = msg.message ||
                 "Couldn't load your games. Check Wi-Fi and retry."

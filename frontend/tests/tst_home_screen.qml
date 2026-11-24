@@ -44,6 +44,7 @@ TestCase {
     }
 
     function test_homeFailureStopsLoadingAndOffersRetry() {
+        home.refresh()
         home.handleMessage({
             type: "ConnectivityState",
             online: false,
@@ -52,6 +53,7 @@ TestCase {
         })
         home.handleMessage({
             type: "HomeLoadFailed",
+            request_id: home.homeRequestId,
             message: "Wi-Fi is disconnected. Check your connection and retry."
         })
         compare(home.loadedOnce, true)
@@ -101,6 +103,7 @@ TestCase {
     }
 
     function test_successClearsAnEarlierConnectionError() {
+        home.refresh()
         home.loadError = "offline"
         home.handleMessage({
             type: "ConnectivityState",
@@ -110,7 +113,13 @@ TestCase {
         })
         home.handleMessage({
             type: "HomeState",
-            ongoing_games: [],
+            request_id: home.homeRequestId,
+            ongoing_games: []
+        })
+        compare(home.ratings.length, 0)
+        home.handleMessage({
+            type: "HomeRatings",
+            request_id: home.homeRequestId,
             ratings: [{speed: "rapid", rating: 1800}]
         })
         compare(home.loadedOnce, true)
