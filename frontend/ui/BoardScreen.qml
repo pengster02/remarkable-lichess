@@ -29,6 +29,7 @@ Rectangle {
     property string gameId: ""
     property string requestedGameId: ""
     property string streamError: ""
+    property bool streamReconnecting: false
     // The selection exists before its first snapshot. Using gameId would enable
     // an empty board, and a timer would guess when the user needs a way back.
     readonly property bool awaitingBoard: boardScreen.requestedGameId.length > 0 &&
@@ -486,6 +487,11 @@ Rectangle {
     function topStatusText() {
         if (boardScreen.gameOver && boardScreen.showGameOverDialog) return ""
         if (boardScreen.streamError.length > 0) return boardScreen.streamError
+        if (boardScreen.streamReconnecting) {
+            return boardScreen.statusText.length > 0
+                ? "Reconnecting · " + boardScreen.statusText
+                : "Reconnecting..."
+        }
         if (boardScreen.statusText.length > 0) return boardScreen.statusText
         if (boardScreen.awaitingBoard) return "Loading game..."
         if (boardScreen.gameOver) return "Game over"
@@ -1690,6 +1696,7 @@ Rectangle {
             boardScreen.gameResult = result
         }
         boardScreen.gameOver = true
+        boardScreen.streamReconnecting = false
         boardScreen.gameReason = reason
         boardScreen.selectedSquare = ""
         boardScreen.legalMoves = []
@@ -1717,6 +1724,8 @@ Rectangle {
             var gameChanged = boardScreen.gameId !== nextGameId
             if (!gameChanged && boardScreen.gameOver) return
             boardScreen.streamError = ""
+            if (typeof msg.game_stream_connected === "boolean")
+                boardScreen.streamReconnecting = !msg.game_stream_connected
             var positionChanged = boardScreen.liveFen !== msg.fen ||
                 gameChanged
             var fullPositions = msg.position_history
@@ -1919,9 +1928,7 @@ Rectangle {
             // Alternatives were disabling optimistic moves during reconnects, or
             // waiting for every POST before moving a piece, both making slow links
             // directly visible in gameplay.
-            if (boardScreen.liveFen.length === 0) {
-                boardScreen.statusText = "Reconnecting..."
-            }
+            boardScreen.streamReconnecting = true
         } else if (msg.type === "GameStreamFailed") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
                     boardScreen.gameOver) return
@@ -1933,6 +1940,7 @@ Rectangle {
             boardScreen.pendingPromotion = null
             boardScreen.pendingGameAction = ""
             boardScreen.showGameActions = false
+            boardScreen.streamReconnecting = false
             boardScreen.streamError = msg.message || "Could not load this game."
         } else if (msg.type === "OpponentGone") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return

@@ -266,6 +266,20 @@ TestCase {
         compare(endpoint.sentMessages.length, before)
     }
 
+    function test_cachedBoardCanRestoreItsReconnectStatus() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        var snapshot = boardState("selected")
+        snapshot.game_stream_connected = false
+        endpoint.reply(snapshot)
+        compare(screen.item.topStatusText(), "Reconnecting...")
+        compare(screen.item.liveFen, snapshot.fen)
+
+        snapshot.game_stream_connected = true
+        endpoint.reply(snapshot)
+        compare(screen.item.topStatusText(), "Your move")
+    }
+
     function test_seekIgnoresAnUnrelatedChallengeAndOpensItsMatch() {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitSeek()

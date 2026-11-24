@@ -391,16 +391,13 @@ impl LichessBackend {
     async fn handle_resume_game(&mut self, replier: &BackendReplier<Self>, game_id: String) {
         let Some(client) = self.client.clone() else { return };
         let Some(my_id) = self.my_id.clone() else { return };
-        let cached_state = self
-            .session
-            .lock()
-            .await
-            .as_ref()
-            .filter(|session| session.game_id == game_id)
-            .map(GameSession::board_state);
-        if let Some(board_state) = cached_state {
-            self.send(replier, &board_state);
-            return;
+        {
+            let current = self.session.lock().await;
+            if let Some(session) = current.as_ref().filter(|session| session.game_id == game_id) {
+                // Keep snapshot publication in session order with the stream task.
+                self.send(replier, &session.board_state());
+                return;
+            }
         }
         if self.game_stream.as_ref().is_some_and(|stream| {
             stream.game_id == game_id && !stream.task.is_finished()
@@ -899,17 +896,13 @@ impl LichessBackend {
                                 promotion,
                             },
                         );
-                        let predicted = {
-                            let mut guard = self.session.lock().await;
-                            match guard.as_mut().filter(|session| session.game_id == game_id) {
-                                Some(session) => session.apply_accepted_move(&expected_moves, &uci),
-                                None => Ok(None),
+                        let mut guard = self.session.lock().await;
+                        if let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) {
+                            match session.apply_accepted_move(&expected_moves, &uci) {
+                                Ok(Some(board_state)) => self.send(replier, &board_state),
+                                Ok(None) => {}
+                                Err(error) => log::warn!("couldn't apply accepted move locally: {error}"),
                             }
-                        };
-                        match predicted {
-                            Ok(Some(board_state)) => self.send(replier, &board_state),
-                            Ok(None) => {}
-                            Err(error) => log::warn!("couldn't apply accepted move locally: {error}"),
                         }
                     }
                     Err(error) => self.send(
@@ -1277,10 +1270,10 @@ fn spawn_game_stream(
                                 }),
                                 GameStreamMessage::Chat => None,
                             };
-                            drop(guard);
                             if let Some(m) = board_msg {
                                 send_locked(&replier, &write_lock, &m);
                             }
+                            drop(guard);
                             if let Some(ids) = status_ids {
                                 spawn_player_status_request(
                                     client.clone(),
@@ -1301,11 +1294,17 @@ fn spawn_game_stream(
             }
             let delay = reconnect.after_attempt(received_for);
             log::warn!("game stream {game_id} ended; retrying in {delay:?}");
-            send_locked(
-                &replier,
-                &write_lock,
-                &BackendMessage::GameStreamReconnecting { game_id: game_id.clone() },
-            );
+            {
+                let mut guard = session_handle.lock().await;
+                if let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) {
+                    session.mark_stream_disconnected();
+                }
+                send_locked(
+                    &replier,
+                    &write_lock,
+                    &BackendMessage::GameStreamReconnecting { game_id: game_id.clone() },
+                );
+            }
             tokio::time::sleep(delay).await;
         }
     })
