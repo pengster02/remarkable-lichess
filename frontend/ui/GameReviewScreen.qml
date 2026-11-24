@@ -92,11 +92,13 @@ Rectangle {
     property string exploreStatusCode: "playing"
     property var nextRequestId
     property int pendingAnalysisRequestId: 0
-    property var cloudEvaluations: ({})
-    property var cloudEvaluationUnavailable: ({})
-    property string cloudEvaluationPendingFen: ""
-    property string cloudEvaluationErrorFen: ""
-    property string cloudEvaluationError: ""
+    // Keep each position's state. One pending FEN forgets earlier work, and a
+    // global busy flag prevents requesting another position while browsing.
+    property var cloudEvaluationByFen: ({})
+    readonly property var currentCloudState: gameReviewScreen.cloudEvaluationByFen[gameReviewScreen.currentFen()] || null
+    readonly property string cloudEvaluationPhase: currentCloudState ? currentCloudState.phase : ""
+    readonly property bool canRequestCloudEvaluation: gameReviewScreen.currentFen().length > 0 &&
+        (cloudEvaluationPhase === "" || cloudEvaluationPhase === "failed")
     readonly property int coordinateGutter: 52
 
     function currentFen() {
@@ -442,7 +444,8 @@ Rectangle {
     }
 
     function currentCloudEvaluation() {
-        return gameReviewScreen.cloudEvaluations[gameReviewScreen.currentFen()] || null
+        return gameReviewScreen.cloudEvaluationPhase === "ready"
+            ? gameReviewScreen.currentCloudState.evaluation : null
     }
 
     function formatCloudNodes(knodes) {
@@ -452,15 +455,14 @@ Rectangle {
     }
 
     function cloudEvaluationLabel() {
-        var fen = gameReviewScreen.currentFen()
-        if (fen === gameReviewScreen.cloudEvaluationPendingFen) {
+        if (gameReviewScreen.cloudEvaluationPhase === "pending") {
             return "Cloud evaluation: loading..."
         }
-        if (gameReviewScreen.cloudEvaluationUnavailable[fen]) {
+        if (gameReviewScreen.cloudEvaluationPhase === "unavailable") {
             return "No cached cloud evaluation for this position."
         }
-        if (fen === gameReviewScreen.cloudEvaluationErrorFen) {
-            return "Cloud evaluation failed: " + gameReviewScreen.cloudEvaluationError
+        if (gameReviewScreen.cloudEvaluationPhase === "failed") {
+            return "Cloud evaluation failed: " + gameReviewScreen.currentCloudState.message
         }
         var evaluation = gameReviewScreen.currentCloudEvaluation()
         if (!evaluation) return ""
@@ -476,17 +478,29 @@ Rectangle {
     }
 
     function requestCloudEvaluation() {
+        if (!gameReviewScreen.canRequestCloudEvaluation) return
         var fen = gameReviewScreen.currentFen()
-        if (fen.length === 0 || fen === gameReviewScreen.cloudEvaluationPendingFen) return
-        gameReviewScreen.cloudEvaluationPendingFen = fen
-        gameReviewScreen.cloudEvaluationErrorFen = ""
-        gameReviewScreen.cloudEvaluationError = ""
-        var unavailable = {}
-        for (var key in gameReviewScreen.cloudEvaluationUnavailable) {
-            if (key !== fen) unavailable[key] = gameReviewScreen.cloudEvaluationUnavailable[key]
+        var requestId = gameReviewScreen.nextRequestId()
+        gameReviewScreen.setCloudState(fen, {phase: "pending", requestId: requestId})
+        gameReviewScreen.backendSender({type: "RequestCloudEvaluation", fen: fen, request_id: requestId})
+    }
+
+    function setCloudState(fen, state) {
+        var states = Object.assign({}, gameReviewScreen.cloudEvaluationByFen)
+        states[fen] = state
+        gameReviewScreen.cloudEvaluationByFen = states
+    }
+
+    function handleCloudReply(msg) {
+        var state = gameReviewScreen.cloudEvaluationByFen[msg.requested_fen]
+        if (!state || state.phase !== "pending" || state.requestId !== msg.request_id) return
+        if (msg.type === "CloudEvaluation") {
+            gameReviewScreen.setCloudState(msg.requested_fen, {phase: "ready", evaluation: msg.evaluation})
+        } else if (msg.type === "CloudEvaluationUnavailable") {
+            gameReviewScreen.setCloudState(msg.requested_fen, {phase: "unavailable"})
+        } else {
+            gameReviewScreen.setCloudState(msg.requested_fen, {phase: "failed", message: msg.message || "unknown error"})
         }
-        gameReviewScreen.cloudEvaluationUnavailable = unavailable
-        gameReviewScreen.backendSender({type: "RequestCloudEvaluation", fen: fen})
     }
 
     function moveRows() {
@@ -653,7 +667,7 @@ Rectangle {
             font.bold: gameReviewScreen.currentCloudEvaluation() !== null
             width: parent.width
             elide: Text.ElideRight
-            color: gameReviewScreen.cloudEvaluationErrorFen === gameReviewScreen.currentFen()
+            color: gameReviewScreen.cloudEvaluationPhase === "failed"
                 ? theme.errorText
                 : theme.textMuted
         }
@@ -884,15 +898,12 @@ Rectangle {
                     width: parent.width
                     text: gameReviewScreen.currentCloudEvaluation() !== null
                         ? "Cloud evaluation loaded"
-                        : gameReviewScreen.cloudEvaluationUnavailable[gameReviewScreen.currentFen()]
+                        : gameReviewScreen.cloudEvaluationPhase === "unavailable"
                             ? "No cloud evaluation cached"
-                            : gameReviewScreen.cloudEvaluationPendingFen === gameReviewScreen.currentFen()
+                            : gameReviewScreen.cloudEvaluationPhase === "pending"
                                 ? "Loading cloud evaluation..."
                                 : "Cloud evaluation"
-                    enabled: gameReviewScreen.currentFen().length > 0 &&
-                             gameReviewScreen.cloudEvaluationPendingFen !== gameReviewScreen.currentFen() &&
-                             gameReviewScreen.currentCloudEvaluation() === null &&
-                             !gameReviewScreen.cloudEvaluationUnavailable[gameReviewScreen.currentFen()]
+                    enabled: gameReviewScreen.canRequestCloudEvaluation
                     onClicked: {
                         gameReviewScreen.requestCloudEvaluation()
                         gameReviewScreen.showReviewOptions = false
@@ -1025,32 +1036,9 @@ Rectangle {
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.selectedSquare = ""
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
-        } else if (msg.type === "CloudEvaluation") {
-            var evaluations = {}
-            for (var key in gameReviewScreen.cloudEvaluations) {
-                evaluations[key] = gameReviewScreen.cloudEvaluations[key]
-            }
-            evaluations[msg.requested_fen] = msg.evaluation
-            gameReviewScreen.cloudEvaluations = evaluations
-            if (gameReviewScreen.cloudEvaluationPendingFen === msg.requested_fen) {
-                gameReviewScreen.cloudEvaluationPendingFen = ""
-            }
-        } else if (msg.type === "CloudEvaluationUnavailable") {
-            var unavailable = {}
-            for (var unavailableKey in gameReviewScreen.cloudEvaluationUnavailable) {
-                unavailable[unavailableKey] = gameReviewScreen.cloudEvaluationUnavailable[unavailableKey]
-            }
-            unavailable[msg.requested_fen] = true
-            gameReviewScreen.cloudEvaluationUnavailable = unavailable
-            if (gameReviewScreen.cloudEvaluationPendingFen === msg.requested_fen) {
-                gameReviewScreen.cloudEvaluationPendingFen = ""
-            }
-        } else if (msg.type === "CloudEvaluationFailed") {
-            if (gameReviewScreen.cloudEvaluationPendingFen === msg.requested_fen) {
-                gameReviewScreen.cloudEvaluationPendingFen = ""
-            }
-            gameReviewScreen.cloudEvaluationErrorFen = msg.requested_fen
-            gameReviewScreen.cloudEvaluationError = msg.message || "unknown error"
+        } else if (msg.type === "CloudEvaluation" || msg.type === "CloudEvaluationUnavailable" ||
+                   msg.type === "CloudEvaluationFailed") {
+            gameReviewScreen.handleCloudReply(msg)
         } else if (msg.type === "AnalysisFailed") {
             if (gameReviewScreen.exploreMode && msg.request_id === gameReviewScreen.pendingAnalysisRequestId) {
                 gameReviewScreen.pendingAnalysisRequestId = 0
