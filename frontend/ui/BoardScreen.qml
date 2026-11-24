@@ -27,12 +27,19 @@ Rectangle {
     }
 
     property string gameId: ""
+    property string requestedGameId: ""
+    property string streamError: ""
+    // The selection exists before its first snapshot. Using gameId would enable
+    // an empty board, and a timer would guess when the user needs a way back.
+    readonly property bool awaitingBoard: boardScreen.requestedGameId.length > 0 &&
+        boardScreen.liveFen.length === 0
     property string fen: ""
     property string liveFen: ""
     property string previewFen: ""
     property string turn: "white"
     property string liveTurn: "white"
-    readonly property string activeTurnColor: boardScreen.gameOver ? "" : boardScreen.turn
+    readonly property string activeTurnColor: boardScreen.gameOver || boardScreen.awaitingBoard ||
+        boardScreen.streamError.length > 0 ? "" : boardScreen.turn
     // Pushed from main.qml's root state (TokenVerified's username) -- shown
     // on your own player bar below the board, matching every reference
     // client's "your side is a real labeled player too" treatment.
@@ -175,7 +182,8 @@ Rectangle {
     }
     property bool gameOver: false
     property bool showGameOverDialog: false
-    readonly property bool canNavigateHome: boardScreen.gameOver
+    readonly property bool canNavigateHome: boardScreen.gameOver || boardScreen.awaitingBoard ||
+        boardScreen.streamError.length > 0
     property string gameResult: ""
     property string gameReason: ""
     property bool annotationMode: false
@@ -192,6 +200,7 @@ Rectangle {
             (boardScreen.initialClockMs !== null ||
                 boardScreen.firstMoveTimeMs !== null) &&
             !boardScreen.gameOver &&
+            boardScreen.streamError.length === 0 &&
             boardScreen.fen.length > 0
         onTriggered: boardScreen.clockPulse += 1
     }
@@ -470,7 +479,9 @@ Rectangle {
 
     function topStatusText() {
         if (boardScreen.gameOver && boardScreen.showGameOverDialog) return ""
+        if (boardScreen.streamError.length > 0) return boardScreen.streamError
         if (boardScreen.statusText.length > 0) return boardScreen.statusText
+        if (boardScreen.awaitingBoard) return "Loading game..."
         if (boardScreen.gameOver) return "Game over"
         if (boardScreen.viewingHistory) {
             return "Viewing move " + boardScreen.historyIndex + " of " +
@@ -504,7 +515,8 @@ Rectangle {
     }
 
     function requestGameAction(message, action) {
-        if (boardScreen.gameId.length === 0 || boardScreen.pendingGameAction.length > 0) return
+        if (boardScreen.gameId.length === 0 || boardScreen.streamError.length > 0 ||
+                boardScreen.pendingGameAction.length > 0) return
         boardScreen.pendingGameAction = action
         message.expected_game_id = boardScreen.gameId
         boardScreen.backendSender(message)
@@ -814,6 +826,18 @@ Rectangle {
         }
     }
 
+    Text {
+        objectName: "boardLoadingStatus"
+        anchors.centerIn: parent
+        width: parent.width - 2 * theme.pageSideMargin
+        visible: boardScreen.awaitingBoard
+        text: visible ? boardScreen.topStatusText() : ""
+        font.pixelSize: theme.fontLarge
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.Wrap
+        color: theme.text
+    }
+
     Column {
         // Fixed (non-scrolling) chess frame: opponent bar, board, your bar --
         // the standard sides arrangement every reference client uses. The
@@ -826,6 +850,7 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
         spacing: theme.spacingXs
+        visible: !boardScreen.awaitingBoard
 
         PlayerBar {
             objectName: "topPlayerBar"
@@ -954,6 +979,7 @@ Rectangle {
                 MouseArea {
                     id: boardInput
                     anchors.fill: grid
+                    enabled: boardScreen.streamError.length === 0
                     property string pressSquare: ""
                     property real pressX: 0
                     property real pressY: 0
@@ -1124,10 +1150,12 @@ Rectangle {
         anchors.rightMargin: theme.pageSideMargin
         anchors.topMargin: theme.spacingXs
         spacing: theme.spacingXs
+        visible: !boardScreen.awaitingBoard
 
         BoardToolButton {
             width: (parent.width - parent.spacing) / 2
             text: boardScreen.gameActionsLabel()
+            enabled: boardScreen.streamError.length === 0
             highlighted: boardScreen.pendingGameAction.length > 0 ||
                 boardScreen.gameOver ||
                 boardScreen.drawOfferedByOpponent ||
@@ -1682,6 +1710,7 @@ Rectangle {
             var nextGameId = msg.game_id || ""
             var gameChanged = boardScreen.gameId !== nextGameId
             if (!gameChanged && boardScreen.gameOver) return
+            boardScreen.streamError = ""
             var positionChanged = boardScreen.liveFen !== msg.fen ||
                 gameChanged
             var previewConfirmed = boardScreen.previewFen.length > 0 &&
@@ -1866,7 +1895,8 @@ Rectangle {
             boardScreen.selectedSquare = ""
             moveRequestGate.clear()
         } else if (msg.type === "GameStreamReconnecting") {
-            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
+            if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
+                    boardScreen.gameOver) return
             // The move POST and game stream are independent connections. Rolling
             // back here made a valid optimistic move snap back whenever only the
             // stream dropped; MoveRejected or the next BoardState are authoritative.
@@ -1876,6 +1906,18 @@ Rectangle {
             if (boardScreen.liveFen.length === 0) {
                 boardScreen.statusText = "Reconnecting..."
             }
+        } else if (msg.type === "GameStreamFailed") {
+            if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
+                    boardScreen.gameOver) return
+            boardScreen.rollbackMovePreview()
+            moveRequestGate.clear()
+            boardScreen.cancelPremove()
+            boardScreen.selectedSquare = ""
+            boardScreen.pendingMoveConfirmation = null
+            boardScreen.pendingPromotion = null
+            boardScreen.pendingGameAction = ""
+            boardScreen.showGameActions = false
+            boardScreen.streamError = msg.message || "Could not load this game."
         } else if (msg.type === "OpponentGone") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             boardScreen.opponentGone = msg.gone

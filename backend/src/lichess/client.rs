@@ -43,6 +43,20 @@ pub(crate) fn is_auth_rejection(error: &anyhow::Error) -> bool {
     })
 }
 
+#[cfg(any(feature = "transport", test))]
+pub(crate) fn board_stream_rejection(error: &anyhow::Error) -> Option<&str> {
+    let error = error.downcast_ref::<HttpResponseError>()?;
+    let fallback = match error.status {
+        reqwest::StatusCode::BAD_REQUEST => "This game is unavailable in the Board API.",
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            "Lichess denied access to this board."
+        }
+        reqwest::StatusCode::NOT_FOUND => "Lichess couldn't find this game.",
+        _ => return None,
+    };
+    Some(error.reason.as_deref().unwrap_or(fallback))
+}
+
 /// Shared with the OAuth sign-in flow (see lichess::oauth), which talks to the
 /// same host before any client exists to hold it.
 pub const LICHESS_BASE_URL: &str = "https://lichess.org";
@@ -719,6 +733,25 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\ncomplete\n{\"done\":\"accepted\"}",
         ).await;
         assert_eq!(lines, ["complete"]);
+    }
+
+    #[tokio::test]
+    async fn board_stream_retries_temporary_http_failures_only() {
+        let server = MockServer::start().await;
+        for status in [400, 401, 403, 404, 429, 503] {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/board/game/stream/{status}")))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for (status, rejected) in [
+            (400, true), (401, true), (403, true), (404, true), (429, false), (503, false),
+        ] {
+            let failure = client.stream_lines(&format!("/api/board/game/stream/{status}")).await.err().unwrap();
+            assert_eq!(board_stream_rejection(&failure).is_some(), rejected, "HTTP {status}");
+        }
     }
 
     #[tokio::test]

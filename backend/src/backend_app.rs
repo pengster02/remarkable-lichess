@@ -2,7 +2,7 @@ use crate::credentials;
 use crate::game::outcome::{outcome, termination_label};
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
-use crate::lichess::client::{is_auth_rejection, LichessClient, LICHESS_BASE_URL};
+use crate::lichess::client::{board_stream_rejection, is_auth_rejection, LichessClient, LICHESS_BASE_URL};
 use crate::lichess::oauth;
 use crate::lichess::models::{ChallengeResolution, ChallengeResult, EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
@@ -1071,11 +1071,20 @@ fn spawn_game_stream(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut backoff_secs: u64 = 1;
-        let mut game_over = false;
+        let mut stream_finished = false;
         let mut player_status_requested = false;
-        while !game_over {
+        while !stream_finished {
             let stream_started_at = Instant::now();
-            if let Ok(mut lines) = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await {
+            let response = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await;
+            if let Some(message) = response.as_ref().err().and_then(board_stream_rejection) {
+                *session_handle.lock().await = None;
+                send_locked(&replier, &write_lock, &BackendMessage::GameStreamFailed {
+                    game_id,
+                    message: message.into(),
+                });
+                return;
+            }
+            if let Ok(mut lines) = response {
                 while let Ok(Some(line)) =
                     next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
                 {
@@ -1083,16 +1092,8 @@ fn spawn_game_stream(
                             let mut status_ids = None;
                             let mut guard = session_handle.lock().await;
                             let board_msg = match msg {
-                                // Checks `full.state.status` here, not just on a later
-                                // State update -- this is also how a *resumed* game's
-                                // stream first sees the world (see handle_resume_game),
-                                // and Lichess still sends exactly one Full snapshot even
-                                // for an already-finished game before closing the
-                                // connection. Without this check, `game_over` was never
-                                // set for that case (only the State arm below ever set
-                                // it), so the outer loop treated the connection closing
-                                // as a dropout and reconnected to the same finished game
-                                // forever, every ~30s.
+                                // A finished game can send only one Full snapshot
+                                // before EOF, which would otherwise trigger a retry.
                                 GameStreamMessage::Full(full) => {
                                     let was_berserked = guard
                                         .as_ref()
@@ -1106,7 +1107,7 @@ fn spawn_game_stream(
                                                 board_msg = s.board_state();
                                             }
                                             if full.state.status != "started" {
-                                                game_over = true;
+                                                stream_finished = true;
                                                 *guard = None;
                                                 Some(board_msg)
                                             } else {
@@ -1124,12 +1125,12 @@ fn spawn_game_stream(
                                                 Some(board_msg)
                                             }
                                         }
-                                        // Previously silently `None` here -- a blank,
-                                        // unexplained board with zero feedback, and no
-                                        // trace of why in the logs either.
                                         Err(e) => {
                                             log::warn!("from_game_full failed for game {}: {e}", full.id);
-                                            Some(BackendMessage::ErrorMsg {
+                                            stream_finished = true;
+                                            *guard = None;
+                                            Some(BackendMessage::GameStreamFailed {
+                                                game_id: game_id.clone(),
                                                 message: format!("Couldn't load this game: {e}"),
                                             })
                                         }
@@ -1153,7 +1154,7 @@ fn spawn_game_stream(
                                             }
                                         };
                                         if is_over {
-                                            game_over = true;
+                                            stream_finished = true;
                                             *guard = None;
                                         }
                                         result
@@ -1182,13 +1183,13 @@ fn spawn_game_stream(
                                     write_lock.clone(),
                                 );
                             }
-                        if game_over {
+                        if stream_finished {
                             break;
                         }
                     }
                 }
             }
-            if game_over {
+            if stream_finished {
                 break;
             }
             log::warn!(
