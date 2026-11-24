@@ -15,6 +15,7 @@ TestCase {
 
     function init() {
         width = 954
+        height = 1696
         var component = Qt.createComponent("../ui/main.qml")
         compare(component.status, Component.Ready, component.errorString())
         app = createTemporaryObject(component, this)
@@ -776,6 +777,79 @@ TestCase {
         pulse = board.clockPulse
         wait(1200)
         compare(board.clockPulse, pulse)
+    }
+
+    function test_finalFractionFitsTheRenderedClockChip_data() {
+        return [
+            {tag: "your turn on Paper Pro Move", width: 954, height: 1696, turn: "white", ms: 450},
+            {tag: "opponent turn on Paper Pro", width: 1620, height: 2160, turn: "black", ms: 900}
+        ]
+    }
+
+    function test_finalFractionFitsTheRenderedClockChip(data) {
+        width = data.width
+        height = data.height
+        app.openGame("active")
+        var yourTurn = data.turn === "white"
+        var snapshot = boardState("active")
+        snapshot.initial_clock_ms = 600000
+        snapshot.turn = data.turn
+        if (!yourTurn) {
+            snapshot.fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+            snapshot.position_history = [startFen, snapshot.fen]
+            snapshot.move_history = ["e4"]
+        }
+        var key = data.turn + "_time_ms"
+        snapshot[key] = data.ms
+        endpoint.reply(snapshot)
+        compare(app.width, data.width)
+        compare(app.height, data.height)
+        var board = screen.item
+        var bar = findChild(board, yourTurn ? "bottomPlayerBar" : "topPlayerBar")
+        var label = findChild(bar, "playerClockText")
+        verify(label.visible)
+        verify(bar.active)
+        compare(bar.clockMs, data.ms)
+        compare(label.text, "<1s")
+        verify(label.x >= 0 && label.x + label.width <= label.parent.width)
+        verify(label.y >= 0 && label.y + label.height <= label.parent.height)
+
+        snapshot[key] = 1000
+        endpoint.reply(snapshot)
+        compare(label.text, "0:01")
+        snapshot[key] = 0
+        endpoint.reply(snapshot)
+        compare(label.text, "0:00")
+    }
+
+    function test_clockSleepsAtLocalZeroAndResumesOnNewSnapshot_data() {
+        return [{tag: "main clock", firstMove: false},
+                {tag: "first-move deadline", firstMove: true}]
+    }
+
+    function test_clockSleepsAtLocalZeroAndResumesOnNewSnapshot(data) {
+        app.openGame("active")
+        var board = screen.item
+        var snapshot = boardState("active")
+        snapshot.initial_clock_ms = 600000
+        var key = data.firstMove ? "first_move_time_ms" : "white_time_ms"
+        var remaining = function() {
+            return data.firstMove ? board.displayFirstMoveTimeMs() : board.displayClockFor("white")
+        }
+        snapshot[key] = 400
+        endpoint.reply(snapshot)
+        compare(remaining(), 400)
+        tryVerify(function() { return remaining() === 0 }, 2400)
+        verify(!board.gameOver)
+        var pulse = board.clockPulse
+        wait(1250)
+        compare(board.clockPulse, pulse)
+
+        snapshot[key] = 900
+        endpoint.reply(snapshot)
+        compare(remaining(), 900)
+        tryVerify(function() { return remaining() === 0 }, 2400)
+        verify(!board.gameOver)
     }
 
     function test_mainClockStartsOnlyAfterTheAuthoritativeOpeningUpdate() {

@@ -75,6 +75,8 @@ Rectangle {
     }
 
     function formatClock(ms) {
+        // A subsecond label keeps the one-second cadence. Alternatives are tenths or rounding up.
+        if (ms > 0 && ms < 1000) return "<1s"
         var totalSeconds = Math.floor(ms / 1000)
         var minutes = Math.floor(totalSeconds / 60)
         var seconds = totalSeconds % 60

@@ -221,6 +221,11 @@ Rectangle {
     property bool liveClockEnabled: true
     property int clockPulse: 0
     property double clockNowMs: Date.now() + boardScreen.clockPulse * 0
+    // Binding re-arms on a positive snapshot. Alternatives are polling zero or restarting on every message.
+    readonly property double activeCountdownMs: {
+        var firstMoveMs = boardScreen.displayFirstMoveTimeMs()
+        return firstMoveMs === null ? boardScreen.displayClockFor(boardScreen.turn) : firstMoveMs
+    }
     onDisplayedClockChanged: {
         // A fresh snapshot shifts the tick phase even when the interval stays equal.
         if (clockTimer.running) clockTimer.restart()
@@ -233,6 +238,7 @@ Rectangle {
             boardScreen.liveClockEnabled &&
             (boardScreen.displayedClock.firstMoveMs !== null ||
                 (boardScreen.initialClockMs !== null && !boardScreen.mainClockPaused)) &&
+            boardScreen.activeCountdownMs > 0 &&
             !boardScreen.gameOver &&
             boardScreen.streamError.length === 0 &&
             boardScreen.fen.length > 0
@@ -514,8 +520,7 @@ Rectangle {
     }
 
     function clockRefreshIntervalMs() {
-        var ms = boardScreen.displayFirstMoveTimeMs()
-        if (ms === null) ms = boardScreen.displayClockFor(boardScreen.turn)
+        var ms = boardScreen.activeCountdownMs
         if (ms <= 15000) return 1000
         var boundary = ms <= 60000 ? 15000 : 60000
         var cadence = ms <= 60000 ? 5000 : 10000
