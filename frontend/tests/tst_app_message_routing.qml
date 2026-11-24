@@ -645,19 +645,58 @@ TestCase {
         endpoint.reply(snapshot)
         var playerBar = findChild(screen.item, "topPlayerBar")
         var title = findChild(playerBar, "playerTitleText")
-        var name = findChild(playerBar, "playerNameText")
+        var profile = findChild(playerBar, "playerProfileText")
         var statuses = {type: "PlayerStatuses", game_id: "other",
                         players: [{id: "bob", title: "GM", online: true, patron: true}]}
         endpoint.reply(statuses)
         compare(title.text, "")
-        verify(name.text.indexOf("Patron") === -1)
+        verify(profile.text.indexOf("Patron") === -1)
 
         statuses.game_id = "selected"
         endpoint.reply(statuses)
         compare(title.text, "GM")
-        verify(name.text.indexOf("Patron") !== -1)
+        verify(profile.text.indexOf("Patron") !== -1)
         endpoint.reply(snapshot)
         compare(title.text, "GM")
-        verify(name.text.indexOf("Patron") !== -1)
+        verify(profile.text.indexOf("Patron") !== -1)
+    }
+
+    function test_tabletPlayerBarKeepsTheRatingVisibleWhenTheNameIsWide() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        var snapshot = boardState("selected")
+        snapshot.your_player = {id: "player", rating: 1800}
+        snapshot.opponent_player = {id: "bob", name: "WWWWWWWWWWWWWWWWWWWW",
+                                    title: "GM", rating: 2700, provisional: true}
+        snapshot.captured_by_black = ["wQ", "wR"]
+        snapshot.initial_clock_ms = 600000
+        endpoint.reply(snapshot)
+        endpoint.reply({type: "PlayerStatuses", game_id: "selected",
+                        players: [{id: "bob", online: true, playing: true,
+                                   streaming: true, patron: true}]})
+
+        var board = screen.item
+        var bar = findChild(board, "topPlayerBar")
+        var name = findChild(bar, "playerNameText")
+        var rating = findChild(bar, "playerRatingText")
+        var profile = findChild(bar, "playerProfileText")
+        verify(rating !== null)
+        tryCompare(name, "truncated", true)
+        compare(rating.text, "(2700?)")
+        verify(!rating.truncated)
+        verify(rating.x + rating.width <= rating.parent.width)
+        verify(!profile.truncated)
+        verify(profile.text.indexOf("Patron") !== -1)
+
+        board.manualFlip = true
+        var bottomBar = findChild(board, "bottomPlayerBar")
+        compare(findChild(bottomBar, "playerRatingText").text, "(2700?)")
+        compare(rating.text, "(1800)")
+
+        snapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(snapshot)
+        var finalProfile = findChild(bottomBar, "playerProfileText")
+        verify(finalProfile.text.indexOf("Playing") === -1)
+        verify(finalProfile.text.indexOf("Patron") !== -1)
     }
 }

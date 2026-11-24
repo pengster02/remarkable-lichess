@@ -421,6 +421,7 @@ Rectangle {
     }
 
     function presenceFor(color) {
+        if (boardScreen.gameOver) return ""
         var isOpponent = color !== boardScreen.yourColor
         if (isOpponent && boardScreen.opponentGone) return "Disconnected"
         var known = isOpponent

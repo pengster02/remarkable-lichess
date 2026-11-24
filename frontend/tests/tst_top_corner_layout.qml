@@ -6,12 +6,18 @@ TestCase {
     id: testCase
     name: "TopCornerLayout"
     when: windowShown
+    visible: true
     width: 1696
     height: 2384
     property var boardMessages: []
 
     Theme {
         id: theme
+    }
+
+    Component {
+        id: playerBarComponent
+        PlayerBar {}
     }
 
     BoardScreen {
@@ -160,17 +166,42 @@ TestCase {
         var topPlayerBar = findChild(board, "topPlayerBar")
         var topTitle = findChild(topPlayerBar, "playerTitleText")
         var topName = findChild(topPlayerBar, "playerNameText")
+        var rating = findChild(topPlayerBar, "playerRatingText")
+        var profile = findChild(topPlayerBar, "playerProfileText")
         compare(topPlayerBar.height, theme.playerBarHeight)
         compare(topTitle.text, "GM")
-        verify(topName.text.indexOf("Bob") !== -1)
-        verify(topName.text.indexOf("(2501?)") !== -1)
-        verify(topName.text.indexOf("Playing") !== -1)
-        verify(topName.text.indexOf("Live") !== -1)
-        verify(topName.text.indexOf("Patron") !== -1)
-        verify(topName.text.indexOf("White heart") !== -1)
+        compare(topName.text, "Bob")
+        compare(rating.text, "(2501?)")
+        compare(profile.text, "Playing · Live · Patron · White heart")
 
         board.handleMessage({type: "OpponentGone", game_id: "identity-game", gone: true, claim_win_in_seconds: 8})
         compare(topPlayerBar.presenceText, "Disconnected")
+    }
+
+    function test_compactBarFitsMaterialClockAndFullCaptureRow() {
+        var compact = createTemporaryObject(playerBarComponent, testCase, {
+            width: 620, playerName: "WWWWWWWWWWWWWWWWWWWW", opponent: true,
+            playerTitle: "GM", rating: 2700, provisional: true,
+            statusText: "Your move", active: true, clockMs: 600000,
+            materialAdvantage: 9, presenceText: "Disconnected",
+            capturedPieces: ["wQ", "wR", "wR", "wN", "wN", "wB", "wB",
+                             "wP", "wP", "wP", "wP", "wP", "wP", "wP", "wP"]
+        })
+        verify(compact)
+        var material = findChild(compact, "playerMaterialText")
+        var captured = findChild(compact, "playerCapturedPieces")
+        var status = findChild(compact, "playerStatusText")
+        var clock = findChild(compact, "playerClockText")
+        compare(material.text, "+9")
+        compare(clock.text, "10:00")
+        tryVerify(function() { return captured.width > 0 && material.x > 0 })
+        verify(material.x + material.width <= material.parent.width,
+               "Material edge " + (material.x + material.width) + " / " + material.parent.width)
+        verify(status.width > 0)
+        verify(captured.x >= status.x + status.width)
+        verify(captured.x + captured.width <= captured.parent.width + 0.5)
+        verify(captured.pieceWidth < theme.fontLarge)
+        compare(compact.height, theme.playerBarHeight)
     }
 
     function test_liveStatusUsesTopPlayerBar() {
