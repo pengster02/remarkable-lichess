@@ -2483,7 +2483,12 @@ TestCase {
 
     function test_directChallengeOpensOnlyItsAcceptedGame() {
         app.navigateTo("SeekScreen.qml")
-        findChild(screen.item, "usernameField").text = "opponent"
+        var seek = screen.item
+        var pager = findChild(seek, "seekFlickable")
+        var section = findChild(seek, "playerChallengeSection")
+        findChild(seek, "usernameField").text = "opponent"
+        tryVerify(function() { return section.y > 0 })
+        pager.moveTo(section.y)
         screen.item.submitChallenge()
         var first = screen.item.matchRequestId
         endpoint.reply({type: "ChallengeCreated", game_id: "outgoing", request_id: first})
@@ -2496,6 +2501,11 @@ TestCase {
                         error: "Challenge declined."})
         compare(screen.item.formError, "Challenge declined.")
         verify(!screen.item.waiting)
+        var retry = findChild(seek, "challengePlayerButton")
+        tryVerify(function() {
+            var y = retry.mapToItem(pager, 0, 0).y
+            return y >= 0 && y + retry.height <= pager.pageHeight
+        })
 
         screen.item.submitChallenge()
         var second = screen.item.matchRequestId
@@ -2563,7 +2573,7 @@ TestCase {
         endpoint.reply({type: "MatchCreationFailed", request_id: second, message: "Try again"})
         compare(screen.item.formError, "Try again")
         compare(screen.item.pendingAction, "")
-        var error = findChild(screen.item, "creationErrorText")
+        var error = findChild(screen.item, "seekErrorText")
         verify(error.visible && error.text === "Try again")
         compare(error.mapToItem(screen.item, 0, error.height).y <
                 findChild(screen.item, "matchBackButton").y, true)
