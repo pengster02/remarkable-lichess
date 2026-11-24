@@ -6,6 +6,7 @@ TestCase {
     id: testCase
     name: "SettingsScreen"
     when: windowShown
+    visible: true
     width: 960
     height: 1696
     property var sentMessages: []
@@ -20,6 +21,13 @@ TestCase {
         height: 1696
         backendSender: function(message) { testCase.sentMessages.push(message) }
         navigateTo: function() {}
+    }
+
+    Component {
+        id: compactViewport
+        Item {
+            SettingsScreen {}
+        }
     }
 
     function init() {
@@ -93,5 +101,36 @@ TestCase {
         fuzzyCompare(pager.contentY, display.y, 1)
         pager.pageDown()
         fuzzyCompare(pager.contentY, gameplay.y, 1)
+    }
+
+    function test_compactSettingsKeepEverySectionReachable() {
+        var compact = createTemporaryObject(compactViewport, testCase, {width: 620, height: 980})
+        verify(compact)
+        var pager = findChild(compact, "settingsFlickable")
+        var display = findChild(compact, "displaySection")
+        var gameplay = findChild(compact, "gameplaySection")
+        var next = findChild(pager, "pageDownButton")
+        verify(pager && display && gameplay && next)
+        tryVerify(function() { return pager.pagingNeeded && pager.maximumContentY > gameplay.y })
+        verify(pager.pageHeight > 0)
+        verify(display.y > pager.pageHeight)
+        verify(next.mapToItem(pager, next.width, 0).x <= pager.width + 0.01,
+               "Next extends past the compact pager")
+        verify(next.width >= theme.touchTarget && next.height >= theme.touchTarget)
+
+        var origins = [0]
+        var count = pager.pageCount
+        for (var i = 1; i < count; i++) {
+            verify(next.enabled)
+            next.clicked()
+            verify(pager.contentY > origins[i - 1])
+            verify(pager.contentY - origins[i - 1] <= pager.pageHeight + 0.01)
+            origins.push(pager.contentY)
+        }
+        verify(origins.indexOf(display.y) >= 0)
+        verify(origins.indexOf(gameplay.y) >= 0)
+        fuzzyCompare(pager.contentY, pager.maximumContentY, 0.01)
+        verify(!next.enabled)
+        verify(!findChild(pager, "pageNumber").truncated)
     }
 }
