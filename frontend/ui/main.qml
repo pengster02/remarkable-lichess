@@ -94,6 +94,16 @@ Rectangle {
         return root.requestSequence
     }
 
+    function applyConnectivity(msg) {
+        root.connectivityKnown = true
+        root.online = msg.online || false
+        root.wifiConnected = msg.wifi_connected !== undefined ? msg.wifi_connected : null
+        root.connectionMessage = msg.message || ""
+        if (screenLoader.item && screenLoader.item.handleMessage) {
+            screenLoader.item.handleMessage(msg)
+        }
+    }
+
     function openGame(gameId) {
         if (!root.hasToken || !gameId) return
         screenLoader.source = "BoardScreen.qml"
@@ -341,20 +351,17 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "ConnectivityState") {
-                // Owned by the root so the persistent top bar shows it everywhere;
-                // still forwarded to the current screen, which uses it for its own
-                // retry/error logic (see HomeScreen.handleMessage).
-                root.connectivityKnown = true
-                root.online = msg.online || false
-                root.wifiConnected = msg.wifi_connected !== undefined
-                    ? msg.wifi_connected
-                    : null
-                root.connectionMessage = msg.message || ""
-                if (screenLoader.item && screenLoader.item.handleMessage) {
-                    screenLoader.item.handleMessage(msg)
-                }
+                root.applyConnectivity(msg)
             } else if (msg.type === "HomeState" || msg.type === "HomeLoadFailed" ||
-                       msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
+                       msg.type === "HomeRatings") {
+                var home = screenLoader.item
+                if (!root.hasToken || !home || !home.acceptsHomeReply || !home.acceptsHomeReply(msg)) return
+                if (msg.type !== "HomeRatings") {
+                    root.applyConnectivity({type: "ConnectivityState", online: msg.type === "HomeState",
+                                            wifi_connected: msg.wifi_connected, message: msg.message})
+                }
+                home.handleMessage(msg)
+            } else if (msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "GameStarted" || msg.type === "ComputerGameCreated" ||
                        msg.type === "ChallengeResolved" || msg.type === "ChallengeAccepted" ||

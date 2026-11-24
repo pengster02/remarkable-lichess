@@ -43,6 +43,77 @@ TestCase {
         }
     }
 
+    function latestHomeRequest() {
+        var messages = endpoint.sentMessages.filter(function(message) {
+            return message.type === "RequestHome"
+        })
+        return messages[messages.length - 1].request_id
+    }
+
+    function test_homeGamesAndRatingsAreScopedToTheCurrentVisit() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var previous = latestHomeRequest()
+        verify(previous > 0)
+        home.refresh()
+        var current = latestHomeRequest()
+        verify(current > previous)
+
+        endpoint.reply({type: "HomeLoadFailed", request_id: previous,
+                        wifi_connected: false, message: "Old failure"})
+        endpoint.reply({type: "HomeRatings", request_id: previous,
+                        ratings: [{speed: "rapid", rating: 900}]})
+        compare(home.loadedOnce, false)
+        compare(home.loadError, "")
+        compare(home.ratings.length, 0)
+
+        endpoint.reply({type: "HomeState", request_id: current, wifi_connected: true,
+                        ongoing_games: [{game_id: "ongoing", is_my_turn: true}]})
+        verify(home.loadedOnce)
+        verify(app.online)
+        compare(home.ratings.length, 0)
+        var resume = findChild(home, "homeResumeButton")
+        verify(resume && resume.enabled)
+        resume.clicked()
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "ongoing"})
+
+        endpoint.reply({type: "HomeLoadFailed", request_id: current,
+                        wifi_connected: false, message: "Departed screen"})
+        verify(app.online)
+        endpoint.reply({type: "AuthenticationRequired"})
+        endpoint.reply({type: "HomeRatings", request_id: current,
+                        ratings: [{speed: "rapid", rating: 900}]})
+        verify(String(screen.source).endsWith("LoginScreen.qml"))
+        endpoint.reply({type: "TokenVerified", username: "new player"})
+        home = screen.item
+        compare(home.ratings.length, 0)
+        var reopened = latestHomeRequest()
+        verify(reopened > current)
+        endpoint.reply({type: "HomeRatings", request_id: reopened,
+                        ratings: [{speed: "rapid", rating: 1500}]})
+        compare(home.ratings[0].rating, 1500)
+        verify(!home.loadedOnce)
+    }
+
+    function test_homeRatingsDoNotMoveTheResumeButton() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var request = latestHomeRequest()
+        endpoint.reply({type: "HomeState", request_id: request, wifi_connected: true,
+                        ongoing_games: [{game_id: "ongoing", is_my_turn: true}]})
+        var resume = findChild(home, "homeResumeButton")
+        verify(resume && resume.enabled)
+        waitForRendering(resume)
+        var before = resume.mapToItem(home, 0, 0).y
+        endpoint.reply({type: "HomeRatings", request_id: request,
+                        ratings: [{speed: "rapid", rating: 1500}]})
+        verify(waitForRendering(resume))
+        compare(resume.mapToItem(home, 0, 0).y, before)
+        compare(home.ratings[0].rating, 1500)
+    }
+
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length

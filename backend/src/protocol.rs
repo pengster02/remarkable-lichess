@@ -56,7 +56,7 @@ pub enum FrontendMessage {
     // Still reachable behind "Enter a token instead" on the sign-in screen, for
     // networks where the phone can't reach this tablet (see LoginScreen.qml).
     SaveToken { token: String },
-    RequestHome,
+    RequestHome { request_id: Option<u32> },
     // Attaches this specific game's stream if it isn't already being tracked --
     // replaces the old behavior of RequestHome always auto-attaching whichever
     // game happened to be `now_playing.first()`, which only worked because Home
@@ -345,13 +345,30 @@ pub enum BackendMessage {
     },
     LoginCompleted,
     LoginFailed { reason: String },
-    HomeState { ongoing_games: Vec<OngoingGameSummary>, ratings: Vec<RatingSummary> },
+    // Separate replies let the game list appear while ratings load. One
+    // combined reply blocks resume, and unscoped replies can replace newer data.
+    HomeState {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+        ongoing_games: Vec<OngoingGameSummary>,
+        wifi_connected: Option<bool>,
+    },
+    HomeRatings {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+        ratings: Vec<RatingSummary>,
+    },
     ConnectivityState {
         online: bool,
         wifi_connected: Option<bool>,
         message: Option<String>,
     },
-    HomeLoadFailed { message: String },
+    HomeLoadFailed {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+        message: String,
+        wifi_connected: Option<bool>,
+    },
     ChallengesLoadFailed { message: String },
     SeekCreated {
         #[serde(skip_serializing_if = "Option::is_none")]
