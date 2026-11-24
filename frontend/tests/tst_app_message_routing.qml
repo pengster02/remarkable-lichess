@@ -226,6 +226,46 @@ TestCase {
         compare(screen.item.gameId, "active")
     }
 
+    function test_boardLoadingHasScopedStatusAndCanReturnHome() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        var back = findChild(screen.item, "boardBackButton")
+        var loadingStatus = findChild(screen.item, "boardLoadingStatus")
+        verify(back.visible)
+        verify(loadingStatus.visible)
+        compare(loadingStatus.text, "Loading game...")
+        compare(screen.item.activeTurnColor, "")
+
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "old"})
+        compare(loadingStatus.text, "Loading game...")
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "selected"})
+        compare(loadingStatus.text, "Reconnecting...")
+        endpoint.reply({type: "GameStreamFailed", game_id: "old", message: "Wrong game"})
+        compare(loadingStatus.text, "Reconnecting...")
+        endpoint.reply({type: "GameStreamFailed", game_id: "selected", message: "Game unavailable"})
+        compare(loadingStatus.text, "Game unavailable")
+        verify(back.enabled)
+        back.clicked()
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+        endpoint.reply(boardState("selected"))
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+    }
+
+    function test_loadedBoardHidesBackUntilTheStreamIsRejected() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        var back = findChild(screen.item, "boardBackButton")
+        endpoint.reply(boardState("selected"))
+        verify(!back.visible)
+        var before = endpoint.sentMessages.length
+
+        endpoint.reply({type: "GameStreamFailed", game_id: "selected", message: "Game unavailable"})
+        verify(back.visible)
+        compare(screen.item.activeTurnColor, "")
+        screen.item.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        compare(endpoint.sentMessages.length, before)
+    }
+
     function test_seekIgnoresAnUnrelatedChallengeAndOpensItsMatch() {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitSeek()

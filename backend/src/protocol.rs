@@ -438,6 +438,7 @@ pub enum BackendMessage {
         reason: String,
     },
     GameStreamReconnecting { game_id: String },
+    GameStreamFailed { game_id: String, message: String },
     ErrorMsg { message: String },
     // Sent whenever Lichess's own `opponentGone` stream event fires (confirmed
     // against OpponentGoneEvent.yaml). `claim_win_in_seconds` is only meaningful

@@ -386,7 +386,8 @@ Rectangle {
                 }
             } else if (msg.type === "LogoutFailed" ||
                        msg.type === "GameOver" || msg.type === "MoveRejected" ||
-                       msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
+                       msg.type === "GameStreamReconnecting" || msg.type === "GameStreamFailed" ||
+                       msg.type === "OpponentGone" ||
                        msg.type === "RatingDiff" || msg.type === "GameActionCompleted" ||
                        msg.type === "GameActionFailed" ||
                        msg.type === "MovePreview" || msg.type === "MoveSubmitted") {
@@ -541,6 +542,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGame")) {
                 item.openGame = root.openGame
+            }
+            if (item.hasOwnProperty("requestedGameId")) {
+                item.requestedGameId = Qt.binding(function() { return root.selectedGameId })
             }
         }
     }
