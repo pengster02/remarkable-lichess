@@ -10,12 +10,14 @@ TestCase {
     height: 1696
 
     property var sentMessages: []
+    property int requestSequence: 0
 
     GameHistoryScreen {
         id: history
         width: 960
         height: 1696
         backendSender: function(message) { testCase.sentMessages.push(message) }
+        nextRequestId: function() { return ++testCase.requestSequence }
         navigateTo: function() {}
         selectGameForReview: function() {}
     }
@@ -62,9 +64,35 @@ TestCase {
     }
 
     function test_loadErrorStopsProgressAndRemainsVisible() {
-        history.loading = true
-        history.handleMessage({type: "ErrorMsg", message: "History unavailable"})
+        history.requestFiltered()
+        history.handleMessage({type: "GameHistoryFailed", request_id: sentMessages[0].request_id,
+                               message: "History unavailable"})
         compare(history.loading, false)
-        compare(history.errorMessage, "History unavailable")
+        compare(history.loadError, "History unavailable")
+    }
+
+    function test_filterChangeClearsOldRowsAndRejectsOlderReplies() {
+        history.requestFiltered()
+        var first = sentMessages[0].request_id
+        verify(first > 0)
+        history.handleMessage({type: "GameHistory", request_id: first,
+                               games: [{game_id: "old"}]})
+        compare(history.games[0].game_id, "old")
+
+        history.filterRated = "rated"
+        history.requestFiltered()
+        var second = sentMessages[1].request_id
+        verify(second > first)
+        compare(history.games.length, 0)
+        history.handleMessage({type: "GameHistory", request_id: first,
+                               games: [{game_id: "old"}]})
+        history.handleMessage({type: "GameHistoryFailed", request_id: first, message: "old failure"})
+        verify(history.loading)
+        compare(history.games.length, 0)
+        compare(history.loadError, "")
+        history.handleMessage({type: "GameHistory", request_id: second,
+                               games: [{game_id: "selected", rated: true}]})
+        verify(!history.loading)
+        compare(history.games[0].game_id, "selected")
     }
 }

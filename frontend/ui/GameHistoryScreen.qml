@@ -7,17 +7,13 @@ Rectangle {
     Theme { id: theme; darkMode: gameHistoryScreen.darkMode }
     ChessDisplay { id: chessDisplay }
     property var backendSender
+    property var nextRequestId
     property var navigateTo
     property bool darkMode: false
     // Pushed in by main.qml (see its own selectGameForReview) -- sends
     // RequestGameMoves *and* remembers the tapped row's own summary so
     // GameReviewScreen's header can show who was played, not just moves/fens.
     property var selectGameForReview
-    // Populated by HomeScreen's "Game history" button sending RequestGameHistory
-    // right before navigating here (see protocol.rs's RequestGameHistory) --
-    // this screen doesn't request it itself in Component.onCompleted, since
-    // backendSender isn't guaranteed assigned yet at that point (see main.qml's
-    // Loader.onLoaded, which runs after the item is constructed).
     property var games: []
     // "all"/"rated"/"casual" -- "all" sends rated: null, matching GET
     // /api/games/user's own default of no rated/casual filter at all.
@@ -29,6 +25,8 @@ Rectangle {
     // "all"/"white"/"black" -- that endpoint's own `color` query param.
     property string filterColor: "all"
     property string errorMessage: ""
+    property string loadError: ""
+    property int pendingHistoryRequest: 0
     property bool loading: true
     property bool openingReview: false
     property bool showFilters: false
@@ -36,15 +34,25 @@ Rectangle {
     property string draftSpeed: "all"
     property string draftColor: "all"
 
-    onBackendSenderChanged: {
-        if (gameHistoryScreen.backendSender) gameHistoryScreen.requestFiltered()
+    onBackendSenderChanged: gameHistoryScreen.requestFiltered()
+    onNextRequestIdChanged: gameHistoryScreen.requestFiltered()
+    Component.onDestruction: {
+        if (gameHistoryScreen.pendingHistoryRequest > 0 && gameHistoryScreen.backendSender) {
+            gameHistoryScreen.backendSender({type: "CancelGameHistory",
+                                             request_id: gameHistoryScreen.pendingHistoryRequest})
+        }
     }
 
     function requestFiltered() {
+        if (!gameHistoryScreen.backendSender || !gameHistoryScreen.nextRequestId) return
         gameHistoryScreen.loading = true
         gameHistoryScreen.errorMessage = ""
+        gameHistoryScreen.loadError = ""
+        gameHistoryScreen.games = []
+        gameHistoryScreen.pendingHistoryRequest = gameHistoryScreen.nextRequestId()
         gameHistoryScreen.backendSender({
             type: "RequestGameHistory",
+            request_id: gameHistoryScreen.pendingHistoryRequest,
             rated: gameHistoryScreen.filterRated === "all" ? null : gameHistoryScreen.filterRated === "rated",
             speed: gameHistoryScreen.filterSpeed === "all" ? null : gameHistoryScreen.filterSpeed,
             color: gameHistoryScreen.filterColor === "all" ? null : gameHistoryScreen.filterColor
@@ -116,19 +124,27 @@ Rectangle {
         }
 
         Text {
-            visible: gameHistoryScreen.loading || gameHistoryScreen.games.length === 0
+            visible: gameHistoryScreen.loading ||
+                (gameHistoryScreen.games.length === 0 && gameHistoryScreen.loadError.length === 0)
             text: gameHistoryScreen.loading ? "Loading games..." : "No games match these filters."
             font.pixelSize: theme.fontBody
             color: theme.text
         }
 
         Text {
-            visible: gameHistoryScreen.errorMessage.length > 0
-            text: gameHistoryScreen.errorMessage
+            visible: text.length > 0
+            text: gameHistoryScreen.loadError || gameHistoryScreen.errorMessage
             font.pixelSize: theme.fontBody
             color: theme.errorText
             wrapMode: Text.WordWrap
             width: parent.width
+        }
+        AppButton {
+            width: parent.width
+            compact: true
+            visible: gameHistoryScreen.loadError.length > 0
+            text: "Retry"
+            onClicked: gameHistoryScreen.requestFiltered()
         }
     }
 
@@ -336,12 +352,14 @@ Rectangle {
     }
 
     function handleMessage(msg) {
-        if (msg.type === "GameHistory") {
+        if (msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
+            if (msg.request_id !== gameHistoryScreen.pendingHistoryRequest) return
+            gameHistoryScreen.pendingHistoryRequest = 0
             gameHistoryScreen.loading = false
-            gameHistoryScreen.games = msg.games || []
-        } else if (msg.type === "ErrorMsg") {
-            gameHistoryScreen.loading = false
-            gameHistoryScreen.errorMessage = msg.message
+            if (msg.type === "GameHistory")
+                gameHistoryScreen.games = msg.games || []
+            else
+                gameHistoryScreen.loadError = msg.message
         } else if (msg.type === "GameMovesFailed") {
             gameHistoryScreen.errorMessage = msg.message
         }

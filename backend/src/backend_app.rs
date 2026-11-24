@@ -62,7 +62,7 @@ struct AccountStream {
 
 // A request owns its export. Inline dispatch delays unrelated boards, and a
 // detached task keeps working after the frontend abandons the review.
-struct GameReviewExport {
+struct GameRequest {
     request_id: Option<u32>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -135,7 +135,8 @@ pub struct LichessBackend {
     pending_seek: Option<tokio::task::JoinHandle<()>>,
     account_stream: Option<AccountStream>,
     home_refresh: Option<tokio::task::JoinHandle<()>>,
-    review_export: Option<GameReviewExport>,
+    history_load: Option<GameRequest>,
+    review_export: Option<GameRequest>,
     // The detached task waiting on the OAuth callback (see handle_start_login).
     // Held so CancelLogin -- and any restart of the flow -- can drop it, which
     // closes the listening port with it. Detached rather than awaited inline
@@ -168,6 +169,7 @@ impl LichessBackend {
             pending_seek: None,
             account_stream: None,
             home_refresh: None,
+            history_load: None,
             review_export: None,
             login_handle: None,
             game_stream: None,
@@ -376,29 +378,42 @@ impl LichessBackend {
         self.game_stream = Some(GameStream { game_id, task });
     }
 
-    async fn handle_request_game_history(
+    async fn start_game_history(
         &mut self,
         replier: &BackendReplier<Self>,
-        rated: Option<bool>,
-        speed: Option<String>,
-        color: Option<String>,
+        request_id: Option<u32>,
+        filters: GameHistoryFilters,
     ) {
-        let Some(client) = self.client.clone() else {
-            self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+        let (Some(client), Some(my_id)) = (self.client.clone(), self.my_id.clone()) else {
+            let reply = match request_id {
+                Some(request_id) => BackendMessage::GameHistoryFailed {
+                    request_id, message: "Not signed in to Lichess".into(),
+                },
+                None => BackendMessage::TokenInvalid { reason: "no token saved".into() },
+            };
+            self.send(replier, &reply);
             return;
         };
-        let Some(my_id) = self.my_id.clone() else {
-            self.send(replier, &BackendMessage::ErrorMsg { message: "not logged in yet".into() });
-            return;
-        };
-        let filters = GameHistoryFilters { rated, speed, color };
-        match client.get_game_history(&my_id, 20, &filters).await {
-            Ok(games) => {
-                let summaries = games.into_iter().map(|g| history_game_to_summary(g, &my_id)).collect();
-                self.send(replier, &BackendMessage::GameHistory { games: summaries });
-            }
-            Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
-        }
+        stop_game_request(&mut self.history_load).await;
+        let replier = replier.clone();
+        let write_lock = self.write_lock.clone();
+        let task = tokio::spawn(async move {
+            let reply = match client.get_game_history(&my_id, 20, &filters).await {
+                Ok(games) => BackendMessage::GameHistory {
+                    request_id,
+                    games: games.into_iter().map(|g| history_game_to_summary(g, &my_id)).collect(),
+                },
+                Err(error) => {
+                    let message = error.to_string();
+                    match request_id {
+                        Some(request_id) => BackendMessage::GameHistoryFailed { request_id, message },
+                        None => BackendMessage::ErrorMsg { message },
+                    }
+                }
+            };
+            send_locked(&replier, &write_lock, &reply);
+        });
+        self.history_load = Some(GameRequest { request_id, task });
     }
 
     async fn start_game_review_export(
@@ -417,19 +432,12 @@ impl LichessBackend {
             self.send(replier, &reply);
             return;
         };
-        self.stop_game_review_export().await;
+        stop_game_request(&mut self.review_export).await;
         let task = tokio::spawn(Self::fetch_game_review(
             client, self.my_id.clone(), replier.clone(), self.write_lock.clone(),
             game_id, request_id,
         ));
-        self.review_export = Some(GameReviewExport { request_id, task });
-    }
-
-    async fn stop_game_review_export(&mut self) {
-        if let Some(export) = self.review_export.as_mut() {
-            abort_task(&mut export.task).await;
-            self.review_export = None;
-        }
+        self.review_export = Some(GameRequest { request_id, task });
     }
 
     async fn fetch_game_review(
@@ -761,7 +769,8 @@ impl LichessBackend {
 
     async fn stop_authenticated_activity(&mut self) {
         stop_task(&mut self.home_refresh).await;
-        self.stop_game_review_export().await;
+        stop_game_request(&mut self.history_load).await;
+        stop_game_request(&mut self.review_export).await;
         stop_task(&mut self.pending_seek).await;
         if let Some(account) = self.account_stream.as_mut() {
             abort_task(&mut account.task).await;
@@ -1117,6 +1126,19 @@ async fn stop_task(slot: &mut Option<tokio::task::JoinHandle<()>>) {
     }
 }
 
+async fn stop_game_request(slot: &mut Option<GameRequest>) {
+    if let Some(pending) = slot.as_mut() {
+        abort_task(&mut pending.task).await;
+        *slot = None;
+    }
+}
+
+async fn cancel_game_request(slot: &mut Option<GameRequest>, request_id: u32) {
+    if slot.as_ref().is_some_and(|pending| pending.request_id == Some(request_id)) {
+        stop_game_request(slot).await;
+    }
+}
+
 async fn abort_task(task: &mut tokio::task::JoinHandle<()>) {
     // Borrow across the join so cancellation retains the handle. Abort alone
     // permits a late update, and taking the handle first can lose it mid-wait.
@@ -1461,7 +1483,8 @@ impl AppLoadBackend for LichessBackend {
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             // The new frontend starts its request sequence over.
             stop_task(&mut self.home_refresh).await;
-            self.stop_game_review_export().await;
+            stop_game_request(&mut self.history_load).await;
+            stop_game_request(&mut self.review_export).await;
             if self.client.is_none() {
                 self.check_saved_sign_in(replier).await;
             } else if let Some(username) = self.username.clone() {
@@ -1627,8 +1650,11 @@ impl AppLoadBackend for LichessBackend {
                 )
             }
             FrontendMessage::LogOut => self.handle_log_out(replier).await,
-            FrontendMessage::RequestGameHistory { rated, speed, color } => {
-                self.handle_request_game_history(replier, rated, speed, color).await
+            FrontendMessage::RequestGameHistory { request_id, rated, speed, color } => {
+                self.start_game_history(replier, request_id, GameHistoryFilters { rated, speed, color }).await
+            }
+            FrontendMessage::CancelGameHistory { request_id } => {
+                cancel_game_request(&mut self.history_load, request_id).await;
             }
             FrontendMessage::CreateOpenChallenge { minutes, increment, rated } => {
                 self.handle_create_open_challenge(replier, minutes, increment, rated).await
@@ -1637,9 +1663,7 @@ impl AppLoadBackend for LichessBackend {
                 self.start_game_review_export(replier, game_id, request_id).await
             }
             FrontendMessage::CancelGameReview { request_id } => {
-                if self.review_export.as_ref().is_some_and(|export| export.request_id == Some(request_id)) {
-                    self.stop_game_review_export().await;
-                }
+                cancel_game_request(&mut self.review_export, request_id).await;
             }
             FrontendMessage::RequestCloudEvaluation { fen, request_id } => {
                 self.handle_request_cloud_evaluation(replier, fen, request_id).await
