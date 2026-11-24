@@ -6,6 +6,24 @@ QtObject {
         return Math.max(coordinateInset, (availableWidth - boardWidth) / 2)
     }
 
+    function sideToMove(fen) {
+        return fen.split(" ")[1] === "b" ? "black" : "white"
+    }
+
+    // SAN already carries check and mate. Attack generation would duplicate
+    // the chess engine, and a separate flag per ply would duplicate this data.
+    function moveGivesCheck(san) {
+        return typeof san === "string" && /[+#]$/.test(san)
+    }
+
+    function kingSquare(pieces, side) {
+        var king = side === "white" ? "K" : "k"
+        for (var square in pieces) {
+            if (pieces[square] === king) return square
+        }
+        return ""
+    }
+
     function humanizeIdentifier(value) {
         if (value === null || value === undefined || String(value).length === 0) return "Unknown"
         var text = String(value)

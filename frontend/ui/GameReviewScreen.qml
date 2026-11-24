@@ -53,6 +53,7 @@ Rectangle {
     property var boardAppearance: ({fen: "", previousFen: "", pieces: {}, previousPieces: {},
                                     lastMove: {}, checkedKing: ""})
     onFensChanged: gameReviewScreen.boardAppearance = gameReviewScreen.buildBoardAppearance()
+    onMovesChanged: gameReviewScreen.refreshBoard()
     onCurrentIndexChanged: {
         if (gameReviewScreen.exploreMode) gameReviewScreen.rebaseExploration()
         else gameReviewScreen.refreshBoard()
@@ -83,7 +84,9 @@ Rectangle {
     property string selectedSquare: ""
     property var pendingPromotion: null
     property string exploreStatus: ""
-    property bool exploreInCheck: false
+    // Null keeps the SAN marker while loading. False would hide it, and
+    // carrying the last reply forward can mark a different position.
+    property var exploreInCheck: null
     property string exploreStatusCode: "playing"
     property var nextRequestId
     property int pendingAnalysisRequestId: 0
@@ -200,7 +203,7 @@ Rectangle {
             lastMove: previousFen.length > 0
                 ? gameReviewScreen.squareLookup(gameReviewScreen.changedSquares(previousPieces, pieces))
                 : {},
-            checkedKing: gameReviewScreen.explorationCheckedKingSquare(pieces)
+            checkedKing: gameReviewScreen.checkedKingSquare(fen, pieces)
         }
     }
 
@@ -252,8 +255,7 @@ Rectangle {
     property var fr: gameReviewScreen.filesRanks()
 
     function sideToMove() {
-        var fields = gameReviewScreen.currentFen().split(" ")
-        return fields.length > 1 && fields[1] === "b" ? "black" : "white"
+        return chessDisplay.sideToMove(gameReviewScreen.currentFen())
     }
 
     function isMovablePiece(piece) {
@@ -284,13 +286,13 @@ Rectangle {
         return lookup
     }
 
-    function explorationCheckedKingSquare(pieces) {
-        if (!gameReviewScreen.exploreMode || !gameReviewScreen.exploreInCheck) return ""
-        var king = gameReviewScreen.sideToMove() === "white" ? "K" : "k"
-        for (var square in pieces) {
-            if (pieces[square] === king) return square
-        }
-        return ""
+    function checkedKingSquare(fen, pieces) {
+        var san = gameReviewScreen.exploreMode && gameReviewScreen.variationMoves.length > 0
+            ? gameReviewScreen.variationMoves[gameReviewScreen.variationMoves.length - 1]
+            : gameReviewScreen.moves[gameReviewScreen.currentIndex - 1]
+        var inCheck = gameReviewScreen.exploreMode && gameReviewScreen.exploreInCheck !== null
+            ? gameReviewScreen.exploreInCheck : chessDisplay.moveGivesCheck(san)
+        return inCheck ? chessDisplay.kingSquare(pieces, chessDisplay.sideToMove(fen)) : ""
     }
 
     function explorationPrompt() {
@@ -364,7 +366,7 @@ Rectangle {
         gameReviewScreen.exploreLegalMoves = []
         gameReviewScreen.selectedSquare = ""
         gameReviewScreen.pendingPromotion = null
-        gameReviewScreen.exploreInCheck = false
+        gameReviewScreen.exploreInCheck = null
         gameReviewScreen.exploreStatusCode = "playing"
         gameReviewScreen.refreshBoard()
         gameReviewScreen.sendAnalysisRequest({type: "RequestAnalysisPosition", fen: gameReviewScreen.exploreFen},
@@ -398,7 +400,7 @@ Rectangle {
         gameReviewScreen.selectedSquare = ""
         gameReviewScreen.pendingPromotion = null
         gameReviewScreen.exploreStatus = ""
-        gameReviewScreen.exploreInCheck = false
+        gameReviewScreen.exploreInCheck = null
         gameReviewScreen.exploreStatusCode = "playing"
         gameReviewScreen.refreshBoard()
     }
@@ -1116,7 +1118,7 @@ Rectangle {
             gameReviewScreen.variationFens = normalized
             gameReviewScreen.exploreFen = msg.fen
             gameReviewScreen.exploreLegalMoves = msg.legal_moves || []
-            gameReviewScreen.exploreInCheck = msg.in_check || false
+            gameReviewScreen.exploreInCheck = typeof msg.in_check === "boolean" ? msg.in_check : null
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
             gameReviewScreen.refreshBoard()
@@ -1139,7 +1141,7 @@ Rectangle {
             gameReviewScreen.variationMoves = nextMoves
             gameReviewScreen.exploreFen = msg.fen
             gameReviewScreen.exploreLegalMoves = msg.legal_moves || []
-            gameReviewScreen.exploreInCheck = msg.in_check || false
+            gameReviewScreen.exploreInCheck = typeof msg.in_check === "boolean" ? msg.in_check : null
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.selectedSquare = ""
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
