@@ -263,16 +263,14 @@ so the QML bundle and backend use the same protocol.
 TABLET_HOST=10.11.99.1 ./scripts/deploy.sh
 ```
 
-`build-rm.sh` produces `dist/remarkable-lichess`. `deploy.sh` copies it into a
-staging directory on the device and only swaps it into place once the transfer
-has fully succeeded, keeping the previous version under
-`/home/root/xovi/exthome/appload-backups`.
+`build-rm.sh` produces `dist/remarkable-lichess`. `deploy.sh` stages and
+validates each copy under `/home/root/xovi/exthome/appload-backups`. It then
+installs the bundle and keeps the previously installed version there for rollback.
 
 A new backend binary needs a full AppLoad relaunch, not just a file copy.
 
-> Never keep a rollback directory inside the AppLoad app root. AppLoad scans
-> every child directory, and a duplicate manifest ID will shadow the live
-> installation.
+> Keep staging and rollback directories outside AppLoad's app root. AppLoad
+> scans every child directory, and a duplicate manifest ID can shadow the live installation.
 
 ---
 

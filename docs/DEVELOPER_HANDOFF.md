@@ -247,12 +247,12 @@ Minimum emulator smoke test:
 TABLET_HOST=10.11.99.1 ./scripts/deploy.sh
 ```
 
-The build creates `dist/remarkable-lichess`. Deployment stages the new app
-before replacing the installed copy and retains the previous version under
-`/home/root/xovi/exthome/appload-backups`. Never keep a rollback directory
-inside the AppLoad app root: AppLoad scans every child directory and a duplicate
-manifest ID can shadow the live installation. Recheck XOVI/AppLoad compatibility
-with the tablet's current firmware before deployment.
+The build creates `dist/remarkable-lichess`. Deployment uses a unique staging
+directory outside AppLoad's scan root and serializes installation with a lock.
+The previous version is retained under `/home/root/xovi/exthome/appload-backups`.
+If the connection drops during installation, inspect the staging path printed by
+the script before retrying. Recheck XOVI/AppLoad compatibility with the tablet's
+current firmware before deployment.
 
 ## Highest-value remaining work
 
