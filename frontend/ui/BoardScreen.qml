@@ -393,28 +393,14 @@ Rectangle {
         return {files: ["a","b","c","d","e","f","g","h"], ranks: ["8","7","6","5","4","3","2","1"]}
     }
 
-    // Finds the square of whichever king is currently in check (always the side
-    // to move's own king -- you can't end your move still in check). Iterates a
-    // fixed absolute a1..h8 sweep rather than the display-order filesRanks(), since
-    // square *names* don't depend on board orientation, only where they're drawn.
-    function checkedKingSquareFor(fen, turn, inCheck) {
-        if (!inCheck) return ""
-        var map = boardScreen.buildPieceMap(fen)
-        var kingChar = turn === "white" ? "K" : "k"
-        var files = ["a","b","c","d","e","f","g","h"]
-        var ranks = ["1","2","3","4","5","6","7","8"]
-        for (var r = 0; r < ranks.length; r++) {
-            for (var f = 0; f < files.length; f++) {
-                var sq = files[f] + ranks[r]
-                if ((map[sq] || "") === kingChar) return sq
-            }
-        }
-        return ""
-    }
-
     function checkedKingSquare() {
-        if (boardScreen.isViewingHistory()) return ""
-        return boardScreen.checkedKingSquareFor(boardScreen.fen, boardScreen.turn, boardScreen.inCheck)
+        var fen = boardScreen.fen
+        if (boardScreen.isViewingHistory()) {
+            if (!chessDisplay.moveGivesCheck(boardScreen.moveHistory[boardScreen.historyIndex - 1])) return ""
+            return chessDisplay.kingSquare(boardScreen.buildPieceMap(fen), chessDisplay.sideToMove(fen))
+        }
+        return boardScreen.inCheck
+            ? chessDisplay.kingSquare(boardScreen.buildPieceMap(fen), boardScreen.turn) : ""
     }
 
     // Cached once per redraw instead of recomputed by each of the 64 squares'

@@ -472,6 +472,80 @@ TestCase {
         compare(board.flashSquares, ["e1"])
     }
 
+    function test_historicalCheckUsesTheSideToMove_data() {
+        return [{tag: "archive", live: false}, {tag: "live Move history", live: true}]
+    }
+
+    function test_historicalCheckUsesTheSideToMove(data) {
+        var before = "rnbqkbnr/ppppp1pp/5p2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var checked = "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2"
+        var after = "rnbqkbnr/ppppp2p/5pp1/7Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3"
+        var fens = [before, checked, after]
+        var moves = ["Qh5+", "g6"]
+        endpoint.reply({type: "SettingsState", highlight_last_move: false})
+        if (data.live) {
+            app.openGame("historical-check")
+            var snapshot = boardState("historical-check")
+            snapshot.fen = after
+            snapshot.position_history = fens
+            snapshot.move_history = moves
+            endpoint.reply(snapshot)
+        } else {
+            var requestId = choose("historical-check")
+            endpoint.reply({type: "GameMoves", request_id: requestId, moves: moves, fens: fens,
+                            analysis: [{judgment: "Inaccuracy"}]})
+        }
+        var board = screen.item
+        board.manualFlip = true
+        var whiteKing = findChild(board, "boardSquare-e1")
+        var blackKing = findChild(board, "boardSquare-e8")
+        verify(!whiteKing.isCheckSquare && !blackKing.isCheckSquare)
+        if (data.live) board.showHistoryPosition(1)
+        else board.goNext()
+        verify(blackKing.isCheckSquare && blackKing.flashRefresh)
+        verify(!whiteKing.isCheckSquare)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+
+        if (data.live) {
+            board.returnToLive()
+            verify(!blackKing.isCheckSquare && blackKing.flashRefresh)
+            return
+        }
+
+        board.beginExploration()
+        verify(blackKing.isCheckSquare && !blackKing.flashRefresh)
+        endpoint.reply({type: "AnalysisPosition", request_id: board.pendingAnalysisRequestId,
+                        requested_fen: checked, fen: checked, in_check: true, status: "check",
+                        legal_moves: [{from: "g7", to: "g6"}]})
+        verify(blackKing.isCheckSquare && !blackKing.flashRefresh)
+        verify(board.requestExplorationMove("g7", "g6"))
+        endpoint.reply({type: "AnalysisMove", request_id: board.pendingAnalysisRequestId,
+                        from_fen: checked, fen: after, san: "g6", in_check: false})
+        verify(!blackKing.isCheckSquare && blackKing.flashRefresh)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+
+        board.undoExplorationMove()
+        verify(blackKing.isCheckSquare && blackKing.flashRefresh)
+        board.stopExploration()
+        verify(blackKing.isCheckSquare)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+        board.goNext()
+        verify(!blackKing.isCheckSquare && blackKing.flashRefresh)
+    }
+
+    function test_archiveCheckmateMarksTheKingInCheck() {
+        var before = "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2"
+        var after = "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"
+        var requestId = choose("archive-mate")
+        endpoint.reply({type: "GameMoves", request_id: requestId, moves: ["Qh4#"], fens: [before, after]})
+        var review = screen.item
+        var whiteKing = findChild(review, "boardSquare-e1")
+        verify(!whiteKing.isCheckSquare)
+        review.goNext()
+        verify(whiteKing.isCheckSquare && whiteKing.flashRefresh)
+        verify(!findChild(review, "boardSquare-e8").isCheckSquare)
+    }
+
     function test_livePreviewConfirmationOnlyClearsAChangedBoard() {
         app.openGame("preview-refresh")
         var snapshot = boardState("preview-refresh")
