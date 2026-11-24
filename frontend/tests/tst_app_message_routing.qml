@@ -300,6 +300,97 @@ TestCase {
         compare(review.currentFen(), base)
     }
 
+    function test_exploreRefreshCoversFootprintAndOverlappingPulses_data() {
+        return [
+            {tag: "new move before the first pulse ends", highlights: false, settleFirst: false,
+             squares: ["e2", "e4", "e5", "e7"]},
+            {tag: "old last-move marks still need clearing", highlights: true, settleFirst: true,
+             squares: ["e2", "e4", "e5", "e7"]},
+            {tag: "hidden last-move marks do not expand the pulse", highlights: false, settleFirst: true,
+             squares: ["e5", "e7"]}
+        ]
+    }
+
+    function test_exploreRefreshCoversFootprintAndOverlappingPulses(data) {
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        endpoint.reply({type: "SettingsState", highlight_last_move: data.highlights})
+        var requestId = choose("explore-refresh")
+        endpoint.reply({type: "GameMoves", request_id: requestId,
+                        fens: [startFen, afterE4], moves: ["e4"]})
+        var review = screen.item
+        review.beginExploration()
+        compare(review.flashSquares, [])
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: startFen, fen: startFen, legal_moves: [{from: "e2", to: "e4"}]})
+        verify(review.requestExplorationMove("e2", "e4"))
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: startFen, fen: afterE4, san: "e4", legal_moves: [{from: "e7", to: "e5"}]})
+        compare(review.flashSquares.slice().sort(), ["e2", "e4"])
+        if (data.settleFirst) tryVerify(function() { return review.flashSquares.length === 0 })
+
+        verify(review.requestExplorationMove("e7", "e5"))
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: afterE4, fen: afterE5, san: "e5", legal_moves: []})
+        compare(review.flashSquares.slice().sort(), data.squares)
+        var e5 = findChild(review, "boardSquare-e5")
+        verify(findChild(e5, "refreshFlash").visible && e5.fastRefresh)
+        tryVerify(function() { return review.flashSquares.length === 0 })
+
+        review.goNext()
+        compare(review.currentFen(), afterE4)
+        compare(review.variationMoves, [])
+        compare(review.flashSquares.slice().sort(), data.highlights ? ["e2", "e4", "e5", "e7"] : ["e5", "e7"])
+    }
+
+    function test_exploreRefreshTracksTheCheckedKingWithoutPieceChanges() {
+        var fen = "4k3/8/8/8/8/8/4r3/4K3 w - - 0 1"
+        var requestId = choose("check-refresh")
+        endpoint.reply({type: "GameMoves", request_id: requestId, fens: [fen], moves: []})
+        var review = screen.item
+        var king = findChild(review, "boardSquare-e1")
+        review.beginExploration()
+        compare(review.flashSquares, [])
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: fen, fen: fen, legal_moves: [{from: "e1", to: "e2"}],
+                        status: "check", in_check: true})
+        compare(review.currentFen(), fen)
+        verify(king.isCheckSquare && king.flashRefresh)
+        compare(review.flashSquares, ["e1"])
+        tryVerify(function() { return review.flashSquares.length === 0 })
+        verify(king.isCheckSquare && !king.fastRefresh)
+
+        review.stopExploration()
+        compare(review.currentFen(), fen)
+        verify(!king.isCheckSquare && king.flashRefresh)
+        compare(review.flashSquares, ["e1"])
+    }
+
+    function test_exploreRefreshIgnoresNormalizationAndUnappliedMoves() {
+        var archiveFen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+        var normalized = archiveFen.replace(" e3 ", " - ")
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var requestId = choose("normalize-refresh")
+        endpoint.reply({type: "GameMoves", request_id: requestId, fens: [archiveFen], moves: []})
+        var review = screen.item
+        review.beginExploration()
+        var initial = review.pendingAnalysisRequestId
+        endpoint.reply({type: "AnalysisPosition", request_id: initial,
+                        requested_fen: archiveFen, fen: normalized, legal_moves: [{from: "e7", to: "e5"}]})
+        compare(review.currentFen(), normalized)
+        compare(review.flashSquares, [])
+
+        verify(review.requestExplorationMove("e7", "e5"))
+        endpoint.reply({type: "AnalysisMove", request_id: initial,
+                        from_fen: normalized, fen: afterE5, san: "e5", legal_moves: []})
+        compare(review.currentFen(), normalized)
+        compare(review.flashSquares, [])
+        endpoint.reply({type: "AnalysisFailed", request_id: review.pendingAnalysisRequestId,
+                        message: "Move rejected"})
+        compare(review.currentFen(), normalized)
+        compare(review.flashSquares, [])
+    }
+
     function latestHomeRequest() {
         var messages = endpoint.sentMessages.filter(function(message) {
             return message.type === "RequestHome"

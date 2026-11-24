@@ -48,32 +48,15 @@ Rectangle {
     // (off by one from it) rather than tracking a "current ply" separately.
     property int currentIndex: 0
     property var flashSquares: []
-    property string lastRenderedFen: ""
-    property var lastRenderedHighlights: []
-    onFensChanged: {
-        gameReviewScreen.lastRenderedFen = gameReviewScreen.currentFen()
-        gameReviewScreen.lastRenderedHighlights = []
-    }
+    // Commit pieces and markers together. Separate bindings can lag during a transition,
+    // and a full-board clear spends a refresh on unchanged squares.
+    property var boardAppearance: ({fen: "", previousFen: "", pieces: {}, previousPieces: {},
+                                    lastMove: {}, checkedKing: ""})
+    onFensChanged: gameReviewScreen.boardAppearance = gameReviewScreen.buildBoardAppearance()
     onCurrentIndexChanged: {
-        var nextFen = gameReviewScreen.currentFen()
-        var refreshSquares = gameReviewScreen.changedSquaresBetweenFens(
-            gameReviewScreen.lastRenderedFen,
-            nextFen
-        )
-        var nextHighlights = gameReviewScreen.currentIndex > 0
-            ? gameReviewScreen.changedSquaresBetweenFens(
-                gameReviewScreen.fens[gameReviewScreen.currentIndex - 1],
-                nextFen
-            )
-            : []
-        gameReviewScreen.appendUniqueSquares(refreshSquares, gameReviewScreen.lastRenderedHighlights)
-        gameReviewScreen.appendUniqueSquares(refreshSquares, nextHighlights)
-        gameReviewScreen.flashSquares = refreshSquares
-        gameReviewScreen.lastRenderedFen = nextFen
-        gameReviewScreen.lastRenderedHighlights = nextHighlights
-        boardFlashTimer.restart()
-        Qt.callLater(function() { moveList.revealCurrentMove() })
         if (gameReviewScreen.exploreMode) gameReviewScreen.rebaseExploration()
+        else gameReviewScreen.refreshBoard()
+        Qt.callLater(function() { moveList.revealCurrentMove() })
     }
     Timer {
         id: boardFlashTimer
@@ -146,11 +129,7 @@ Rectangle {
         return gameReviewScreen.fr.files[fileIndex] + gameReviewScreen.fr.ranks[rankIndex]
     }
 
-    // Same minimal FEN board decode as BoardScreen.buildPieceMap -- computed
-    // once per fen (here: at most twice per redraw, for the current and
-    // previous positions) and indexed by every square lookup below, rather
-    // than each of up to 128 pieceAt() calls (64 squares x 2 fens in
-    // lastMoveSquares) re-walking the whole placement field itself.
+    // The current and previous positions share decoded piece maps with the square delegates.
     function buildPieceMap(fen) {
         var map = {}
         if (!fen) return map
@@ -173,18 +152,13 @@ Rectangle {
         return map
     }
 
-    function changedSquaresBetweenFens(previousFen, currentFen) {
-        if (previousFen === "" || currentFen === "") return []
-        var previous = gameReviewScreen.buildPieceMap(previousFen)
-        var current = gameReviewScreen.buildPieceMap(currentFen)
-        var files = ["a","b","c","d","e","f","g","h"]
-        var ranks = ["1","2","3","4","5","6","7","8"]
+    function changedSquares(previous, current) {
         var changed = []
-        for (var r = 0; r < ranks.length; r++) {
-            for (var f = 0; f < files.length; f++) {
-                var squareName = files[f] + ranks[r]
-                if ((previous[squareName] || "") !== (current[squareName] || "")) changed.push(squareName)
-            }
+        for (var square in previous) {
+            if (previous[square] !== current[square]) changed.push(square)
+        }
+        for (var newSquare in current) {
+            if (previous[newSquare] === undefined) changed.push(newSquare)
         }
         return changed
     }
@@ -195,8 +169,53 @@ Rectangle {
         }
     }
 
-    property var currentPieceMap: gameReviewScreen.buildPieceMap(gameReviewScreen.currentFen())
-    property var previousPieceMap: gameReviewScreen.buildPieceMap(gameReviewScreen.previousFen())
+    function pieceMapFor(fen) {
+        var appearance = gameReviewScreen.boardAppearance
+        if (fen === appearance.fen) return appearance.pieces
+        if (fen === appearance.previousFen) return appearance.previousPieces
+        return gameReviewScreen.buildPieceMap(fen)
+    }
+
+    function buildBoardAppearance() {
+        var fen = gameReviewScreen.currentFen()
+        var previousFen = gameReviewScreen.previousFen()
+        var pieces = gameReviewScreen.pieceMapFor(fen)
+        var previousPieces = gameReviewScreen.pieceMapFor(previousFen)
+        return {
+            fen: fen,
+            previousFen: previousFen,
+            pieces: pieces,
+            previousPieces: previousPieces,
+            lastMove: previousFen.length > 0
+                ? gameReviewScreen.squareLookup(gameReviewScreen.changedSquares(previousPieces, pieces))
+                : {},
+            checkedKing: gameReviewScreen.explorationCheckedKingSquare(pieces)
+        }
+    }
+
+    function refreshBoard() {
+        var previous = gameReviewScreen.boardAppearance
+        var current = gameReviewScreen.buildBoardAppearance()
+        gameReviewScreen.boardAppearance = current
+        if (previous.fen.length === 0 || current.fen.length === 0) return
+
+        var dirty = gameReviewScreen.changedSquares(previous.pieces, current.pieces)
+        if (gameReviewScreen.highlightLastMove) {
+            gameReviewScreen.appendUniqueSquares(dirty,
+                gameReviewScreen.changedSquares(previous.lastMove, current.lastMove))
+        }
+        if (previous.checkedKing !== current.checkedKing) {
+            gameReviewScreen.appendUniqueSquares(dirty,
+                [previous.checkedKing, current.checkedKing].filter(function(square) { return square.length > 0 }))
+        }
+        if (dirty.length === 0) return
+        // Keep earlier squares active if a second transition arrives before the pulse ends.
+        gameReviewScreen.appendUniqueSquares(dirty, gameReviewScreen.flashSquares)
+        gameReviewScreen.flashSquares = dirty
+        boardFlashTimer.restart()
+    }
+
+    readonly property var currentPieceMap: gameReviewScreen.boardAppearance.pieces
 
     function previousFen() {
         if (gameReviewScreen.exploreMode && gameReviewScreen.variationFens.length > 1) {
@@ -207,50 +226,13 @@ Rectangle {
             : ""
     }
 
-    // Kept parameterized on `fen` (not hardcoded to currentFen()) so this
-    // stays a general-purpose lookup, but the two fens actually in play here
-    // (current and previous) go through the cached maps above instead of
-    // rebuilding one from scratch on every call.
-    function pieceAt(fen, squareName) {
-        if (fen === gameReviewScreen.currentFen()) return gameReviewScreen.currentPieceMap[squareName] || ""
-        if (fen === gameReviewScreen.previousFen()) {
-            return gameReviewScreen.previousPieceMap[squareName] || ""
-        }
-        return gameReviewScreen.buildPieceMap(fen)[squareName] || ""
-    }
-
     function pieceCodeFor(pieceChar) {
         if (pieceChar === "") return ""
         var isWhite = pieceChar === pieceChar.toUpperCase()
         return (isWhite ? "w" : "b") + pieceChar.toUpperCase()
     }
 
-    // Every square whose piece differs from the previous position -- a plain
-    // origin/destination move shows exactly two, castling four, en passant
-    // three. There's no separate from/to field to key off (GameMoves only
-    // carries SAN + the FEN snapshots), so this diff is what stands in for
-    // "last move" highlighting here. Reads the cached maps directly rather
-    // than through pieceAt(), since it already knows exactly which two fens
-    // it wants.
-    function lastMoveSquares() {
-        if (gameReviewScreen.previousFen().length === 0) return []
-        var files = ["a","b","c","d","e","f","g","h"]
-        var ranks = ["1","2","3","4","5","6","7","8"]
-        var out = []
-        for (var r = 0; r < ranks.length; r++) {
-            for (var f = 0; f < files.length; f++) {
-                var sq = files[f] + ranks[r]
-                if (gameReviewScreen.previousPieceMap[sq] !== gameReviewScreen.currentPieceMap[sq]) out.push(sq)
-            }
-        }
-        return out
-    }
-
-    // Cached once per redraw rather than recomputed by each of the 64 squares'
-    // own bindings -- same reasoning as BoardScreen's selectedDestinations.
-    property var lastMoveSquaresCached: gameReviewScreen.lastMoveSquares()
-    property var lastMoveSquareLookup: gameReviewScreen.squareLookup(
-        gameReviewScreen.lastMoveSquaresCached)
+    readonly property var lastMoveSquareLookup: gameReviewScreen.boardAppearance.lastMove
     property var flashSquareLookup: gameReviewScreen.squareLookup(
         gameReviewScreen.flashSquares)
     // filesRanks() itself is cheap, but it's read by all 64 squares plus 16
@@ -283,7 +265,7 @@ Rectangle {
     property var selectedDestinations: gameReviewScreen.destinationsFrom(gameReviewScreen.selectedSquare)
     property var selectedDestinationLookup: gameReviewScreen.squareLookup(
         gameReviewScreen.selectedDestinations)
-    property string checkedSquare: gameReviewScreen.explorationCheckedKingSquare()
+    readonly property string checkedSquare: gameReviewScreen.boardAppearance.checkedKing
 
     function squareLookup(squares) {
         var lookup = {}
@@ -291,11 +273,11 @@ Rectangle {
         return lookup
     }
 
-    function explorationCheckedKingSquare() {
+    function explorationCheckedKingSquare(pieces) {
         if (!gameReviewScreen.exploreMode || !gameReviewScreen.exploreInCheck) return ""
         var king = gameReviewScreen.sideToMove() === "white" ? "K" : "k"
-        for (var square in gameReviewScreen.currentPieceMap) {
-            if (gameReviewScreen.currentPieceMap[square] === king) return square
+        for (var square in pieces) {
+            if (pieces[square] === king) return square
         }
         return ""
     }
@@ -373,6 +355,7 @@ Rectangle {
         gameReviewScreen.pendingPromotion = null
         gameReviewScreen.exploreInCheck = false
         gameReviewScreen.exploreStatusCode = "playing"
+        gameReviewScreen.refreshBoard()
         gameReviewScreen.sendAnalysisRequest({type: "RequestAnalysisPosition", fen: gameReviewScreen.exploreFen},
                                               "Loading legal moves...")
     }
@@ -406,6 +389,7 @@ Rectangle {
         gameReviewScreen.exploreStatus = ""
         gameReviewScreen.exploreInCheck = false
         gameReviewScreen.exploreStatusCode = "playing"
+        gameReviewScreen.refreshBoard()
     }
 
     function undoExplorationMove() {
@@ -756,7 +740,7 @@ Rectangle {
                         premoveSquareColor: boardStyle.premoveSquare
                         inkColor: boardStyle.ink
                         pieceSet: gameReviewScreen.pieceSet
-                        pieceCode: gameReviewScreen.pieceCodeFor(gameReviewScreen.pieceAt(gameReviewScreen.currentFen(), squareName))
+                        pieceCode: gameReviewScreen.pieceCodeFor(gameReviewScreen.currentPieceMap[squareName] || "")
                         isHighlighted: isSelected || isLegalDestination
                         isSelected: gameReviewScreen.exploreMode &&
                             gameReviewScreen.selectedSquare === squareName
@@ -1090,6 +1074,7 @@ Rectangle {
             gameReviewScreen.exploreInCheck = msg.in_check || false
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
+            gameReviewScreen.refreshBoard()
         } else if (msg.type === "AnalysisMove") {
             if (!gameReviewScreen.exploreMode ||
                     msg.request_id !== gameReviewScreen.pendingAnalysisRequestId ||
@@ -1113,6 +1098,7 @@ Rectangle {
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.selectedSquare = ""
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
+            gameReviewScreen.refreshBoard()
         } else if (msg.type === "CloudEvaluation" || msg.type === "CloudEvaluationUnavailable" ||
                    msg.type === "CloudEvaluationFailed") {
             gameReviewScreen.handleCloudReply(msg)
