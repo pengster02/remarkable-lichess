@@ -48,7 +48,8 @@ straight back to the device over your local network. If you have no camera
 handy, the full URL is printed underneath, and a personal access token still
 works as a fallback. On later launches, a quiet startup screen checks the saved
 sign-in first; the sign-in screen appears only when credentials are missing or
-rejected.
+rejected. If the check fails because Lichess is unavailable, retry with the
+saved sign-in or choose a different account.
 
 | Scan to sign in | Fallbacks |
 | --- | --- |

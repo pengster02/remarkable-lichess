@@ -2,7 +2,7 @@ use crate::credentials;
 use crate::game::outcome::{outcome, termination_label};
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
-use crate::lichess::client::{LichessClient, LICHESS_BASE_URL};
+use crate::lichess::client::{is_auth_rejection, LichessClient, LICHESS_BASE_URL};
 use crate::lichess::oauth;
 use crate::lichess::models::{EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
@@ -24,6 +24,13 @@ use tokio::sync::Mutex;
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_RECONNECT_MAX_BACKOFF_SECS: u64 = 5;
+
+// Startup retries can reuse the saved sign-in. Sending every failure to OAuth
+// forces needless sign-ins, and a second verifier can drift from token activation.
+enum TokenCheck {
+    Startup,
+    SignIn,
+}
 
 fn wifi_link_state_at(network_root: &Path) -> Option<bool> {
     let mut found = false;
@@ -134,7 +141,7 @@ impl LichessBackend {
         send_locked(replier, &self.write_lock, msg);
     }
 
-    async fn activate_token(&mut self, replier: &BackendReplier<Self>, token: String) {
+    async fn activate_token(&mut self, replier: &BackendReplier<Self>, token: String, check: TokenCheck) {
         log::info!("activate_token: verifying token via get_account");
         let client = LichessClient::new(token.clone());
         match client.get_account().await {
@@ -158,14 +165,21 @@ impl LichessBackend {
                 self.spawn_streams(replier.clone(), account.id);
             }
             Err(e) => {
-                log::warn!("activate_token: rejected: {e}");
-                self.send(replier, &BackendMessage::TokenInvalid { reason: e.to_string() });
+                log::warn!("activate_token: verification failed: {e}");
+                let reply = if matches!(check, TokenCheck::Startup) && !is_auth_rejection(&e) {
+                    BackendMessage::AuthenticationCheckFailed {
+                        message: "Could not verify your saved Lichess sign-in. Check your connection and try again.".into(),
+                    }
+                } else {
+                    BackendMessage::TokenInvalid { reason: e.to_string() }
+                };
+                self.send(replier, &reply);
             }
         }
     }
 
     async fn handle_save_token(&mut self, replier: &BackendReplier<Self>, token: String) {
-        self.activate_token(replier, token).await;
+        self.activate_token(replier, token, TokenCheck::SignIn).await;
     }
 
     /// The top status bar is on every screen, but every other connectivity
@@ -261,7 +275,25 @@ impl LichessBackend {
             self.send(replier, &BackendMessage::LoginFailed { reason: "no token saved".into() });
             return;
         }
-        self.activate_token(replier, token).await;
+        self.activate_token(replier, token, TokenCheck::SignIn).await;
+    }
+
+    async fn check_saved_sign_in(&mut self, replier: &BackendReplier<Self>) {
+        match std::fs::read_to_string(&self.token_path) {
+            Ok(token) if !token.trim().is_empty() => {
+                self.activate_token(replier, token.trim().to_owned(), TokenCheck::Startup).await;
+            }
+            Ok(_) => self.send(replier, &BackendMessage::AuthenticationRequired),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.send(replier, &BackendMessage::AuthenticationRequired);
+            }
+            Err(error) => {
+                log::warn!("could not read saved sign-in: {error}");
+                self.send(replier, &BackendMessage::AuthenticationCheckFailed {
+                    message: "Could not read your saved Lichess sign-in.".into(),
+                });
+            }
+        }
     }
 
     async fn handle_request_home(&mut self, replier: &BackendReplier<Self>) {
@@ -1160,22 +1192,7 @@ impl AppLoadBackend for LichessBackend {
     async fn handle_message(&mut self, replier: &BackendReplier<Self>, message: Message) {
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             if self.client.is_none() {
-                match std::fs::read_to_string(&self.token_path) {
-                    Ok(saved_token) => {
-                        let saved_token = saved_token.trim().to_string();
-                        if saved_token.is_empty() {
-                            log::info!("NEW_COORDINATOR: token file empty, requesting sign-in");
-                            self.send(replier, &BackendMessage::AuthenticationRequired);
-                        } else {
-                            log::info!("NEW_COORDINATOR: no client yet, retrying saved token");
-                            self.activate_token(replier, saved_token).await;
-                        }
-                    }
-                    Err(e) => {
-                        log::info!("NEW_COORDINATOR: no saved token ({e}), requesting sign-in");
-                        self.send(replier, &BackendMessage::AuthenticationRequired);
-                    }
-                }
+                self.check_saved_sign_in(replier).await;
             } else if let Some(username) = self.username.clone() {
                 // The backend process outlives a frontend reload (see deploy.sh's own
                 // note on backend/entry being a long-lived binary): without this, a
@@ -1204,6 +1221,11 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::StartLogin => self.handle_start_login(replier).await,
             FrontendMessage::CancelLogin => self.handle_cancel_login(),
             FrontendMessage::ActivateSavedToken => self.handle_activate_saved_token(replier).await,
+            FrontendMessage::RetryAuthentication => {
+                if self.client.is_none() {
+                    self.check_saved_sign_in(replier).await;
+                }
+            }
             FrontendMessage::SaveToken { token } => self.handle_save_token(replier, token).await,
             FrontendMessage::RequestHome => self.handle_request_home(replier).await,
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
