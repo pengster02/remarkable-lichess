@@ -1,7 +1,10 @@
 use crate::game::outcome::outcome;
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
 use crate::lichess::models::{GameFull, GameState};
-use crate::protocol::{BackendMessage, GameActionRequest, LegalMove, OpponentDeparture, PlayerIdentity, PlayerStatusSummary, PositionId};
+use crate::protocol::{
+    BackendMessage, GameAction, GameActionRequest, LegalMove, OfferIntent, OfferRequest,
+    OpponentDeparture, PlayerIdentity, PlayerStatusSummary, PositionId,
+};
 use shakmaty::{Chess, Position};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
@@ -105,23 +108,21 @@ fn you<'a>(full: &'a GameFull, your_color: &str) -> &'a crate::lichess::models::
     if your_color == "black" { &full.black } else { &full.white }
 }
 
-// GameState carries wdraw/bdraw/wtakeback/btakeback for *both* colors; the frontend
-// only cares whether *the opponent* has an offer on the table, so fold the your_color
-// lookup in here instead of making every caller re-derive it.
-fn draw_offered_by_opponent(state: &GameState, your_color: &str) -> bool {
-    if your_color == "black" { state.wdraw } else { state.bdraw }
+struct OfferState {
+    by_you: bool,
+    by_opponent: bool,
+    can_offer: bool,
 }
 
-fn takeback_offered_by_opponent(state: &GameState, your_color: &str) -> bool {
-    if your_color == "black" { state.wtakeback } else { state.btakeback }
+impl OfferState {
+    fn new(by_you: bool, by_opponent: bool, eligible: bool) -> Self {
+        Self { by_you, by_opponent, can_offer: eligible && !by_you && !by_opponent }
+    }
 }
 
-fn draw_offered_by_you(state: &GameState, your_color: &str) -> bool {
-    if your_color == "black" { state.bdraw } else { state.wdraw }
-}
-
-fn takeback_offered_by_you(state: &GameState, your_color: &str) -> bool {
-    if your_color == "black" { state.btakeback } else { state.wtakeback }
+struct GameOffers {
+    draw: OfferState,
+    takeback: OfferState,
 }
 
 fn player_identity(player: &crate::lichess::models::Player) -> PlayerIdentity {
@@ -183,11 +184,11 @@ enum HistoryDelivery<'a> {
 
 fn to_board_state(
     session: &GameSession,
-    state: &GameState,
     now: Instant,
     history: HistoryDelivery,
 ) -> BackendMessage {
     use shakmaty::Position;
+    let state = &session.state;
     let (move_history, position_history, appended_move) = match history {
         HistoryDelivery::Full => (
             Some(session.move_history.clone().into_boxed_slice()),
@@ -198,11 +199,7 @@ fn to_board_state(
         HistoryDelivery::Unchanged => (None, None, None),
     };
     let move_count = state.moves.split_whitespace().count();
-    let draw_by_opponent = draw_offered_by_opponent(state, &session.your_color);
-    let takeback_by_opponent = takeback_offered_by_opponent(state, &session.your_color);
-    let draw_by_you = draw_offered_by_you(state, &session.your_color);
-    let takeback_by_you = takeback_offered_by_you(state, &session.your_color);
-    let has_played_full_move = move_count >= 2;
+    let offers = session.game_offers();
     let has_moved = if session.your_color == "black" {
         move_count >= 2
     } else {
@@ -241,22 +238,14 @@ fn to_board_state(
         last_move: session.last_move.clone().map(Box::new),
         your_color: session.your_color.clone(),
         in_check: session.position.is_check(),
-        draw_offered_by_opponent: draw_by_opponent,
-        takeback_offered_by_opponent: takeback_by_opponent,
-        draw_offered_by_you: draw_by_you,
-        takeback_offered_by_you: takeback_by_you,
+        draw_offered_by_opponent: offers.draw.by_opponent,
+        takeback_offered_by_opponent: offers.takeback.by_opponent,
+        draw_offered_by_you: offers.draw.by_you,
+        takeback_offered_by_you: offers.takeback.by_you,
         can_abort: active && move_count < 2 && !session.is_tournament,
         can_berserk: active && session.is_tournament && !session.berserked && !has_moved,
-        can_offer_draw: active && has_played_full_move
-            && session.opponent_is_human
-            && !draw_by_you
-            && !draw_by_opponent,
-        can_offer_takeback: active && has_played_full_move
-            && !session.rated
-            && !session.is_tournament
-            && session.opponent_is_human
-            && !takeback_by_you
-            && !takeback_by_opponent,
+        can_offer_draw: offers.draw.can_offer,
+        can_offer_takeback: offers.takeback.can_offer,
         can_give_time: active && !session.rated
             && !session.is_tournament
             && session.opponent_is_human
@@ -366,10 +355,57 @@ impl GameSession {
         self.game_stream_connected
     }
 
+    fn game_offers(&self) -> GameOffers {
+        let state = &self.state;
+        let (draw_yours, draw_theirs, takeback_yours, takeback_theirs) =
+            if self.your_color == "black" {
+                (state.bdraw, state.wdraw, state.btakeback, state.wtakeback)
+            } else {
+                (state.wdraw, state.bdraw, state.wtakeback, state.btakeback)
+            };
+        let eligible = state.status == "started" && self.move_history.len() >= 2 && self.opponent_is_human;
+        GameOffers {
+            draw: OfferState::new(draw_yours, draw_theirs, eligible),
+            takeback: OfferState::new(takeback_yours, takeback_theirs,
+                eligible && !self.rated && !self.is_tournament),
+        }
+    }
+
+    pub fn validate_offer(&self, action: GameAction, request: OfferRequest) -> Result<(), &'static str> {
+        if request.expected_position_id.is_some_and(|id| id != self.position_id) {
+            return Err("Board changed.");
+        }
+        let Some(intent) = request.offer_intent else { return Ok(()) };
+        if !self.is_stream_connected() {
+            return Err("Waiting for the game to reconnect.");
+        }
+        if request.accept != matches!(intent, OfferIntent::Offer | OfferIntent::Accept) {
+            return Err("Invalid offer action.");
+        }
+        let offers = self.game_offers();
+        let current = match action {
+            GameAction::Draw => offers.draw,
+            GameAction::Takeback => offers.takeback,
+            _ => return Err("Invalid offer action."),
+        };
+        let matching = match intent {
+            OfferIntent::Offer => current.can_offer,
+            OfferIntent::Accept => current.by_opponent,
+            // Lichess prioritizes canceling your own takeback over declining theirs.
+            OfferIntent::Decline => current.by_opponent &&
+                (action != GameAction::Takeback || !current.by_you),
+            OfferIntent::Cancel => action == GameAction::Takeback && current.by_you,
+        };
+        if !matching {
+            return Err("Offer changed.");
+        }
+        Ok(())
+    }
+
     fn board_state_at(&self, now: Instant) -> BackendMessage {
         // A standalone re-send of the current state (resume, berserk re-derive) --
         // the frontend may be freshly loaded with no history, so sync it in full.
-        to_board_state(self, &self.state, now, HistoryDelivery::Full)
+        to_board_state(self, now, HistoryDelivery::Full)
     }
 
     pub fn apply_state_update(&mut self, state: GameState) -> anyhow::Result<BackendMessage> {
@@ -440,7 +476,7 @@ impl GameSession {
             Change::Rebuilt => HistoryDelivery::Full,
             Change::Unchanged => HistoryDelivery::Unchanged,
         };
-        Ok(to_board_state(self, &self.state, self.state_received_at, history))
+        Ok(to_board_state(self, self.state_received_at, history))
     }
 
     pub fn apply_accepted_move(
@@ -948,6 +984,46 @@ mod tests {
         assert!(matches!(snapshot,
             BackendMessage::BoardState { outcome: Some(_), pending_game_action: None, .. }));
         assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+    }
+
+    #[test]
+    fn offer_intents_follow_the_current_side_and_kind() {
+        let full = sample_full("e2e4 e7e5");
+        let (mut session, _) = GameSession::from_game_full(&full, "opponent-id").unwrap();
+        let position_id = session.position_id;
+        let request = |intent| OfferRequest {
+            accept: matches!(intent, OfferIntent::Offer | OfferIntent::Accept),
+            request_id: Some(14),
+            offer_intent: Some(intent),
+            expected_position_id: Some(position_id),
+        };
+        for action in [GameAction::Draw, GameAction::Takeback] {
+            assert_eq!(session.validate_offer(action, request(OfferIntent::Offer)), Ok(()));
+            assert_eq!(session.validate_offer(action, request(OfferIntent::Accept)), Err("Offer changed."));
+        }
+
+        let mut both = full.state;
+        both.wdraw = true;
+        both.wtakeback = true;
+        session.apply_state_update(both.clone()).unwrap();
+        for action in [GameAction::Draw, GameAction::Takeback] {
+            assert_eq!(session.validate_offer(action, request(OfferIntent::Accept)), Ok(()));
+            assert_eq!(session.validate_offer(action, request(OfferIntent::Decline)), Ok(()));
+            assert_eq!(session.validate_offer(action, request(OfferIntent::Offer)), Err("Offer changed."));
+        }
+        assert_eq!(session.validate_offer(GameAction::Draw, request(OfferIntent::Cancel)), Err("Offer changed."));
+        both.btakeback = true;
+        session.apply_state_update(both).unwrap();
+        assert_eq!(session.validate_offer(GameAction::Takeback, request(OfferIntent::Decline)), Err("Offer changed."));
+        assert_eq!(session.validate_offer(GameAction::Takeback, request(OfferIntent::Cancel)), Ok(()));
+
+        let mismatched = OfferRequest { accept: true, ..request(OfferIntent::Cancel) };
+        assert_eq!(session.validate_offer(GameAction::Takeback, mismatched), Err("Invalid offer action."));
+        session.mark_stream_disconnected();
+        assert_eq!(session.validate_offer(GameAction::Takeback, request(OfferIntent::Cancel)),
+            Err("Waiting for the game to reconnect."));
+        let legacy = OfferRequest { offer_intent: None, expected_position_id: None, ..mismatched };
+        assert_eq!(session.validate_offer(GameAction::Takeback, legacy), Ok(()));
     }
 
     #[test]

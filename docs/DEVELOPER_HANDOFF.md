@@ -203,6 +203,9 @@ Minimum emulator smoke test:
   action per board at a time and returns a matching `GameActionCompleted` or
   `GameActionFailed` while the board remains active. A resumed snapshot carries
   the pending action, and the app does not automatically retry the POST.
+  Scoped draw and takeback commands identify the selected intent and position.
+  The backend checks the offer state at admission and dispatch. While the game
+  stream reconnects, wait for a fresh snapshot before showing these actions.
   Position-scoped feedback stays visible through same-position clock and offer
   updates. A new move or action, board advance, stream failure, or outcome clears it.
 - Every move request passes through `MoveRequestGate`. The gate releases on a

@@ -10,7 +10,7 @@ use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
     GameAction, GameActionRequest, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
-    MoveRequest, OpponentDeparture, PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
+    MoveRequest, OfferRequest, OpponentDeparture, PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
@@ -1028,6 +1028,7 @@ impl LichessBackend {
         replier: &BackendReplier<Self>,
         request: GameActionRequest,
         expected_game_id: Option<&str>,
+        offer: Option<OfferRequest>,
         post: F,
     )
     where
@@ -1051,6 +1052,7 @@ impl LichessBackend {
             fail("Time gift must be between 5 and 60 seconds".into());
             return;
         }
+        let offer = offer.filter(|offer| offer.offer_intent.is_some() || offer.expected_position_id.is_some());
         let (game_id, mut canceled) = {
             let mut guard = self.session.lock().await;
             match game_for_request(guard.as_ref(), expected_game_id) {
@@ -1061,6 +1063,12 @@ impl LichessBackend {
                 }
             }
             let game = guard.as_mut().expect("active game checked above");
+            if let Some(offer) = offer {
+                if let Err(reason) = game.validate_offer(request.action, offer) {
+                    fail(reason.into());
+                    return;
+                }
+            }
             let Some(canceled) = game.begin_game_action(request) else {
                 fail("A board action is already in progress.".into());
                 return;
@@ -1076,7 +1084,18 @@ impl LichessBackend {
             let result = tokio::select! {
                 biased;
                 _ = &mut canceled => return,
-                result = post(client, game_id.clone()) => result,
+                result = async {
+                    if let Some(offer) = offer {
+                        // Recheck at dispatch after yielding to the stream.
+                        // An enqueue-only check goes stale, and locking through
+                        // HTTP would block authoritative board updates.
+                        let guard = session.lock().await;
+                        let game = game_for_request(guard.as_ref(), Some(&game_id))
+                            .map_err(anyhow::Error::msg)?;
+                        game.validate_offer(request.action, offer).map_err(anyhow::Error::msg)?;
+                    }
+                    post(client, game_id.clone()).await
+                } => result,
             };
             let mut guard = session.lock().await;
             let Some(game) = guard.as_mut().filter(|game| game.game_id == game_id) else { return };
@@ -1930,56 +1949,56 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::Resign { request_id } => {
                 let request = GameActionRequest::new(GameAction::Resign, request_id);
-                self.start_game_action(replier, request, expected_game_id, |client, game_id| async move {
+                self.start_game_action(replier, request, expected_game_id, None, |client, game_id| async move {
                     client.resign(&game_id).await
                 })
                 .await;
             }
-            FrontendMessage::DrawAction { accept, request_id } => {
-                let request = GameActionRequest::new(GameAction::Draw, request_id);
-                self.start_game_action(replier, request, expected_game_id, move |client, game_id| async move {
-                    client.draw(&game_id, accept).await
+            FrontendMessage::DrawAction { request: offer } => {
+                let request = GameActionRequest::new(GameAction::Draw, offer.request_id);
+                self.start_game_action(replier, request, expected_game_id, Some(offer), move |client, game_id| async move {
+                    client.draw(&game_id, offer.accept).await
                 })
                 .await;
             }
-            FrontendMessage::TakebackAction { accept, request_id } => {
-                let request = GameActionRequest::new(GameAction::Takeback, request_id);
-                self.start_game_action(replier, request, expected_game_id, move |client, game_id| async move {
-                    client.takeback(&game_id, accept).await
+            FrontendMessage::TakebackAction { request: offer } => {
+                let request = GameActionRequest::new(GameAction::Takeback, offer.request_id);
+                self.start_game_action(replier, request, expected_game_id, Some(offer), move |client, game_id| async move {
+                    client.takeback(&game_id, offer.accept).await
                 })
                 .await;
             }
             FrontendMessage::Abort { request_id } => {
                 let request = GameActionRequest::new(GameAction::Abort, request_id);
-                self.start_game_action(replier, request, expected_game_id, |client, game_id| async move {
+                self.start_game_action(replier, request, expected_game_id, None, |client, game_id| async move {
                     client.abort(&game_id).await
                 })
                 .await;
             }
             FrontendMessage::Berserk { request_id } => {
                 let request = GameActionRequest::new(GameAction::Berserk, request_id);
-                self.start_game_action(replier, request, expected_game_id, |client, game_id| async move {
+                self.start_game_action(replier, request, expected_game_id, None, |client, game_id| async move {
                     client.berserk(&game_id).await
                 })
                 .await;
             }
             FrontendMessage::AddTime { seconds, request_id } => {
                 let request = GameActionRequest { action: GameAction::AddTime, request_id, seconds: Some(seconds) };
-                self.start_game_action(replier, request, expected_game_id, move |client, game_id| async move {
+                self.start_game_action(replier, request, expected_game_id, None, move |client, game_id| async move {
                     client.add_time(&game_id, seconds).await
                 })
                 .await;
             }
             FrontendMessage::ClaimVictory { request_id } => {
                 let request = GameActionRequest::new(GameAction::ClaimVictory, request_id);
-                self.start_game_action(replier, request, expected_game_id, |client, game_id| async move {
+                self.start_game_action(replier, request, expected_game_id, None, |client, game_id| async move {
                     client.claim_victory(&game_id).await
                 })
                 .await;
             }
             FrontendMessage::ClaimDraw { request_id } => {
                 let request = GameActionRequest::new(GameAction::ClaimDraw, request_id);
-                self.start_game_action(replier, request, expected_game_id, |client, game_id| async move {
+                self.start_game_action(replier, request, expected_game_id, None, |client, game_id| async move {
                     client.claim_draw(&game_id).await
                 })
                 .await;
