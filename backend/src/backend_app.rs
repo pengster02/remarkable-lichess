@@ -24,7 +24,30 @@ use tokio::sync::Mutex;
 
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const STREAM_RECONNECT_MAX_BACKOFF_SECS: u64 = 5;
+const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+
+struct StreamReconnectDelay {
+    next: Duration,
+    maximum: Duration,
+}
+
+impl StreamReconnectDelay {
+    fn new(maximum: Duration) -> Self {
+        Self { next: INITIAL_RECONNECT_DELAY, maximum }
+    }
+
+    fn after_attempt(&mut self, received_for: Duration) -> Duration {
+        // A fixed delay retries dead streams too quickly. Resetting at HTTP
+        // 200 does the same when the server closes before delivering events.
+        let delay = if received_for >= STREAM_IDLE_TIMEOUT {
+            INITIAL_RECONNECT_DELAY
+        } else {
+            self.next
+        };
+        self.next = (delay * 2).min(self.maximum);
+        delay
+    }
+}
 
 struct GameStream {
     game_id: String,
@@ -880,16 +903,18 @@ impl LichessBackend {
         let Some(client) = self.client.clone() else { return };
         let write_lock = self.write_lock.clone();
         let handle = tokio::spawn(async move {
-            let mut backoff_secs: u64 = 1;
+            let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(30));
             // Reconnect replays ongoing games. A per-connection set repeats old
             // starts, and remembering every finished game grows without bound.
             let mut announced_games = HashSet::new();
             loop {
+                let mut received_for = Duration::ZERO;
                 if let Ok(mut lines) = client.stream_lines("/api/stream/event").await {
-                    backoff_secs = 1;
+                    let connected_at = Instant::now();
                     while let Ok(Some(line)) =
                         next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
                     {
+                        received_for = connected_at.elapsed();
                         match parse_ndjson_line::<EventStreamMessage>(&line) {
                                 Some(EventStreamMessage::GameStart { game }) => {
                                     if !announced_games.insert(game.id.clone()) {
@@ -924,11 +949,9 @@ impl LichessBackend {
                         }
                     }
                 }
-                log::warn!(
-                    "account event stream ended; retrying in {backoff_secs}s"
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                backoff_secs = (backoff_secs * 2).min(30);
+                let delay = reconnect.after_attempt(received_for);
+                log::warn!("account event stream ended; retrying in {delay:?}");
+                tokio::time::sleep(delay).await;
             }
         });
         self.account_stream_handle = Some(handle);
@@ -1070,11 +1093,11 @@ fn spawn_game_stream(
     write_lock: Arc<std::sync::Mutex<()>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut backoff_secs: u64 = 1;
+        let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
         let mut stream_finished = false;
         let mut player_status_requested = false;
         while !stream_finished {
-            let stream_started_at = Instant::now();
+            let mut received_for = Duration::ZERO;
             let response = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await;
             if let Some(message) = response.as_ref().err().and_then(board_stream_rejection) {
                 *session_handle.lock().await = None;
@@ -1085,9 +1108,11 @@ fn spawn_game_stream(
                 return;
             }
             if let Ok(mut lines) = response {
+                let connected_at = Instant::now();
                 while let Ok(Some(line)) =
                     next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await
                 {
+                    received_for = connected_at.elapsed();
                     if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
                             let mut status_ids = None;
                             let mut guard = session_handle.lock().await;
@@ -1192,32 +1217,40 @@ fn spawn_game_stream(
             if stream_finished {
                 break;
             }
-            log::warn!(
-                "game stream {game_id} ended; retrying in {backoff_secs}s"
-            );
+            let delay = reconnect.after_attempt(received_for);
+            log::warn!("game stream {game_id} ended; retrying in {delay:?}");
             send_locked(
                 &replier,
                 &write_lock,
                 &BackendMessage::GameStreamReconnecting { game_id: game_id.clone() },
             );
-            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-            // A stream that stayed healthy through the idle watchdog deserves a
-            // fast retry. Alternatives were resetting after every HTTP 200 (the
-            // observed 1s loop) or allowing 30s stale boards during live play.
-            backoff_secs = if stream_started_at.elapsed() >= STREAM_IDLE_TIMEOUT {
-                1
-            } else {
-                (backoff_secs * 2).min(STREAM_RECONNECT_MAX_BACKOFF_SECS)
-            };
+            tokio::time::sleep(delay).await;
         }
     })
 }
 
 #[cfg(test)]
 mod stream_watchdog_tests {
-    use super::{game_for_request, next_stream_line, GameSession, GameStream, LichessBackend, LineStream};
+    use super::{
+        game_for_request, next_stream_line, GameSession, GameStream, LichessBackend, LineStream,
+        StreamReconnectDelay, STREAM_IDLE_TIMEOUT,
+    };
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn reconnect_backs_off_until_a_stream_delivers_sustained_progress() {
+        let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
+        for expected in [1, 2, 4, 5, 5] {
+            assert_eq!(reconnect.after_attempt(Duration::ZERO), Duration::from_secs(expected));
+        }
+        assert_eq!(
+            reconnect.after_attempt(STREAM_IDLE_TIMEOUT - Duration::from_millis(1)),
+            Duration::from_secs(5),
+        );
+        assert_eq!(reconnect.after_attempt(STREAM_IDLE_TIMEOUT), Duration::from_secs(1));
+        assert_eq!(reconnect.after_attempt(Duration::ZERO), Duration::from_secs(2));
+    }
 
     #[test]
     fn a_command_cannot_target_the_replacement_game() {
