@@ -57,6 +57,12 @@ pub(crate) fn board_stream_rejection(error: &anyhow::Error) -> Option<&str> {
     Some(error.reason.as_deref().unwrap_or(fallback))
 }
 
+#[cfg(feature = "transport")]
+pub(crate) fn is_rate_limited(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<HttpResponseError>()
+        .is_some_and(|error| error.status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+}
+
 /// Shared with the OAuth sign-in flow (see lichess::oauth), which talks to the
 /// same host before any client exists to hold it.
 pub const LICHESS_BASE_URL: &str = "https://lichess.org";

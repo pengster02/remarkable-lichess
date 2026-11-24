@@ -2,7 +2,7 @@ use crate::credentials;
 use crate::game::outcome::{outcome, termination_label};
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
-use crate::lichess::client::{board_stream_rejection, is_auth_rejection, LichessClient, LICHESS_BASE_URL};
+use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
 use crate::lichess::oauth;
 use crate::lichess::models::{ChallengeResolution, ChallengeResult, EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
@@ -26,6 +26,9 @@ type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MOVE_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const CLOUD_QUEUE_CAPACITY: usize = 4;
+const CLOUD_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
+const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. Try again shortly.";
 
 struct StreamReconnectDelay {
     next: Duration,
@@ -64,6 +67,29 @@ struct AccountStream {
 // detached task keeps working after the frontend abandons the review.
 struct GameRequest {
     request_id: Option<u32>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct CloudEvaluationRequest {
+    requested_fen: String,
+    request_id: Option<u32>,
+}
+
+impl CloudEvaluationRequest {
+    fn failed(self, message: String) -> BackendMessage {
+        BackendMessage::CloudEvaluationFailed {
+            request_id: self.request_id,
+            requested_fen: self.requested_fen,
+            message,
+        }
+    }
+}
+
+// One worker per review preserves separate positions. Inline requests delay
+// board actions, while concurrent cloud lookups can exhaust API limits.
+struct CloudEvaluationQueue {
+    review_id: Option<u32>,
+    requests: mpsc::Sender<CloudEvaluationRequest>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -137,6 +163,8 @@ pub struct LichessBackend {
     home_refresh: Option<tokio::task::JoinHandle<()>>,
     history_load: Option<GameRequest>,
     review_export: Option<GameRequest>,
+    cloud_evaluations: Option<CloudEvaluationQueue>,
+    cloud_retry_after: Arc<Mutex<Option<Instant>>>,
     // The detached task waiting on the OAuth callback (see handle_start_login).
     // Held so CancelLogin -- and any restart of the flow -- can drop it, which
     // closes the listening port with it. Detached rather than awaited inline
@@ -171,6 +199,8 @@ impl LichessBackend {
             home_refresh: None,
             history_load: None,
             review_export: None,
+            cloud_evaluations: None,
+            cloud_retry_after: Arc::new(Mutex::new(None)),
             login_handle: None,
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
@@ -498,72 +528,102 @@ impl LichessBackend {
         });
     }
 
-    async fn handle_request_cloud_evaluation(
-        &self,
+    async fn queue_cloud_evaluation(
+        &mut self,
         replier: &BackendReplier<Self>,
         requested_fen: String,
         request_id: Option<u32>,
+        review_id: Option<u32>,
     ) {
+        let request = CloudEvaluationRequest { requested_fen, request_id };
         let Some(client) = self.client.clone() else {
             let reply = if request_id.is_some() {
-                BackendMessage::CloudEvaluationFailed {
-                    request_id, requested_fen, message: "Not signed in to Lichess".into(),
-                }
+                request.failed("Not signed in to Lichess".into())
             } else {
                 BackendMessage::TokenInvalid { reason: "no token saved".into() }
             };
             self.send(replier, &reply);
             return;
         };
+        if self.cloud_evaluations.as_ref().is_some_and(|queue| {
+            queue.review_id != review_id || queue.task.is_finished()
+        }) {
+            self.stop_cloud_evaluations().await;
+        }
+        let queue = self.cloud_evaluations.get_or_insert_with(|| {
+            let (requests, mut pending) = mpsc::channel::<CloudEvaluationRequest>(CLOUD_QUEUE_CAPACITY);
+            let replier = replier.clone();
+            let write_lock = self.write_lock.clone();
+            let retry_after = self.cloud_retry_after.clone();
+            let task = tokio::spawn(async move {
+                while let Some(request) = pending.recv().await {
+                    let limited = retry_after.lock().await.is_some_and(|until| until > Instant::now());
+                    let reply = if limited {
+                        request.failed(CLOUD_RATE_LIMIT_MESSAGE.into())
+                    } else {
+                        Self::fetch_cloud_evaluation(&client, request, &retry_after).await
+                    };
+                    send_locked(&replier, &write_lock, &reply);
+                }
+            });
+            CloudEvaluationQueue { review_id, requests, task }
+        });
+        if let Err(error) = queue.requests.try_send(request) {
+            self.send(replier, &error.into_inner().failed("Cloud evaluation is busy. Try again shortly.".into()));
+        }
+    }
+
+    async fn stop_cloud_evaluations(&mut self) {
+        if let Some(queue) = self.cloud_evaluations.as_mut() {
+            abort_task(&mut queue.task).await;
+            self.cloud_evaluations = None;
+        }
+    }
+
+    async fn fetch_cloud_evaluation(
+        client: &LichessClient,
+        request: CloudEvaluationRequest,
+        retry_after: &Mutex<Option<Instant>>,
+    ) -> BackendMessage {
+        let CloudEvaluationRequest { requested_fen, request_id } = request;
         match client.get_cloud_evaluation(&requested_fen).await {
             Ok(Some(cloud)) => {
                 let Some(pv) = cloud.pvs.into_iter().next() else {
-                    self.send(
-                        replier,
-                        &BackendMessage::CloudEvaluationUnavailable {
-                            request_id,
-                            requested_fen,
-                        },
-                    );
-                    return;
+                    return BackendMessage::CloudEvaluationUnavailable { request_id, requested_fen };
                 };
                 match replay_uci_moves_with_history(&requested_fen, &pv.moves) {
-                    Ok((_, best_line)) => self.send(
-                        replier,
-                        &BackendMessage::CloudEvaluation {
-                            request_id,
-                            requested_fen,
-                            evaluation: CloudEvaluationLine {
-                                eval_cp: pv.cp,
-                                mate_in: pv.mate,
-                                depth: cloud.depth,
-                                knodes: cloud.knodes,
-                                best_line,
-                            },
+                    Ok((_, best_line)) => BackendMessage::CloudEvaluation {
+                        request_id,
+                        requested_fen,
+                        evaluation: CloudEvaluationLine {
+                            eval_cp: pv.cp,
+                            mate_in: pv.mate,
+                            depth: cloud.depth,
+                            knodes: cloud.knodes,
+                            best_line,
                         },
-                    ),
-                    Err(e) => self.send(
-                        replier,
-                        &BackendMessage::CloudEvaluationFailed {
-                            request_id,
-                            requested_fen,
-                            message: format!("couldn't read cloud best line: {e}"),
-                        },
-                    ),
+                    },
+                    Err(e) => BackendMessage::CloudEvaluationFailed {
+                        request_id,
+                        requested_fen,
+                        message: format!("couldn't read cloud best line: {e}"),
+                    },
                 }
             }
-            Ok(None) => self.send(
-                replier,
-                &BackendMessage::CloudEvaluationUnavailable { request_id, requested_fen },
-            ),
-            Err(e) => self.send(
-                replier,
-                &BackendMessage::CloudEvaluationFailed {
+            Ok(None) => BackendMessage::CloudEvaluationUnavailable { request_id, requested_fen },
+            Err(e) => {
+                let message = if is_rate_limited(&e) {
+                    *retry_after.lock().await = Some(Instant::now() + CLOUD_RATE_LIMIT_DELAY);
+                    CLOUD_RATE_LIMIT_MESSAGE.into()
+                } else {
+                    e.to_string()
+                };
+                BackendMessage::CloudEvaluationFailed {
                     request_id,
                     requested_fen,
-                    message: e.to_string(),
-                },
-            ),
+                    message,
+                }
+            }
         }
     }
 
@@ -771,6 +831,7 @@ impl LichessBackend {
         stop_task(&mut self.home_refresh).await;
         stop_game_request(&mut self.history_load).await;
         stop_game_request(&mut self.review_export).await;
+        self.stop_cloud_evaluations().await;
         stop_task(&mut self.pending_seek).await;
         if let Some(account) = self.account_stream.as_mut() {
             abort_task(&mut account.task).await;
@@ -1485,6 +1546,7 @@ impl AppLoadBackend for LichessBackend {
             stop_task(&mut self.home_refresh).await;
             stop_game_request(&mut self.history_load).await;
             stop_game_request(&mut self.review_export).await;
+            self.stop_cloud_evaluations().await;
             if self.client.is_none() {
                 self.check_saved_sign_in(replier).await;
             } else if let Some(username) = self.username.clone() {
@@ -1665,8 +1727,13 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::CancelGameReview { request_id } => {
                 cancel_game_request(&mut self.review_export, request_id).await;
             }
-            FrontendMessage::RequestCloudEvaluation { fen, request_id } => {
-                self.handle_request_cloud_evaluation(replier, fen, request_id).await
+            FrontendMessage::RequestCloudEvaluation { fen, request_id, review_id } => {
+                self.queue_cloud_evaluation(replier, fen, request_id, review_id).await
+            }
+            FrontendMessage::CancelCloudEvaluations { review_id } => {
+                if self.cloud_evaluations.as_ref().is_some_and(|queue| queue.review_id == Some(review_id)) {
+                    self.stop_cloud_evaluations().await;
+                }
             }
             FrontendMessage::RequestAnalysisPosition { fen, request_id } => {
                 self.handle_request_analysis_position(replier, fen, request_id)
