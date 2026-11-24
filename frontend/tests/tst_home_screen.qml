@@ -6,11 +6,11 @@ TestCase {
     id: testCase
     name: "HomeScreen"
     when: windowShown
+    visible: true
     width: 1696
     height: 2384
     property var sentMessages: []
-    property int expectedGameStarts: 0
-    property string expectedGameId: ""
+    property var invitationResponses: []
     property int requestSequence: 0
 
     HomeScreen {
@@ -20,16 +20,16 @@ TestCase {
         backendSender: function(message) { testCase.sentMessages.push(message) }
         nextRequestId: function() { return ++testCase.requestSequence }
         navigateTo: function() {}
-        openGame: function(gameId) {
-            testCase.expectedGameStarts++
-            testCase.expectedGameId = gameId
+        respondToChallenge: function(action, challengeId) {
+            var request = {action: action, challengeId: challengeId}
+            testCase.invitationResponses.push(request)
+            home.pendingInvitation = request
         }
     }
 
     function init() {
         sentMessages = []
-        expectedGameStarts = 0
-        expectedGameId = ""
+        invitationResponses = []
         home.loadedOnce = false
         home.connectivityKnown = false
         home.online = false
@@ -38,7 +38,8 @@ TestCase {
         home.loadError = ""
         home.challengesError = ""
         home.actionError = ""
-        home.clearChallengeAction()
+        home.pendingInvitation = null
+        home.pendingChallenges = []
         home.ongoingGames = []
         home.ratings = []
     }
@@ -84,22 +85,19 @@ TestCase {
         compare(home.actionError, "Challenge expired")
     }
 
-    function test_challengeActionIsSingleFlightUntilAReply() {
+    function test_pendingChallengeStaysVisibleWhenTheRowIsGone() {
         home.submitChallengeAction("accept", "abc123")
         home.submitChallengeAction("decline", "abc123")
-        compare(sentMessages.length, 1)
-        compare(sentMessages[0].type, "AcceptChallenge")
+        compare(invitationResponses, [{action: "accept", challengeId: "abc123"}])
         compare(home.pendingChallengeId, "abc123")
-        compare(expectedGameStarts, 0)
-
         home.handleMessage({type: "PendingChallenges", challenges: []})
         compare(home.pendingChallengeId, "abc123")
-        home.handleMessage({type: "ChallengeAccepted", game_id: "abc123",
-                            request_id: sentMessages[0].request_id})
+        var status = findChild(home, "pendingInvitationStatus")
+        verify(status.visible)
+        compare(status.text, "Accepting challenge…")
+        home.pendingInvitation = null
         compare(home.pendingChallengeId, "")
-        compare(home.pendingChallengeAction, "")
-        compare(expectedGameStarts, 1)
-        compare(expectedGameId, "abc123")
+        verify(!status.visible)
     }
 
     function test_successClearsAnEarlierConnectionError() {

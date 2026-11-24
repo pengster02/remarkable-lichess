@@ -770,8 +770,9 @@ TestCase {
         app.navigateTo("HomeScreen.qml")
         screen.item.submitChallengeAction("accept", "same-id")
         var oldRequest = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
-        app.navigateTo("GameHistoryScreen.qml")
-        app.navigateTo("HomeScreen.qml")
+        endpoint.reply({type: "ChallengeActionFailed", challenge_id: "same-id", request_id: oldRequest,
+                        message: "Try again"})
+        compare(screen.item.actionError, "Try again")
         screen.item.submitChallengeAction("accept", "same-id")
         var currentRequest = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
         verify(oldRequest !== currentRequest)
@@ -784,6 +785,58 @@ TestCase {
                         message: "Challenge expired"})
         compare(screen.item.pendingChallengeId, "")
         compare(screen.item.actionError, "Challenge expired")
+    }
+
+    function test_pendingAcceptSurvivesHomeRemountWithoutOpeningTheBoard() {
+        app.navigateTo("HomeScreen.qml")
+        var incoming = {id: "accepted-later", challenger: "Player"}
+        endpoint.reply({type: "PendingChallenges", challenges: [incoming]})
+        screen.item.submitChallengeAction("accept", incoming.id)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        app.navigateTo("SettingsScreen.qml")
+        app.navigateTo("HomeScreen.qml")
+        compare(screen.item.pendingChallengeId, incoming.id)
+        verify(findChild(screen.item, "pendingInvitationStatus").visible)
+        endpoint.reply({type: "PendingChallenges", challenges: [incoming]})
+        var sent = endpoint.sentMessages.length
+        screen.item.submitChallengeAction("decline", incoming.id)
+        compare(endpoint.sentMessages.length, sent)
+
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: incoming.id, request_id: request})
+        compare(screen.item.pendingChallengeId, incoming.id)
+        compare(screen.item.pendingChallenges.length, 1)
+        endpoint.reply({type: "ChallengeAccepted", game_id: incoming.id, request_id: request})
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+        compare(screen.item.pendingChallengeId, "")
+        compare(screen.item.pendingChallenges.length, 0)
+        compare(endpoint.sentMessages.length, sent + 1)
+        compare(endpoint.sentMessages[sent].type, "RequestHome")
+        endpoint.reply({type: "HomeState", request_id: endpoint.sentMessages[sent].request_id,
+                        ongoing_games: [{game_id: incoming.id, is_my_turn: true}]})
+        compare(screen.item.ongoingGames[0].game_id, incoming.id)
+        endpoint.reply({type: "PendingChallenges", challenges: [incoming]})
+        compare(screen.item.pendingChallenges.length, 0)
+    }
+
+    function test_lateInvitationReplyRespectsSettingsAndSignOut() {
+        app.navigateTo("HomeScreen.qml")
+        screen.item.submitChallengeAction("accept", "background")
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        app.navigateTo("SettingsScreen.qml")
+        endpoint.reply({type: "ChallengeAccepted", game_id: "background", request_id: first})
+        verify(String(screen.source).endsWith("SettingsScreen.qml"))
+        compare(app.pendingInvitation, null)
+
+        app.navigateTo("HomeScreen.qml")
+        screen.item.submitChallengeAction("decline", "prior-account")
+        var second = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        endpoint.reply({type: "AuthenticationRequired"})
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: "prior-account", request_id: second})
+        verify(String(screen.source).endsWith("LoginScreen.qml"))
+        endpoint.reply({type: "TokenVerified", username: "different"})
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: "prior-account", request_id: second})
+        compare(screen.item.pendingChallengeId, "")
+        compare(app.resolvedChallengeIds.length, 0)
     }
 
     function test_startupRetryKeepsTheSavedSignInFlow() {

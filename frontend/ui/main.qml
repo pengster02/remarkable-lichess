@@ -67,6 +67,9 @@ Rectangle {
     // for the list keeps old rows visible, while removing a row only on its page
     // lets an in-flight list restore it.
     property var resolvedChallengeIds: []
+    // A remounted Home still needs the pending response. Page-local state permits
+    // another POST, while always opening on acceptance can replace a later screen.
+    property var pendingInvitation: null
 
     function connectivityLabel() {
         if (!root.connectivityKnown) return "Connecting…"
@@ -93,6 +96,37 @@ Rectangle {
     function nextRequestId() {
         root.requestSequence += 1
         return root.requestSequence
+    }
+
+    function respondToChallenge(action, challengeId) {
+        if (!root.hasToken || root.pendingInvitation || !challengeId) return
+        var requestId = root.nextRequestId()
+        root.pendingInvitation = {action: action, challengeId: challengeId,
+                                  requestId: requestId, openOnSuccess: true}
+        root.sendToBackend({type: action === "accept" ? "AcceptChallenge" : "DeclineChallenge",
+                            id: challengeId, request_id: requestId})
+    }
+
+    function handleChallengeResponse(msg) {
+        var request = root.pendingInvitation
+        var accepted = msg.type === "ChallengeAccepted"
+        var succeeded = accepted || msg.type === "ChallengeDeclined"
+        var id = accepted ? msg.game_id : msg.challenge_id
+        if (!root.hasToken || !request || request.challengeId !== id ||
+                request.requestId !== msg.request_id ||
+                (succeeded && accepted !== (request.action === "accept"))) return
+
+        root.pendingInvitation = null
+        if (succeeded && root.resolvedChallengeIds.indexOf(id) === -1) {
+            root.resolvedChallengeIds = root.resolvedChallengeIds.concat([id])
+        }
+        var home = screenLoader.item
+        if (!home || !home.acceptsHomeReply) return
+        home.handleMessage(msg)
+        if (accepted) {
+            if (request.openOnSuccess) root.openGame(id)
+            else home.refreshGames()
+        }
     }
 
     function cancelPendingReview() {
@@ -125,6 +159,7 @@ Rectangle {
         root.username = ""
         root.selectedGameId = ""
         root.resolvedChallengeIds = []
+        root.pendingInvitation = null
         root.pendingReview = null
         root.reviewGame = null
         root.reviewRequestId = 0
@@ -308,7 +343,10 @@ Rectangle {
         onMessageReceived: (type, contents) => {
             var msg = JSON.parse(contents)
             if (msg.type === "TokenVerified") {
-                if (root.username !== (msg.username || "")) root.resolvedChallengeIds = []
+                if (root.username !== (msg.username || "")) {
+                    root.resolvedChallengeIds = []
+                    root.pendingInvitation = null
+                }
                 root.hasToken = true
                 root.authenticationState = "authenticated"
                 root.username = msg.username || ""
@@ -370,22 +408,20 @@ Rectangle {
                                             wifi_connected: msg.wifi_connected, message: msg.message})
                 }
                 home.handleMessage(msg)
+            } else if (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined" ||
+                       msg.type === "ChallengeActionFailed") {
+                root.handleChallengeResponse(msg)
             } else if (msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "ChallengeCreateFailed" ||
                        msg.type === "GameStarted" || msg.type === "ComputerGameCreated" ||
                        msg.type === "MatchCreationFailed" ||
-                       msg.type === "ChallengeResolved" || msg.type === "ChallengeAccepted" ||
-                       msg.type === "ChallengeDeclined" || msg.type === "ChallengeActionFailed" ||
+                       msg.type === "ChallengeResolved" ||
                        msg.type === "OpenChallengeCreated" ||
                        msg.type === "PendingChallenges" ||
                        msg.type === "ChallengesLoadFailed" ||
                        msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
-                if (root.hasToken && (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined")) {
-                    var resolved = msg.game_id || msg.challenge_id
-                    if (root.resolvedChallengeIds.indexOf(resolved) === -1)
-                        root.resolvedChallengeIds = root.resolvedChallengeIds.concat([resolved])
-                } else if (msg.type === "PendingChallenges" && root.resolvedChallengeIds.length > 0) {
+                if (root.hasToken && msg.type === "PendingChallenges" && root.resolvedChallengeIds.length > 0) {
                     var pending = msg.challenges || []
                     var ids = pending.map(function(challenge) { return challenge.id })
                     root.resolvedChallengeIds = root.resolvedChallengeIds.filter(function(id) {
@@ -477,6 +513,9 @@ Rectangle {
         onSourceChanged: {
             root.cancelPendingReview()
             root.selectedGameId = ""
+            if (root.pendingInvitation && root.pendingInvitation.openOnSuccess) {
+                root.pendingInvitation = Object.assign({}, root.pendingInvitation, {openOnSuccess: false})
+            }
         }
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
@@ -595,6 +634,10 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGame")) {
                 item.openGame = root.openGame
+            }
+            if (item.hasOwnProperty("respondToChallenge")) {
+                item.respondToChallenge = root.respondToChallenge
+                item.pendingInvitation = Qt.binding(function() { return root.pendingInvitation })
             }
             if (item.hasOwnProperty("requestedGameId")) {
                 item.requestedGameId = Qt.binding(function() { return root.selectedGameId })

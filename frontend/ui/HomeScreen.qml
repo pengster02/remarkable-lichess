@@ -10,6 +10,7 @@ Rectangle {
     property var navigateTo
     property var nextRequestId
     property var openGame: function() {}
+    property var respondToChallenge
     property bool darkMode: false
     // Every now-playing game, not just one -- replaces the old singular
     // resumableGameId, which silently dropped every game past the first for
@@ -39,9 +40,9 @@ Rectangle {
     property string loadError: ""
     property string challengesError: ""
     property string actionError: ""
-    property string pendingChallengeId: ""
-    property string pendingChallengeAction: ""
-    property int pendingChallengeRequestId: 0
+    property var pendingInvitation: null
+    readonly property string pendingChallengeId: pendingInvitation ? pendingInvitation.challengeId : ""
+    readonly property string pendingChallengeAction: pendingInvitation ? pendingInvitation.action : ""
 
     onBackendSenderChanged: homeScreen.refresh()
     onNextRequestIdChanged: homeScreen.refresh()
@@ -51,15 +52,19 @@ Rectangle {
     }
 
     function refresh() {
-        if (!homeScreen.backendSender || !homeScreen.nextRequestId) return
+        homeScreen.challengesError = ""
+        homeScreen.actionError = ""
+        if (homeScreen.refreshGames()) homeScreen.backendSender({type: "RequestChallenges"})
+    }
+
+    function refreshGames() {
+        if (!homeScreen.backendSender || !homeScreen.nextRequestId) return false
         homeScreen.loadedOnce = false
         homeScreen.connectivityKnown = false
         homeScreen.loadError = ""
-        homeScreen.challengesError = ""
-        homeScreen.actionError = ""
         homeScreen.homeRequestId = homeScreen.nextRequestId()
         homeScreen.backendSender({type: "RequestHome", request_id: homeScreen.homeRequestId})
-        homeScreen.backendSender({type: "RequestChallenges"})
+        return true
     }
 
     function refreshChallenges() {
@@ -68,22 +73,9 @@ Rectangle {
     }
 
     function submitChallengeAction(action, challengeId) {
-        if (homeScreen.pendingChallengeId.length > 0) return
+        if (homeScreen.pendingInvitation || !homeScreen.respondToChallenge) return
         homeScreen.actionError = ""
-        homeScreen.pendingChallengeId = challengeId
-        homeScreen.pendingChallengeAction = action
-        homeScreen.pendingChallengeRequestId = homeScreen.nextRequestId()
-        homeScreen.backendSender({
-            type: action === "accept" ? "AcceptChallenge" : "DeclineChallenge",
-            id: challengeId,
-            request_id: homeScreen.pendingChallengeRequestId
-        })
-    }
-
-    function clearChallengeAction() {
-        homeScreen.pendingChallengeId = ""
-        homeScreen.pendingChallengeAction = ""
-        homeScreen.pendingChallengeRequestId = 0
+        homeScreen.respondToChallenge(action, challengeId)
     }
 
     function connectivityLabel() {
@@ -229,7 +221,20 @@ Rectangle {
             SectionCard {
                 darkMode: homeScreen.darkMode
                 title: "Challenges"
-                visible: homeScreen.pendingChallenges.length > 0
+                visible: homeScreen.pendingChallenges.length > 0 || homeScreen.pendingInvitation !== null
+                Text {
+                    objectName: "pendingInvitationStatus"
+                    width: parent.width
+                    visible: homeScreen.pendingInvitation !== null &&
+                        !homeScreen.pendingChallenges.some(function(challenge) {
+                            return challenge.id === homeScreen.pendingChallengeId
+                        })
+                    text: homeScreen.pendingChallengeAction === "accept"
+                        ? "Accepting challenge…" : "Declining challenge…"
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.textMuted
+                }
                 Repeater {
                     model: homeScreen.pendingChallenges
                     // Stacked (text above buttons) rather than one Row -- a long
@@ -349,19 +354,11 @@ Rectangle {
             homeScreen.challengesError = ""
             homeScreen.pendingChallenges = msg.challenges || []
         } else if (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined") {
-            var action = msg.type === "ChallengeAccepted" ? "accept" : "decline"
             var id = msg.game_id || msg.challenge_id
             homeScreen.pendingChallenges = homeScreen.pendingChallenges.filter(function(challenge) {
                 return challenge.id !== id
             })
-            if (action !== homeScreen.pendingChallengeAction || id !== homeScreen.pendingChallengeId ||
-                    msg.request_id !== homeScreen.pendingChallengeRequestId) return
-            homeScreen.clearChallengeAction()
-            if (action === "accept") homeScreen.openGame(id)
         } else if (msg.type === "ChallengeActionFailed") {
-            if (msg.challenge_id !== homeScreen.pendingChallengeId ||
-                    msg.request_id !== homeScreen.pendingChallengeRequestId) return
-            homeScreen.clearChallengeAction()
             homeScreen.actionError = msg.message || "Lichess could not complete that action."
         } else if (msg.type === "ConnectivityState") {
             homeScreen.connectivityKnown = true
