@@ -270,7 +270,14 @@ impl LichessClient {
         max: u32,
         filters: &GameHistoryFilters,
     ) -> Result<Vec<HistoryGame>> {
-        let mut query = vec![("max".to_string(), max.to_string())];
+        // Get the card summaries in one read. Per-move evaluations add unused
+        // data here, and exports for individual games require more requests.
+        let mut query = vec![
+            ("max".to_string(), max.to_string()),
+            ("opening".to_string(), "true".to_string()),
+            ("accuracy".to_string(), "true".to_string()),
+            ("moves".to_string(), "false".to_string()),
+        ];
         if let Some(rated) = filters.rated {
             query.push(("rated".to_string(), rated.to_string()));
         }
@@ -972,11 +979,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_game_history_sends_ndjson_accept_header_and_max_query_param() {
+    async fn get_game_history_requests_opening_and_accuracy_without_moves() {
         use wiremock::matchers::query_param;
 
         let server = MockServer::start().await;
-        let line = serde_json::json!({
+        let mut analyzed = serde_json::json!({
             "id": "abcd1234", "rated": true, "variant": "standard", "speed": "rapid",
             "perf": "rapid", "createdAt": 1, "lastMoveAt": 2, "status": "mate",
             "players": {
@@ -984,20 +991,34 @@ mod tests {
                 "black": {"user": {"id": "bob", "name": "Bob"}, "rating": 1580}
             },
             "winner": "white"
-        })
-        .to_string();
+        });
+        let mut unanalyzed = analyzed.clone();
+        unanalyzed["id"] = serde_json::json!("abcd1235");
+        analyzed["opening"] = serde_json::json!({"eco": "C60", "name": "Ruy Lopez", "ply": 5});
+        analyzed["players"]["white"]["analysis"] = serde_json::json!({
+            "accuracy": 0, "inaccuracy": 1, "mistake": 2, "blunder": 0
+        });
         Mock::given(method("GET"))
             .and(path("/api/games/user/myuser"))
             .and(query_param("max", "20"))
+            .and(query_param("opening", "true"))
+            .and(query_param("accuracy", "true"))
+            .and(query_param("moves", "false"))
             .and(header("Accept", "application/x-ndjson"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(line))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{analyzed}\n{unanalyzed}\n")))
             .mount(&server)
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let games = client.get_game_history("myuser", 20, &GameHistoryFilters::default()).await.unwrap();
-        assert_eq!(games.len(), 1);
+        assert_eq!(games.len(), 2);
         assert_eq!(games[0].id, "abcd1234");
+        assert_eq!(games[0].opening.as_ref().unwrap().name, "Ruy Lopez");
+        let stats = games[0].players.white.analysis.as_ref().unwrap();
+        assert_eq!(stats.accuracy, Some(0));
+        assert_eq!(stats.acpl, None);
+        assert_eq!(games[1].id, "abcd1235");
+        assert!(games[1].opening.is_none() && games[1].players.white.analysis.is_none());
     }
 
     #[tokio::test]

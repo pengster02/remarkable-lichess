@@ -297,18 +297,15 @@ pub struct LightUser {
     pub name: Option<String>,
 }
 
-// Confirmed against lichess-org/api's GamePlayerUser.yaml's own nested
-// `analysis` property -- a whole-game summary (not per-move; see
-// GameMoveAnalysis below for that), present whenever this specific game has
-// been through Lichess's computer analysis. `accuracy` is genuinely optional
-// per that schema (not in its own `required` list) even when the rest of this
-// object is present.
+// The per-player summary from Lichess's computer analysis.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct PlayerAnalysisSummary {
     pub inaccuracy: u32,
     pub mistake: u32,
     pub blunder: u32,
-    pub acpl: u32,
+    // Lichess omits ACPL without paired evaluations. Requiring it drops
+    // the whole game, while defaulting to zero invents a score.
+    pub acpl: Option<u32>,
     pub accuracy: Option<u32>,
 }
 
