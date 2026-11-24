@@ -10,8 +10,7 @@ Rectangle {
     property bool darkMode: false
     property var toggleDarkMode: function() {}
     // Pushed down from main.qml's root state (same pattern as darkMode) rather
-    // than fetched fresh here -- persists across navigation and is kept in sync
-    // by SaveSettings's own SettingsState echo, not just this screen's own guess.
+    // than fetched fresh here. The root owns saves across navigation.
     property bool autoQueenPromotion: false
     property var setAutoQueenPromotion: function() {}
     property bool moveConfirmation: false
@@ -41,7 +40,7 @@ Rectangle {
     property bool logOutPending: false
     property string logOutError: ""
     property string saveError: ""
-    property bool rollbackRequested: false
+    property var dismissSaveError: function() { settingsScreen.saveError = "" }
 
     BoardStyle {
         id: appearanceStyle
@@ -116,9 +115,10 @@ Rectangle {
 
                 AppButton {
                     width: parent.width
+                    objectName: "dismissSettingsSaveErrorButton"
                     compact: true
                     text: "Dismiss"
-                    onClicked: settingsScreen.saveError = ""
+                    onClicked: settingsScreen.dismissSaveError()
                 }
             }
 
@@ -333,17 +333,7 @@ Rectangle {
     }
 
     function handleMessage(msg) {
-        if (msg.type === "ErrorMsg") {
-            settingsScreen.saveError = msg.message || "The new settings could not be saved."
-            // Reloading persisted state prevents the optimistic toggle from lying;
-            // leaving it changed or reverting one field locally can both drift.
-            if (!settingsScreen.rollbackRequested) {
-                settingsScreen.rollbackRequested = true
-                settingsScreen.backendSender({type: "RequestSettings"})
-            }
-        } else if (msg.type === "SettingsState") {
-            settingsScreen.rollbackRequested = false
-        } else if (msg.type === "LogoutFailed") {
+        if (msg.type === "LogoutFailed") {
             settingsScreen.logOutPending = false
             settingsScreen.logOutError = msg.message
         }

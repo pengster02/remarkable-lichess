@@ -130,6 +130,9 @@ pub enum FrontendMessage {
     DeclineChallenge { id: String, request_id: Option<u32> },
     RequestSettings,
     SaveSettings {
+        // Match each whole-settings write. Untagged echoes can undo newer edits, while waiting for each reply can strand edits on exit.
+        #[serde(default)]
+        request_id: Option<u32>,
         // Omission preserves an existing choice. Defaulting to light would erase it, while a required field would reject older clients.
         #[serde(default)]
         dark_mode: Option<bool>,
@@ -613,7 +616,15 @@ pub enum BackendMessage {
     PlayerStatuses { game_id: String, players: Box<[PlayerStatusSummary]> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
     SettingsState {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
         // A flat snapshot preserves the wire format. A nested field would break readers, and duplicate fields can drift from the store.
+        #[serde(flatten)]
+        settings: crate::settings::AppSettings,
+    },
+    SettingsSaveFailed {
+        request_id: u32,
+        message: String,
         #[serde(flatten)]
         settings: crate::settings::AppSettings,
     },
@@ -908,6 +919,7 @@ mod tests {
             serde_json::from_str::<FrontendMessage>(r#"{"type":"SaveSettings","auto_queen_promotion":true}"#)
                 .unwrap(),
             FrontendMessage::SaveSettings {
+                request_id: None,
                 dark_mode: None,
                 auto_queen_promotion: true,
                 move_confirmation: false,
@@ -924,10 +936,11 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
-                r#"{"type":"SaveSettings","dark_mode":true,"auto_queen_promotion":false,"move_confirmation":true,"minimal_highlights":true,"premoves_enabled":true}"#
+                r#"{"type":"SaveSettings","request_id":17,"dark_mode":true,"auto_queen_promotion":false,"move_confirmation":true,"minimal_highlights":true,"premoves_enabled":true}"#
             )
             .unwrap(),
             FrontendMessage::SaveSettings {
+                request_id: Some(17),
                 dark_mode: Some(true),
                 auto_queen_promotion: false,
                 move_confirmation: true,
@@ -944,6 +957,7 @@ mod tests {
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"LogOut"}"#).unwrap(), FrontendMessage::LogOut);
         let json = serde_json::to_string(&BackendMessage::SettingsState {
+            request_id: Some(17),
             settings: crate::settings::AppSettings {
                 dark_mode: true,
                 auto_queen_promotion: true,
@@ -959,6 +973,7 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""type":"SettingsState""#));
+        assert!(json.contains(r#""request_id":17"#));
         assert!(json.contains(r#""dark_mode":true"#));
         assert!(json.contains(r#""auto_queen_promotion":true"#));
         assert!(json.contains(r#""move_confirmation":true"#));

@@ -2774,14 +2774,89 @@ TestCase {
         compare(save.board_theme, "green")
         compare(save.piece_set, "merida")
 
-        endpoint.reply({type: "SettingsState", board_theme: "green", piece_set: "merida"})
-        verify(toggle.value)
-        endpoint.reply({type: "ErrorMsg", message: "failed to save settings"})
-        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1].type, "RequestSettings")
-        endpoint.reply({type: "SettingsState", dark_mode: false, board_theme: "green", piece_set: "merida"})
-        verify(!toggle.value)
+        app.openGame("settings-save-board")
+        endpoint.reply(boardState("settings-save-board"))
+        verify(screen.item.darkMode)
+        sent = endpoint.sentMessages.length
+        endpoint.reply({type: "SettingsSaveFailed", request_id: save.request_id,
+                        message: "Storage unavailable", dark_mode: false,
+                        board_theme: "green", piece_set: "merida"})
+        compare(endpoint.sentMessages.length, sent)
+        verify(!screen.item.darkMode)
+        app.navigateTo("SettingsScreen.qml")
+        settings = screen.item
+        verify(!findChild(settings, "darkModeSetting").value)
         compare(settings.boardTheme, "green")
         compare(settings.pieceSet, "merida")
+        compare(settings.saveError, "Storage unavailable")
+        findChild(settings, "dismissSettingsSaveErrorButton").clicked()
+        compare(settings.saveError, "")
+    }
+
+    function test_settingsRepliesCannotEraseNewerEdits_data() {
+        return [{tag: "request IDs", scoped: true}, {tag: "legacy ordered replies", scoped: false}]
+    }
+
+    function test_settingsRepliesCannotEraseNewerEdits(data) {
+        endpoint.reply({type: "SettingsState", board_theme: "brown", piece_set: "cburnett"})
+        app.navigateTo("SettingsScreen.qml")
+        app.setBoardTheme("green")
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        app.setPieceSet("merida")
+        var second = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        verify(first.request_id < second.request_id)
+
+        function acknowledge(save) {
+            var packet = Object.assign({}, save, {type: "SettingsState"})
+            if (!data.scoped) {
+                delete packet.request_id
+                delete packet.dark_mode
+            }
+            endpoint.reply(packet)
+        }
+
+        acknowledge(first)
+        compare(screen.item.pieceSet, "merida")
+        app.setShowCoordinates(false)
+        var third = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(third.piece_set, "merida")
+        compare(third.show_coordinates, false)
+        if (data.scoped) {
+            endpoint.reply({type: "SettingsState", board_theme: "brown", piece_set: "cburnett"})
+            endpoint.reply(Object.assign({}, first, {
+                type: "SettingsSaveFailed", request_id: second.request_id, message: "Stale failure"
+            }))
+        } else {
+            endpoint.reply({type: "ErrorMsg", message: "failed to save settings: stale failure"})
+        }
+        compare(screen.item.pieceSet, "merida")
+        verify(!screen.item.showCoordinates)
+        compare(screen.item.saveError, "")
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1], third)
+        acknowledge(third)
+        if (data.scoped) acknowledge(second)
+        compare(screen.item.pieceSet, "merida")
+        verify(!screen.item.showCoordinates)
+    }
+
+    function test_legacySettingsReadbackYieldsToANewerEdit() {
+        endpoint.reply({type: "SettingsState", board_theme: "green", piece_set: "cburnett"})
+        app.navigateTo("SettingsScreen.qml")
+        app.setPieceSet("merida")
+        endpoint.reply({type: "ErrorMsg", message: "failed to save settings: storage unavailable"})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1].type, "RequestSettings")
+        compare(screen.item.saveError, "failed to save settings: storage unavailable")
+        app.setShowCoordinates(false)
+        var next = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply({type: "SettingsState", board_theme: "green", piece_set: "cburnett"})
+        compare(screen.item.pieceSet, "merida")
+        verify(!screen.item.showCoordinates)
+        var acknowledged = Object.assign({}, next, {type: "SettingsState"})
+        delete acknowledged.request_id
+        endpoint.reply(acknowledged)
+        compare(screen.item.pieceSet, "merida")
+        verify(!screen.item.showCoordinates)
+        compare(screen.item.saveError, "")
     }
 
     function test_onlyTheCurrentSignInCanBeCommitted() {

@@ -33,7 +33,6 @@ TestCase {
     function init() {
         sentMessages = []
         settings.saveError = ""
-        settings.rollbackRequested = false
     }
 
     function test_settingsUseCompactControls() {
@@ -67,17 +66,12 @@ TestCase {
         verify(boardControl.radius > 0)
     }
 
-    function test_saveFailureIsVisibleAndReloadsPersistedState() {
-        settings.handleMessage({type: "ErrorMsg", message: "Storage unavailable"})
-        compare(settings.saveError, "Storage unavailable")
-        compare(sentMessages.length, 1)
-        compare(sentMessages[0].type, "RequestSettings")
-
-        settings.handleMessage({type: "ErrorMsg", message: "Still unavailable"})
-        compare(sentMessages.length, 1)
-
-        settings.handleMessage({type: "SettingsState"})
-        compare(settings.rollbackRequested, false)
+    function test_saveFailureCanBeDismissed() {
+        settings.saveError = "Storage unavailable"
+        verify(findChild(settings, "settingsSaveErrorCard").visible)
+        findChild(settings, "dismissSettingsSaveErrorButton").clicked()
+        compare(settings.saveError, "")
+        compare(sentMessages.length, 0)
     }
 
     function test_previewAndNavigationStayCompact() {

@@ -874,7 +874,7 @@ impl LichessBackend {
 
     fn handle_request_settings(&self, replier: &BackendReplier<Self>) {
         let settings = crate::settings::load(&self.settings_path);
-        self.send(replier, &BackendMessage::SettingsState { settings });
+        self.send(replier, &BackendMessage::SettingsState { request_id: None, settings });
     }
 
     fn send_analysis_failure(&self, replier: &BackendReplier<Self>, request_id: Option<u32>, message: String) {
@@ -939,17 +939,27 @@ impl LichessBackend {
     fn handle_save_settings(
         &self,
         replier: &BackendReplier<Self>,
+        request_id: Option<u32>,
         settings: crate::settings::AppSettings,
     ) {
         let settings = settings.normalized();
         if let Err(e) = crate::settings::save(&self.settings_path, &settings) {
-            self.send(replier, &BackendMessage::ErrorMsg { message: format!("failed to save settings: {e}") });
+            let message = format!("failed to save settings: {e}");
+            let reply = match request_id {
+                Some(request_id) => BackendMessage::SettingsSaveFailed {
+                    request_id,
+                    message,
+                    settings: crate::settings::load(&self.settings_path),
+                },
+                None => BackendMessage::ErrorMsg { message },
+            };
+            self.send(replier, &reply);
             return;
         }
         // Echoed back rather than assumed -- the frontend already optimistically
         // shows the new toggle state, but this confirms the write actually
         // succeeded instead of silently drifting from what's on disk.
-        self.send(replier, &BackendMessage::SettingsState { settings });
+        self.send(replier, &BackendMessage::SettingsState { request_id, settings });
     }
 
     async fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
@@ -1988,6 +1998,7 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::RequestSettings => self.handle_request_settings(replier),
             FrontendMessage::SaveSettings {
+                request_id,
                 dark_mode,
                 auto_queen_promotion,
                 move_confirmation,
@@ -2003,6 +2014,7 @@ impl AppLoadBackend for LichessBackend {
             } => {
                 self.handle_save_settings(
                     replier,
+                    request_id,
                     crate::settings::AppSettings {
                         dark_mode: dark_mode.unwrap_or_else(|| crate::settings::load(&self.settings_path).dark_mode),
                         auto_queen_promotion,
