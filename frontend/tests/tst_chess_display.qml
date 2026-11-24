@@ -12,7 +12,8 @@ TestCase {
 
     function test_officialStatusesAreReadable() {
         compare(display.terminationLabel("outoftime"), "Time forfeit")
-        compare(display.terminationLabel("noStart"), "Opponent didn't join")
+        compare(display.terminationLabel("noStart"), "First move deadline missed")
+        compare(display.terminationLabel("timeout"), "Disconnection")
         compare(display.terminationLabel("unknownFinish"), "Unknown finish")
         compare(display.terminationLabel("insufficientMaterialClaim"), "Insufficient material")
     }
@@ -59,7 +60,7 @@ TestCase {
 
     function test_resultFallbackNeverLeaksCamelCase() {
         compare(display.resultLabel("win"), "Win")
-        compare(display.resultLabel("noStart"), "Opponent didn't join")
+        compare(display.resultLabel("noStart"), "First move deadline missed")
         compare(display.resultLabel("futureFinishReason"), "Future Finish Reason")
     }
 }

@@ -256,8 +256,9 @@ TestCase {
         var games = []
         for (var i = 0; i < 30; i++) {
             games.push({game_id: "archive-" + i, opponent_name: "WWWWWWWWWWWWWWWWWWWW",
-                        opponent_rating: 1800, rating_diff: 0, result: "noStart", speed: "rapid",
-                        termination: "Time forfeit", rated: true})
+                        opponent_rating: 1800, rating_diff: 0, result: "win", speed: "rapid",
+                        termination: "Checkmate", rated: true,
+                        opening_name: "Queen's Gambit Declined: Orthodox Defense, Rubinstein Variation"})
         }
         endpoint.reply({type: "GameHistory", request_id: requestId, games: games})
         var history = screen.item
@@ -1347,6 +1348,41 @@ TestCase {
         verify(screen.item.gameOver)
         compare(screen.item.fen, finalFen)
         compare(screen.item.statusText, "You lost · Checkmate · -5 rating")
+    }
+
+    function test_terminalResultAndReasonReachGameOverAndReview_data() {
+        return [
+            {tag: "clock draw on first snapshot", route: "first", result: "draw",
+                reason: "Time expired", summary: "Draw", reviewResult: "draw"},
+            {tag: "disconnect draw during a game", route: "update", result: "draw",
+                reason: "Disconnection", summary: "Draw", reviewResult: "draw"},
+            {tag: "insufficient material draw in fallback", route: "fallback", result: "draw",
+                reason: "Insufficient material", summary: "Draw", reviewResult: "draw"},
+            {tag: "local missed-first-move loss", route: "first", result: "black",
+                reason: "First move deadline missed", summary: "You lost", reviewResult: "loss"}
+        ]
+    }
+
+    function test_terminalResultAndReasonReachGameOverAndReview(data) {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("finished")
+        if (data.route !== "first") endpoint.reply(boardState("finished"))
+        if (data.route === "fallback") {
+            endpoint.reply({type: "GameOver", game_id: "finished",
+                            result: data.result, reason: data.reason})
+        } else {
+            var finalBoard = boardState("finished")
+            finalBoard.outcome = {result: data.result, reason: data.reason}
+            endpoint.reply(finalBoard)
+        }
+        verify(screen.item.gameOver)
+        compare(findChild(screen.item, "gameOverSummary").text, data.summary + " · " + data.reason)
+        findChild(screen.item, "reviewFinishedGameButton").clicked()
+        var review = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(review.type, "RequestGameMoves")
+        endpoint.reply({type: "GameMoves", request_id: review.request_id, moves: [], fens: [startFen]})
+        compare(screen.item.game.result, data.reviewResult)
+        compare(screen.item.gameDetailsLabel(), data.reason)
     }
 
     function test_ratingBeforeFirstBoardSnapshot_data() {

@@ -1,14 +1,24 @@
 use crate::protocol::GameOutcome;
 
 pub(crate) fn outcome(status: &str, winner: Option<&str>) -> GameOutcome {
+    // Match Lichess's draw adjudications. Using the status alone hides draws
+    // after clock expiry, while treating every absent winner as a draw includes aborts.
     let result = match winner {
         Some(color) => color,
-        None if matches!(status, "draw" | "stalemate") => "draw",
+        None if matches!(
+            status,
+            "draw" | "stalemate" | "timeout" | "outoftime" | "insufficientMaterialClaim"
+        ) => "draw",
         None => status,
+    };
+    let reason = if status == "outoftime" && winner.is_none() {
+        "Time expired".to_string()
+    } else {
+        termination_label(status)
     };
     GameOutcome {
         result: result.to_owned(),
-        reason: termination_label(Some(status)),
+        reason,
         rating_diff: None,
     }
 }
@@ -19,24 +29,23 @@ pub(crate) fn outcome(status: &str, winner: Option<&str>) -> GameOutcome {
 /// out the clock), which win/loss/draw alone can't convey. Falls back to a
 /// title-cased copy of the raw status for anything not explicitly listed here
 /// (e.g. a future status Lichess adds) rather than hiding it as "unknown".
-pub(crate) fn termination_label(status: Option<&str>) -> String {
+fn termination_label(status: &str) -> String {
     match status {
-        Some("created") => "Game created".to_string(),
-        Some("started") => "In progress".to_string(),
-        Some("aborted") => "Aborted".to_string(),
-        Some("mate") => "Checkmate".to_string(),
-        Some("resign") => "Resignation".to_string(),
-        Some("stalemate") => "Stalemate".to_string(),
-        Some("timeout") => "Opponent left".to_string(),
-        Some("outoftime") => "Time forfeit".to_string(),
-        Some("draw") => "Draw".to_string(),
-        Some("cheat") => "Cheat detected".to_string(),
-        Some("noStart") => "Opponent didn't join".to_string(),
-        Some("unknownFinish") => "Unknown finish".to_string(),
-        Some("insufficientMaterialClaim") => "Insufficient material".to_string(),
-        Some("variantEnd") => "Variant ending".to_string(),
-        Some(other) => humanize_identifier(other),
-        None => "Unknown".to_string(),
+        "created" => "Game created".to_string(),
+        "started" => "In progress".to_string(),
+        "aborted" => "Aborted".to_string(),
+        "mate" => "Checkmate".to_string(),
+        "resign" => "Resignation".to_string(),
+        "stalemate" => "Stalemate".to_string(),
+        "timeout" => "Disconnection".to_string(),
+        "outoftime" => "Time forfeit".to_string(),
+        "draw" => "Draw".to_string(),
+        "cheat" => "Cheat detected".to_string(),
+        "noStart" => "First move deadline missed".to_string(),
+        "unknownFinish" => "Unknown finish".to_string(),
+        "insufficientMaterialClaim" => "Insufficient material".to_string(),
+        "variantEnd" => "Variant ending".to_string(),
+        other => humanize_identifier(other),
     }
 }
 
@@ -71,12 +80,23 @@ mod game_over_result_tests {
         assert_eq!(outcome("mate", Some("white")).result, "white");
         assert_eq!(outcome("resign", Some("black")).result, "black");
         assert_eq!(outcome("outoftime", Some("white")).result, "white");
+        assert_eq!(outcome("timeout", Some("black")).result, "black");
+        assert_eq!(outcome("noStart", Some("white")).result, "white");
     }
 
     #[test]
-    fn a_genuine_no_winner_draw_or_stalemate_is_reported_as_draw() {
-        assert_eq!(outcome("draw", None).result, "draw");
-        assert_eq!(outcome("stalemate", None).result, "draw");
+    fn draw_adjudications_preserve_the_reason_without_a_winner() {
+        for (status, reason) in [
+            ("draw", "Draw"),
+            ("stalemate", "Stalemate"),
+            ("timeout", "Disconnection"),
+            ("outoftime", "Time expired"),
+            ("insufficientMaterialClaim", "Insufficient material"),
+        ] {
+            let settled = outcome(status, None);
+            assert_eq!(settled.result, "draw", "{status}");
+            assert_eq!(settled.reason, reason, "{status}");
+        }
     }
 
     #[test]
@@ -100,22 +120,22 @@ mod game_over_result_tests {
             ("mate", "Checkmate"),
             ("resign", "Resignation"),
             ("stalemate", "Stalemate"),
-            ("timeout", "Opponent left"),
+            ("timeout", "Disconnection"),
             ("draw", "Draw"),
             ("outoftime", "Time forfeit"),
             ("cheat", "Cheat detected"),
-            ("noStart", "Opponent didn't join"),
+            ("noStart", "First move deadline missed"),
             ("unknownFinish", "Unknown finish"),
             ("insufficientMaterialClaim", "Insufficient material"),
             ("variantEnd", "Variant ending"),
         ];
 
         for (status, label) in cases {
-            assert_eq!(termination_label(Some(status)), label);
+            assert_eq!(termination_label(status), label);
         }
 
         assert_eq!(
-            termination_label(Some("futureFinishReason")),
+            termination_label("futureFinishReason"),
             "Future Finish Reason"
         );
     }
@@ -128,5 +148,6 @@ mod game_over_result_tests {
         assert_eq!(outcome("aborted", None).result, "aborted");
         assert_eq!(outcome("noStart", None).result, "noStart");
         assert_eq!(outcome("cheat", None).result, "cheat");
+        assert_eq!(outcome("unknownFinish", None).result, "unknownFinish");
     }
 }
