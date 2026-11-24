@@ -48,6 +48,7 @@ TestCase {
         board.showMoves = false
         board.pendingPromotion = null
         board.pendingMoveConfirmation = null
+        board.moveConfirmation = false
         board.legalMoves = []
         board.moveHistory = []
         board.positionHistory = []
@@ -202,6 +203,17 @@ TestCase {
         compare(compact.height, theme.playerBarHeight)
     }
 
+    function test_playerBarShowsAnEntireNameWhenThereIsRoom() {
+        var bar = createTemporaryObject(playerBarComponent, testCase, {
+            width: 862, playerName: "Opponent", opponent: true,
+            rating: 1612, clockMs: 315000
+        })
+        verify(bar && waitForRendering(bar))
+        var name = findChild(bar, "playerNameText")
+        verify(name.parent.width > name.implicitWidth + 100)
+        verify(!name.truncated)
+    }
+
     function test_liveStatusUsesTopPlayerBar() {
         board.boardNotice = null
         board.gameOver = false
@@ -298,7 +310,8 @@ TestCase {
         ]
         var snapshot = {
             type: "BoardState", game_id: "pathgame", fen: finalFen, turn: "white",
-            white_time_ms: 60000, black_time_ms: 60000, legal_moves: [],
+            white_time_ms: 60000, black_time_ms: 60000,
+            legal_moves: [{from: "e2", to: "e4", promotion: null}],
             last_move: ["b8", "c6"], position_history: original,
             move_history: ["Nf3", "Nf6", "Nc3", "Nc6"]
         }
@@ -311,6 +324,11 @@ TestCase {
         verify(board.positionHistory === retainedHistory)
         compare(board.historyIndex, 1)
         compare(board.fen, original[1])
+        board.returnToLive()
+        board.moveConfirmation = true
+        board.onSquareTapped("e2")
+        board.onSquareTapped("e4")
+        verify(board.pendingMoveConfirmation !== null)
 
         snapshot.position_history = corrected
         snapshot.move_history = ["Nc3", "Nc6", "Nf3", "Nf6"]
@@ -320,6 +338,7 @@ TestCase {
         compare(board.positionHistory, corrected)
         compare(board.liveLastMove, snapshot.last_move)
         compare(board.historyIndex, 4)
+        compare(board.pendingMoveConfirmation, null)
         board.showHistoryPosition(1)
         compare(board.fen, corrected[1])
     }

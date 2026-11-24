@@ -284,9 +284,7 @@ Rectangle {
 
     function setAnnotationMode(enabled) {
         boardScreen.annotationMode = enabled
-        boardScreen.selectedSquare = ""
-        boardScreen.pendingPromotion = null
-        boardScreen.pendingMoveConfirmation = null
+        boardScreen.clearMovePrompts()
     }
 
     function confirmPendingMove() {
@@ -301,6 +299,11 @@ Rectangle {
         boardScreen.selectedSquare = ""
     }
 
+    function clearMovePrompts() {
+        boardScreen.cancelPendingMove()
+        boardScreen.pendingPromotion = null
+    }
+
     function moveRows() {
         return chessDisplay.moveRows(boardScreen.moveHistory, [], [], boardScreen.positionHistory[0])
     }
@@ -309,6 +312,21 @@ Rectangle {
         return incoming.length === current.length && incoming.every(function (entry, index) {
             return entry === current[index]
         })
+    }
+
+    // A queued premove belongs to the next ply on this line. Checking turn and
+    // legality alone misses takebacks, and canceling all full snapshots loses
+    // valid premoves when a reconnect delivers the opponent's next move.
+    function extendsLiveHistory(msg) {
+        if (msg.appended_move !== undefined && msg.appended_move !== null) return true
+        var positions = msg.position_history
+        var moves = msg.move_history
+        return positions && moves &&
+            positions.length === boardScreen.positionHistory.length + 1 &&
+            moves.length === boardScreen.moveHistory.length + 1 &&
+            positions[positions.length - 1] === msg.fen &&
+            boardScreen.sameHistory(positions.slice(0, -1), boardScreen.positionHistory) &&
+            boardScreen.sameHistory(moves.slice(0, -1), boardScreen.moveHistory)
     }
 
     function showHistoryPosition(index) {
@@ -321,9 +339,7 @@ Rectangle {
         if (bounded < latest) boardScreen.rollbackMovePreview()
         boardScreen.historyIndex = bounded
         boardScreen.fen = boardScreen.previewFen || boardScreen.positionHistory[bounded]
-        boardScreen.selectedSquare = ""
-        boardScreen.pendingPromotion = null
-        boardScreen.pendingMoveConfirmation = null
+        boardScreen.clearMovePrompts()
         boardScreen.clearAnnotations()
     }
 
@@ -728,7 +744,6 @@ Rectangle {
 
     function queuePremove(from, to, promotion) {
         boardScreen.pendingPremove = {
-            gameId: boardScreen.gameId,
             from: from,
             to: to,
             promotion: promotion
@@ -1229,14 +1244,6 @@ Rectangle {
                 resignAction.reset()
             }
 
-            function resetDrawOffer() {
-                drawOfferAction.reset()
-            }
-
-            function resetBerserk() {
-                berserkAction.reset()
-            }
-
         Text {
             width: parent.width
             text: boardScreen.gameDescription
@@ -1552,14 +1559,13 @@ Rectangle {
                     return boardScreen.promotionPieceCode(piece)
                 }
                 onChosen: (piece) => {
-                    var from = boardScreen.pendingPromotion.from
-                    var to = boardScreen.pendingPromotion.to
-                    var isPremove = boardScreen.pendingPromotion.premove || false
+                    var move = boardScreen.pendingPromotion
+                    if (move === null) return
                     boardScreen.pendingPromotion = null
-                    if (isPremove) {
-                        boardScreen.queuePremove(from, to, piece)
+                    if (move.premove) {
+                        boardScreen.queuePremove(move.from, move.to, piece)
                     } else {
-                        boardScreen.requestMove(from, to, piece)
+                        boardScreen.requestMove(move.from, move.to, piece)
                     }
                 }
             }
@@ -1716,10 +1722,8 @@ Rectangle {
         boardScreen.gameOver = true
         boardScreen.streamReconnecting = false
         boardScreen.gameReason = reason
-        boardScreen.selectedSquare = ""
         boardScreen.legalMoves = []
-        boardScreen.pendingPromotion = null
-        boardScreen.pendingMoveConfirmation = null
+        boardScreen.clearMovePrompts()
         moveRequestGate.clear()
         boardScreen.pendingPremove = null
         boardScreen.resetGameActionControls()
@@ -1789,7 +1793,6 @@ Rectangle {
                 boardScreen.flashSquares = refreshSquares
                 boardFlashTimer.restart()
             }
-            if (boardChanged) boardScreen.clearAnnotations()
             if (gameChanged) {
                 boardScreen.resetPlayerStatuses()
                 if (boardScreen.gameRatingChange !== null &&
@@ -1801,6 +1804,16 @@ Rectangle {
             boardScreen.gameId = nextGameId
             boardScreen.opponentDeparture = msg.opponent_departure || null
             if (boardChanged) {
+                // Invalidate unsent prompts on the authoritative change. FEN
+                // alone misses rewrites, and rechecking legality could still
+                // submit a move selected on the old line.
+                boardScreen.clearMovePrompts()
+                boardScreen.clearAnnotations()
+                boardScreen.resetGameActionControls()
+                if (boardScreen.pendingPremove !== null &&
+                        (gameChanged || !boardScreen.extendsLiveHistory(msg))) {
+                    boardScreen.cancelPremove()
+                }
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
@@ -1849,9 +1862,6 @@ Rectangle {
             boardScreen.canOfferDraw = msg.can_offer_draw || false
             boardScreen.canOfferTakeback = msg.can_offer_takeback || false
             boardScreen.canGiveTime = msg.can_give_time || false
-            if (!boardScreen.canOfferDraw && gameActionsLoader.item) {
-                gameActionsLoader.item.resetDrawOffer()
-            }
             var yourPlayer = msg.your_player || {}
             var opponentPlayer = msg.opponent_player || {}
             boardScreen.yourName = yourPlayer.name || ""
@@ -1865,7 +1875,6 @@ Rectangle {
             boardScreen.opponentTitle = opponentPlayer.title || ""
             boardScreen.opponentProvisional = opponentPlayer.provisional || false
             boardScreen.gameDescription = msg.game_description || ""
-            boardScreen.resetGameActionControls()
             if (boardChanged || (boardScreen.boardNotice !== null && !boardScreen.boardNotice.positionBound)) {
                 boardScreen.boardNotice = null
             }
@@ -1882,10 +1891,6 @@ Rectangle {
             }
             if (moveRequestGate.resolve(boardScreen.gameId, msg.resolved_move_request_id)) {
                 boardScreen.rollbackMovePreview()
-            }
-            if (boardScreen.pendingPremove !== null &&
-                    boardScreen.pendingPremove.gameId !== boardScreen.gameId) {
-                boardScreen.cancelPremove()
             }
             boardScreen.executePendingPremove()
         } else if (msg.type === "PlayerStatuses") {
@@ -1910,7 +1915,6 @@ Rectangle {
                 boardScreen.boardNotice = {text: msg.message, positionBound: true}
             } else if (msg.action === "Berserk") {
                 boardScreen.canBerserk = false
-                if (gameActionsLoader.item) gameActionsLoader.item.resetBerserk()
                 boardScreen.boardNotice = {text: "Berserk activated", positionBound: true}
             } else if (msg.action === "AddTime" && typeof msg.seconds === "number") {
                 boardScreen.boardNotice = {text: msg.seconds + " seconds added to opponent", positionBound: true}
@@ -1968,9 +1972,7 @@ Rectangle {
             boardScreen.rollbackMovePreview()
             moveRequestGate.clear()
             boardScreen.cancelPremove()
-            boardScreen.selectedSquare = ""
-            boardScreen.pendingMoveConfirmation = null
-            boardScreen.pendingPromotion = null
+            boardScreen.clearMovePrompts()
             boardScreen.pendingActionRequest = null
             boardScreen.boardNotice = null
             boardScreen.showGameActions = false

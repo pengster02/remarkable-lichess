@@ -119,12 +119,12 @@ Rectangle {
 
             Text {
                 objectName: "playerNameText"
-                // Reserve the numbers before eliding the name. Shrinking
-                // all text hurts legibility, and wrapping shifts the board.
-                width: Math.floor(Math.min(implicitWidth, Math.max(0, parent.width
+                // Round the natural width up before capping it. Rounding down
+                // truncates fitting names, while uncapped width hides ratings.
+                width: Math.min(Math.ceil(implicitWidth), Math.max(0, parent.width
                     - (titleBadge.visible ? titleBadge.width + parent.spacing : 0)
                     - (ratingLabel.visible ? ratingLabel.width + parent.spacing : 0)
-                    - (materialLabel.visible ? materialLabel.width + parent.spacing : 0))))
+                    - (materialLabel.visible ? materialLabel.width + parent.spacing : 0)))
                 height: parent.height
                 verticalAlignment: Text.AlignVCenter
                 text: playerBar.playerName
