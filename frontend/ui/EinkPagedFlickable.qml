@@ -29,19 +29,18 @@ Item {
     readonly property real scrollProgress: maximumContentY > 0
         ? contentY / maximumContentY
         : 0
-    // Explicit section stops beat per-screen pagers or fragile child discovery:
-    // screens keep layout intent while this control retains one paging policy.
-    readonly property var effectivePageStops: normalizedPageStops()
-    readonly property bool usesPageStops: pageStops && pageStops.length > 0
-    readonly property real requestedLastStop: largestRequestedPageStop()
-    readonly property int currentPage: usesPageStops
-        ? pageIndexFor(contentY) + 1
-        : (pageStep > 0 ? Math.floor(contentY / pageStep) + 1 : 1)
-    readonly property int pageCount: usesPageStops
-        ? effectivePageStops.length
-        : (pageStep > 0
-            ? Math.max(1, Math.ceil(Math.max(contentHeight - viewport.height, 0) / pageStep) + 1)
-            : 1)
+    readonly property real positionTolerance: 0.01
+    readonly property var requestedPageStops: normalizedPageStops()
+    readonly property real requestedLastStop: requestedPageStops[requestedPageStops.length - 1]
+    // One list drives both direction and numbering. Stride arithmetic misses
+    // a partial last page, and section anchors alone can skip long content.
+    readonly property var effectivePageStops: pageOrigins()
+    readonly property int currentPage: pageIndexFor(contentY) + 1
+    readonly property int pageCount: effectivePageStops.length
+
+    onMaximumContentYChanged: {
+        if (contentY > maximumContentY) moveTo(maximumContentY)
+    }
 
     function nearestDarkMode(item) {
         while (item) {
@@ -55,40 +54,55 @@ Item {
         viewport.contentY = Math.max(0, Math.min(pager.maximumContentY, y))
     }
 
-    function largestRequestedPageStop() {
-        var largest = 0
-        if (!pageStops) return largest
-        for (var i = 0; i < pageStops.length; ++i) {
-            var candidate = Number(pageStops[i])
-            if (!isNaN(candidate)) largest = Math.max(largest, candidate)
-        }
-        return largest
-    }
-
     function normalizedPageStops() {
         var stops = [0]
-        if (pageStops) {
-            for (var i = 0; i < pageStops.length; ++i) {
-                var candidate = Number(pageStops[i])
-                if (!isNaN(candidate))
-                    stops.push(Math.max(0, Math.min(maximumContentY, candidate)))
-            }
+        var requested = pager.pageStops || []
+        for (var i = 0; i < requested.length; ++i) {
+            var candidate = Number(requested[i])
+            if (candidate > 0 && candidate < contentHost.height) stops.push(candidate)
         }
         stops.sort(function(a, b) { return a - b })
 
-        var unique = []
-        for (var j = 0; j < stops.length; ++j) {
-            if (unique.length === 0 || Math.abs(stops[j] - unique[unique.length - 1]) > 1)
+        var unique = [0]
+        for (var j = 1; j < stops.length; ++j) {
+            if (stops[j] - unique[unique.length - 1] > pager.positionTolerance)
                 unique.push(stops[j])
         }
         return unique
+    }
+
+    function pageOrigins() {
+        var origins = [0]
+        if (!pager.pagingNeeded || pager.pageHeight < 1) return origins
+
+        var targets = pager.requestedPageStops.slice(1)
+        var last = pager.maximumContentY
+        if (last > pager.requestedLastStop) targets.push(last)
+        // Preserve section starts when the gap fits. Fixed steps everywhere
+        // would move those starts, while jumping straight there can miss rows.
+        var maxGap = pager.requestedPageStops.length > 1 ? pager.pageHeight : pager.pageStep
+        var origin = 0
+        for (var i = 0; i < targets.length; ++i) {
+            var target = targets[i]
+            while (target - origin > maxGap + pager.positionTolerance) {
+                origin += pager.pageStep
+                origins.push(origin)
+            }
+            if (target - origin > pager.positionTolerance) {
+                origins.push(target)
+            } else if (origin > 0) {
+                origins[origins.length - 1] = target
+            }
+            origin = target
+        }
+        return origins
     }
 
     function pageIndexFor(y) {
         var stops = effectivePageStops
         var index = 0
         for (var i = 1; i < stops.length; ++i) {
-            if (stops[i] <= y + 1) index = i
+            if (stops[i] <= y + pager.positionTolerance) index = i
             else break
         }
         return index
@@ -96,21 +110,13 @@ Item {
 
     function pageUp() {
         pager.pageNavigationRequested()
-        if (!usesPageStops) {
-            moveTo(viewport.contentY - pager.pageStep)
-            return
-        }
         var index = pageIndexFor(viewport.contentY)
-        if (effectivePageStops[index] >= viewport.contentY - 1) index--
+        if (effectivePageStops[index] >= viewport.contentY - pager.positionTolerance) index--
         moveTo(effectivePageStops[Math.max(0, index)])
     }
 
     function pageDown() {
         pager.pageNavigationRequested()
-        if (!usesPageStops) {
-            moveTo(viewport.contentY + pager.pageStep)
-            return
-        }
         var index = pageIndexFor(viewport.contentY)
         moveTo(effectivePageStops[Math.min(effectivePageStops.length - 1, index + 1)])
     }
@@ -153,7 +159,7 @@ Item {
             contentWidth: width
             contentHeight: Math.max(
                 contentHost.height,
-                pager.usesPageStops && pager.pagingNeeded
+                pager.pagingNeeded
                     ? pager.requestedLastStop + height
                     : contentHost.height
             )
@@ -177,27 +183,40 @@ Item {
         height: theme.touchTarget
         spacing: theme.spacingSmall
         visible: pager.pagingNeeded
+        readonly property real availableWidth: Math.max(0, width - spacing * 2)
+        readonly property real buttonWidth: (availableWidth - pageNumber.width) / 2
+
+        TextMetrics {
+            id: pageNumberMetrics
+            font: pageNumber.font
+            text: pager.pageCount + " / " + pager.pageCount
+        }
 
         AppButton {
             objectName: "pageUpButton"
             darkMode: pager.darkMode
             compact: true
-            width: Math.max(theme.touchTarget * 2, (pageBar.width - theme.spacingSmall * 2) / 3)
+            width: pageBar.buttonWidth
             height: parent.height
-            enabled: pager.usesPageStops
-                ? pager.currentPage > 1
-                : pager.contentY > 0
+            enabled: pager.contentY > pager.positionTolerance
             text: "Previous"
             onClicked: pager.pageUp()
         }
 
         Text {
-            width: Math.max(theme.touchTarget, (pageBar.width - theme.spacingSmall * 2) / 3)
+            id: pageNumber
+            objectName: "pageNumber"
+            // Share one width budget. Fixed minimums can overflow, and equal
+            // thirds can clip the counter before the buttons need the space.
+            width: Math.min(Math.max(0, pageBar.availableWidth - theme.touchTarget * 2),
+                Math.max(Math.ceil(pageNumberMetrics.advanceWidth), Math.min(pageBar.availableWidth / 3,
+                    pageBar.availableWidth - theme.touchTarget * 4)))
             height: parent.height
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             font.pixelSize: theme.fontLabel
             color: theme.textMuted
+            elide: Text.ElideRight
             text: pager.currentPage + " / " + pager.pageCount
         }
 
@@ -205,11 +224,9 @@ Item {
             objectName: "pageDownButton"
             darkMode: pager.darkMode
             compact: true
-            width: Math.max(theme.touchTarget * 2, (pageBar.width - theme.spacingSmall * 2) / 3)
+            width: pageBar.buttonWidth
             height: parent.height
-            enabled: pager.usesPageStops
-                ? pager.currentPage < pager.pageCount
-                : pager.contentY < pager.maximumContentY
+            enabled: pager.currentPage < pager.pageCount
             text: "Next"
             onClicked: pager.pageDown()
         }

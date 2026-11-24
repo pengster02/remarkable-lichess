@@ -171,6 +171,9 @@ Minimum emulator smoke test:
   same `MoveListRow`; do not reintroduce screen-specific move tokens.
   Game History cards keep result and ratings in view, elide long opponent
   names, and omit the analysis line when the game has no analysis.
+- `EinkPagedFlickable` uses the same page starts for navigation and numbering.
+  It keeps supplied section starts, adds pages across gaps, and reaches the
+  final content. Review can still reveal a particular row between starts.
 - Live play keeps a fixed two-control strip below the board: Actions and Moves.
   Draw/takeback offers and disconnect claims change and highlight the Actions
   label.
