@@ -487,9 +487,17 @@ impl LichessBackend {
         &self,
         replier: &BackendReplier<Self>,
         requested_fen: String,
+        request_id: Option<u32>,
     ) {
         let Some(client) = self.client.clone() else {
-            self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+            let reply = if request_id.is_some() {
+                BackendMessage::CloudEvaluationFailed {
+                    request_id, requested_fen, message: "Not signed in to Lichess".into(),
+                }
+            } else {
+                BackendMessage::TokenInvalid { reason: "no token saved".into() }
+            };
+            self.send(replier, &reply);
             return;
         };
         match client.get_cloud_evaluation(&requested_fen).await {
@@ -498,6 +506,7 @@ impl LichessBackend {
                     self.send(
                         replier,
                         &BackendMessage::CloudEvaluationUnavailable {
+                            request_id,
                             requested_fen,
                         },
                     );
@@ -507,6 +516,7 @@ impl LichessBackend {
                     Ok((_, best_line)) => self.send(
                         replier,
                         &BackendMessage::CloudEvaluation {
+                            request_id,
                             requested_fen,
                             evaluation: CloudEvaluationLine {
                                 eval_cp: pv.cp,
@@ -520,6 +530,7 @@ impl LichessBackend {
                     Err(e) => self.send(
                         replier,
                         &BackendMessage::CloudEvaluationFailed {
+                            request_id,
                             requested_fen,
                             message: format!("couldn't read cloud best line: {e}"),
                         },
@@ -528,11 +539,12 @@ impl LichessBackend {
             }
             Ok(None) => self.send(
                 replier,
-                &BackendMessage::CloudEvaluationUnavailable { requested_fen },
+                &BackendMessage::CloudEvaluationUnavailable { request_id, requested_fen },
             ),
             Err(e) => self.send(
                 replier,
                 &BackendMessage::CloudEvaluationFailed {
+                    request_id,
                     requested_fen,
                     message: e.to_string(),
                 },
@@ -1447,8 +1459,8 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::RequestGameMoves { game_id, request_id } => {
                 self.handle_request_game_moves(replier, game_id, request_id).await
             }
-            FrontendMessage::RequestCloudEvaluation { fen } => {
-                self.handle_request_cloud_evaluation(replier, fen).await
+            FrontendMessage::RequestCloudEvaluation { fen, request_id } => {
+                self.handle_request_cloud_evaluation(replier, fen, request_id).await
             }
             FrontendMessage::RequestAnalysisPosition { fen, request_id } => {
                 self.handle_request_analysis_position(replier, fen, request_id)

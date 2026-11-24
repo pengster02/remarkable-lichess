@@ -146,7 +146,7 @@ pub enum FrontendMessage {
         #[serde(default)]
         request_id: Option<u32>,
     },
-    RequestCloudEvaluation { fen: String },
+    RequestCloudEvaluation { fen: String, request_id: Option<u32> },
     RequestAnalysisPosition { fen: String, request_id: Option<u32> },
     MakeAnalysisMove {
         fen: String,
@@ -480,11 +480,22 @@ pub enum BackendMessage {
     },
     GameMovesFailed { request_id: u32, message: String },
     CloudEvaluation {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
         requested_fen: String,
         evaluation: CloudEvaluationLine,
     },
-    CloudEvaluationUnavailable { requested_fen: String },
-    CloudEvaluationFailed { requested_fen: String, message: String },
+    CloudEvaluationUnavailable {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+        requested_fen: String,
+    },
+    CloudEvaluationFailed {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+        requested_fen: String,
+        message: String,
+    },
     AnalysisPosition {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
@@ -540,10 +551,10 @@ mod tests {
     fn analysis_messages_round_trip() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
-                r#"{"type":"RequestCloudEvaluation","fen":"startpos"}"#
+                r#"{"type":"RequestCloudEvaluation","fen":"startpos","request_id":8}"#
             )
             .unwrap(),
-            FrontendMessage::RequestCloudEvaluation { fen: "startpos".into() }
+            FrontendMessage::RequestCloudEvaluation { fen: "startpos".into(), request_id: Some(8) }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
@@ -595,6 +606,7 @@ mod tests {
         assert!(position_json.contains(r#""requested_fen":"startpos""#));
 
         let cloud_json = serde_json::to_string(&BackendMessage::CloudEvaluation {
+            request_id: Some(8),
             requested_fen: "startpos".into(),
             evaluation: CloudEvaluationLine {
                 eval_cp: Some(24),
@@ -606,6 +618,7 @@ mod tests {
         })
         .unwrap();
         assert!(cloud_json.contains(r#""type":"CloudEvaluation""#));
+        assert!(cloud_json.contains(r#""request_id":8"#));
         assert!(cloud_json.contains(r#""best_line":["e4","e5"]"#));
     }
 

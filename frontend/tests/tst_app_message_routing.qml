@@ -135,6 +135,39 @@ TestCase {
         verify(review.requestExplorationMove("d2", "d4"))
     }
 
+    function test_cloudEvaluationKeepsEachPositionsRequestAndError() {
+        var reviewId = choose("cloud-game")
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: ["e4"], fens: [startFen, afterE4]})
+        var review = screen.item
+        review.requestCloudEvaluation()
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        review.goNext()
+        review.requestCloudEvaluation()
+        var second = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        verify(first.request_id !== second.request_id)
+        var count = endpoint.sentMessages.length
+        review.goPrev()
+        compare(review.cloudEvaluationPhase, "pending")
+        review.requestCloudEvaluation()
+        compare(endpoint.sentMessages.length, count)
+
+        endpoint.reply({type: "CloudEvaluationFailed", requested_fen: afterE4,
+                        request_id: second.request_id, message: "Try this position again"})
+        endpoint.reply({type: "CloudEvaluation", requested_fen: startFen,
+                        request_id: first.request_id, evaluation: {depth: 24, knodes: 50, eval_cp: 10}})
+        compare(review.currentCloudEvaluation().depth, 24)
+        review.goNext()
+        compare(review.cloudEvaluationLabel(), "Cloud evaluation failed: Try this position again")
+
+        review.requestCloudEvaluation()
+        var retry = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply({type: "CloudEvaluationUnavailable", requested_fen: afterE4, request_id: second.request_id})
+        compare(review.cloudEvaluationPhase, "pending")
+        endpoint.reply({type: "CloudEvaluationUnavailable", requested_fen: afterE4, request_id: retry.request_id})
+        compare(review.cloudEvaluationPhase, "unavailable")
+    }
+
     function test_boardOnlyOpensFromAScreenThatExpectsPlay() {
         choose("selected-review")
         endpoint.reply(boardState("background"))
