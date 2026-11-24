@@ -235,6 +235,8 @@ Later runs:
 
 Then open <http://localhost:6080/vnc.html>. The container is named
 `remarkable-lichess-local` and noVNC listens on the host's loopback interface.
+Container replacements reuse Docker caches. Compiled files are scoped to the
+selected checkouts and image.
 
 QR sign-in requires your phone to reach the backend's callback address. For the
 default Docker network, use the token prompt above or the in-app token field.

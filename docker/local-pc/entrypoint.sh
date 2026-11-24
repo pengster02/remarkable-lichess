@@ -5,6 +5,8 @@ APP_SRC="${APP_SRC:-/workspace/remarkable-lichess}"
 APPLOAD_SRC="${APPLOAD_SRC:-/workspace/rm-appload}"
 XOVI_SRC="${XOVI_SRC:-/workspace/xovi}"
 APP_DIR="${APPLOAD_SRC}/applications_root/remarkable-lichess"
+BUILD_ROOT="/tmp/remarkable-lichess-build"
+APPLOAD_BUILD_DIR="${BUILD_ROOT}/appload"
 export REMARKABLE_LICHESS_CONFIG_DIR="${REMARKABLE_LICHESS_CONFIG_DIR:-/tmp/remarkable-lichess-config}"
 
 install -d -m 0700 "$REMARKABLE_LICHESS_CONFIG_DIR"
@@ -19,23 +21,19 @@ fi
 
 echo "==> Building AppLoad PC emulator for Linux"
 export XOVI_REPO="${XOVI_SRC}"
-cd "${APPLOAD_SRC}"
-# Host checkout may contain macOS .o/Makefile artifacts — wipe and regenerate.
-make distclean >/dev/null 2>&1 || true
-make clean >/dev/null 2>&1 || true
-rm -f .qmake.stash Makefile appload
-rm -f ./*.o ./*/*.o ./src/*.o ./src/*/*.o ./moc_*.cpp ./qrc_*.cpp 2>/dev/null || true
-find . -maxdepth 3 \( -name '*.o' -o -name 'moc_*.cpp' -o -name 'qrc_*.cpp' \) -delete 2>/dev/null || true
-rm -rf appload.app
-qmake6 .
+mkdir -p "${APPLOAD_BUILD_DIR}"
+cd "${APPLOAD_BUILD_DIR}"
+# An out-of-tree build keeps host files intact. Cleaning in place deletes host
+# output, and copying the whole source tree makes each rebuild cold.
+qmake6 "${APPLOAD_SRC}/appload.pro"
 make -j"$(nproc)"
-test -x "${APPLOAD_SRC}/appload"
+test -x "${APPLOAD_BUILD_DIR}/appload"
 
 echo "==> Building Linux backend with transport"
 cd "${APP_SRC}/backend"
 # Keep Linux artifacts out of the macOS host target/ tree.
-export CARGO_TARGET_DIR=/tmp/remarkable-lichess-backend-target
-cargo build --release --features transport --bin backend
+export CARGO_TARGET_DIR="${BUILD_ROOT}/backend"
+cargo build --locked --release --features transport --bin backend
 BACKEND_BIN="${CARGO_TARGET_DIR}/release/backend"
 
 echo "==> Building resources.rcc"
@@ -72,7 +70,7 @@ echo "==> Launching AppLoad emulator"
 cd "${APPLOAD_SRC}"
 # Keep the container alive even if the emulator exits; restart for local testing.
 while true; do
-  ./appload remarkable-lichess >>/tmp/appload.log 2>&1 &
+  "${APPLOAD_BUILD_DIR}/appload" remarkable-lichess >>/tmp/appload.log 2>&1 &
   APP_PID=$!
   echo "Ready: open http://localhost:6080/vnc.html (appload pid=${APP_PID})"
   wait "${APP_PID}" || true
