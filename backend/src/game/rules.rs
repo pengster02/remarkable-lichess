@@ -1,4 +1,4 @@
-use crate::protocol::LegalMove;
+use crate::protocol::{HistoryCapture, LegalMove};
 use anyhow::{Context, Result};
 use shakmaty::{
     fen::Fen, san::SanPlus, uci::UciMove, CastlingMode, Chess, Color, EnPassantMode, Position, Role,
@@ -9,6 +9,7 @@ pub struct GameReplay {
     pub move_history: Vec<String>,
     pub position_history: Vec<String>,
     pub initial_in_check: bool,
+    pub capture_history: Vec<HistoryCapture>,
     pub captured_by_white: Vec<String>,
     pub captured_by_black: Vec<String>,
 }
@@ -94,20 +95,12 @@ pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
         vec![Fen::from_position(&pos, EnPassantMode::Legal).to_string()];
     let mut captured_by_white = Vec::new();
     let mut captured_by_black = Vec::new();
-    if moves.trim().is_empty() {
-        return Ok(GameReplay {
-            position: pos,
-            move_history: history,
-            position_history,
-            initial_in_check,
-            captured_by_white,
-            captured_by_black,
-        });
-    }
+    let mut capture_history = Vec::new();
     for uci_str in moves.split_whitespace() {
         let advance = advance_uci_game(&pos, uci_str)?;
         history.push(advance.san);
         if let Some(code) = advance.captured_piece {
+            capture_history.push(HistoryCapture { ply: history.len(), piece: code.clone() });
             if advance.mover == Color::White {
                 captured_by_white.push(code);
             } else {
@@ -122,6 +115,7 @@ pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
         move_history: history,
         position_history,
         initial_in_check,
+        capture_history,
         captured_by_white,
         captured_by_black,
     })
@@ -281,6 +275,10 @@ mod tests {
         let replay = replay_uci_game("startpos", "e2e4 d7d5 e4d5 d8d5").unwrap();
         assert_eq!(replay.captured_by_white, vec!["bP"]);
         assert_eq!(replay.captured_by_black, vec!["wP"]);
+        assert_eq!(replay.capture_history, [
+            HistoryCapture { ply: 3, piece: "bP".into() },
+            HistoryCapture { ply: 4, piece: "wP".into() },
+        ]);
     }
 
     #[test]
@@ -288,6 +286,16 @@ mod tests {
         let replay = replay_uci_game("startpos", "e2e4 a7a6 e4e5 d7d5 e5d6").unwrap();
         assert_eq!(replay.captured_by_white, vec!["bP"]);
         assert!(replay.captured_by_black.is_empty());
+        assert_eq!(replay.capture_history, [HistoryCapture { ply: 5, piece: "bP".into() }]);
+    }
+
+    #[test]
+    fn replay_records_the_captured_role_instead_of_the_promoted_pawn() {
+        let start = "k6r/6P1/8/8/8/8/8/4K3 w - - 0 1";
+        let capture = replay_uci_game(start, "g7h8n").unwrap();
+        assert_eq!(capture.capture_history, [HistoryCapture { ply: 1, piece: "bR".into() }]);
+        let recapture = replay_uci_game(start, "g7g8n h8g8").unwrap();
+        assert_eq!(recapture.capture_history, [HistoryCapture { ply: 2, piece: "wN".into() }]);
     }
 
     #[test]

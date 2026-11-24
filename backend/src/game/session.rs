@@ -2,8 +2,8 @@ use crate::game::outcome::outcome;
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{
-    BackendMessage, GameAction, GameActionRequest, LegalMove, OfferIntent, OfferRequest,
-    OpponentDeparture, PlayerIdentity, PlayerStatusSummary, PositionId,
+    BackendMessage, CaptureHistoryUpdate, GameAction, GameActionRequest, HistoryCapture,
+    LegalMove, OfferIntent, OfferRequest, OpponentDeparture, PlayerIdentity, PlayerStatusSummary, PositionId,
 };
 use shakmaty::{Chess, Position};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -42,6 +42,7 @@ pub struct GameSession {
     // SAN per move (e.g. "Nf3", "O-O", "Qxh4#"), in play order.
     pub move_history: Vec<String>,
     pub position_history: Vec<String>,
+    capture_history: Vec<HistoryCapture>,
     pub captured_by_white: Vec<String>,
     pub captured_by_black: Vec<String>,
     // Fixed for the life of the game (unlike everything above) -- computed once
@@ -190,14 +191,22 @@ fn to_board_state(
 ) -> BackendMessage {
     use shakmaty::Position;
     let state = &session.state;
-    let (move_history, position_history, appended_move) = match history {
+    let (move_history, position_history, appended_move, capture_update) = match history {
         HistoryDelivery::Full => (
             Some(session.move_history.clone().into_boxed_slice()),
             Some(session.position_history.clone().into_boxed_slice()),
             None,
+            Some(CaptureHistoryUpdate::Full {
+                capture_history: session.capture_history.clone().into_boxed_slice(),
+            }),
         ),
-        HistoryDelivery::Append(san) => (None, None, Some(Box::<str>::from(san))),
-        HistoryDelivery::Unchanged => (None, None, None),
+        HistoryDelivery::Append(san) => {
+            let capture = session.capture_history.last()
+                .filter(|capture| capture.ply == session.move_history.len())
+                .map(|capture| CaptureHistoryUpdate::Append { appended_capture: capture.piece.clone() });
+            (None, None, Some(Box::<str>::from(san)), capture)
+        }
+        HistoryDelivery::Unchanged => (None, None, None, None),
     };
     let move_count = state.moves.split_whitespace().count();
     let offers = session.game_offers();
@@ -253,6 +262,7 @@ fn to_board_state(
             && !session.is_tournament
             && session.opponent_is_human
             && session.initial_clock_ms.is_some(),
+        capture_update: capture_update.map(Box::new),
         move_history,
         initial_in_check: position_history.as_ref().map(|_| session.initial_in_check),
         position_history,
@@ -325,6 +335,7 @@ impl GameSession {
             your_color,
             move_history: replay.move_history,
             position_history: replay.position_history,
+            capture_history: replay.capture_history,
             captured_by_white: replay.captured_by_white,
             captured_by_black: replay.captured_by_black,
             your_player: player_identity(local_player),
@@ -453,6 +464,10 @@ impl GameSession {
                 self.move_history.push(advance.san);
                 self.position_history.push(advance.fen);
                 if let Some(piece) = advance.captured_piece {
+                    self.capture_history.push(HistoryCapture {
+                        ply: self.move_history.len(),
+                        piece: piece.clone(),
+                    });
                     if advance.mover == shakmaty::Color::White {
                         self.captured_by_white.push(piece);
                     } else {
@@ -466,6 +481,7 @@ impl GameSession {
                 self.position = replay.position;
                 self.move_history = replay.move_history;
                 self.position_history = replay.position_history;
+                self.capture_history = replay.capture_history;
                 self.captured_by_white = replay.captured_by_white;
                 self.captured_by_black = replay.captured_by_black;
                 Change::Rebuilt
@@ -815,6 +831,34 @@ mod tests {
         assert!(matches!(session.apply_state_update(state).unwrap(), BackendMessage::BoardState {
             initial_in_check: Some(true), position_history: Some(ref fens), ..
         } if fens.len() == 2 && fens[0] == full.initial_fen));
+    }
+
+    #[test]
+    fn capture_history_is_sparse_across_append_clock_and_takeback() {
+        let full = sample_full("e2e4 d7d5");
+        let (mut session, initial) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let wire = |message| serde_json::to_value(message).unwrap();
+        assert_eq!(wire(initial)["capture_history"], serde_json::json!([]));
+        let mut state = full.state;
+        for (uci, piece) in [(" e4d5", "bP"), (" d8d5", "wP")] {
+            state.moves.push_str(uci);
+            let append = wire(session.apply_state_update(state.clone()).unwrap());
+            assert_eq!(append["appended_capture"], piece);
+            assert!(append.get("capture_history").is_none());
+        }
+        let resumed = wire(session.board_state());
+        assert_eq!(resumed["capture_history"], serde_json::json!([
+            {"ply": 3, "piece": "bP"}, {"ply": 4, "piece": "wP"}
+        ]));
+        assert!(resumed.get("appended_capture").is_none());
+        state.btime -= 1_000;
+        let clock = wire(session.apply_state_update(state.clone()).unwrap());
+        assert!(clock.get("capture_history").is_none() && clock.get("appended_capture").is_none());
+
+        state.moves = "e2e4 d7d5 e4d5".into();
+        let takeback = wire(session.apply_state_update(state).unwrap());
+        assert_eq!(takeback["capture_history"], serde_json::json!([{"ply": 3, "piece": "bP"}]));
+        assert!(takeback.get("appended_capture").is_none());
     }
 
     #[test]

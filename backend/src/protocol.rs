@@ -22,6 +22,19 @@ pub struct LegalMove {
     pub promotion: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HistoryCapture {
+    pub ply: usize,
+    pub piece: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CaptureHistoryUpdate {
+    Full { capture_history: Box<[HistoryCapture]> },
+    Append { appended_capture: String },
+}
+
 // A compact integer is exact in QML. FEN alone repeats across lines, and
 // sending the whole history with each move would duplicate the board snapshot.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -529,6 +542,12 @@ pub enum BackendMessage {
         initial_in_check: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         appended_move: Option<Box<str>>,
+        // Sparse capture events come from replay. FEN counts cannot distinguish
+        // captures from promotions, and per-ply trays duplicate earlier events.
+        // Box the update together. Separate fields enlarge every message, and
+        // boxing unrelated fields would change existing callers.
+        #[serde(flatten, skip_serializing_if = "Option::is_none")]
+        capture_update: Option<Box<CaptureHistoryUpdate>>,
         captured_by_white: Box<[String]>,
         captured_by_black: Box<[String]>,
         // Confirmed against lichess-org/api's GameEventPlayer.yaml. Fixed for the
@@ -1124,6 +1143,7 @@ mod tests {
             position_history: Some(vec!["startpos".into()].into_boxed_slice()),
             initial_in_check: Some(false),
             appended_move: None,
+            capture_update: Some(Box::new(CaptureHistoryUpdate::Full { capture_history: Box::default() })),
             captured_by_white: vec!["bP".into()].into_boxed_slice(),
             captured_by_black: vec![].into_boxed_slice(),
             your_player: Box::new(PlayerIdentity {
@@ -1152,6 +1172,8 @@ mod tests {
         assert!(json.contains(r#""position_id":4294967294"#));
         assert!(json.contains(r#""game_stream_connected":false"#));
         assert!(json.contains(r#""captured_by_white":["bP"]"#));
+        assert!(json.contains(r#""capture_history":[]"#));
+        assert!(!json.contains("appended_capture"));
         assert!(json.contains(r#""fen":"startpos""#));
         assert!(json.contains(r#""initial_in_check":false"#));
         assert!(json.contains(r#""your_player":{"id":"alice","name":"Alice","title":"IM","rating":1700,"provisional":true}"#));
