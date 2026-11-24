@@ -440,11 +440,13 @@ impl GameSession {
                 match apply_uci_move(&self.position, &uci) {
                     Ok(_) => Ok(uci),
                     Err(_) => Err(Box::new(BackendMessage::MoveRejected {
+                        game_id: Some(self.game_id.clone()),
                         reason: "stale board state, please retry".into(),
                     })),
                 }
             }
             None => Err(Box::new(BackendMessage::MoveRejected {
+                game_id: Some(self.game_id.clone()),
                 reason: "not a legal move".into(),
             })),
         }

@@ -372,33 +372,28 @@ Rectangle {
                 }
             } else if (msg.type === "BoardState") {
                 if (!root.hasToken) return
-                // Never force-navigate away from Home: a user who explicitly went
-                // back to Home (or never left it yet) should stay there even if a
-                // still-running per-game stream keeps delivering messages -- this
-                // was the root cause of "Back to Home doesn't work" (confirmed via
-                // the PC emulator: any lingering game message snapped the screen
-                // back to Board with no way out). Every other screen (Setup, Seek,
-                // Board itself) still auto-advances to Board normally, since that's
-                // the desired flow for a freshly-started/still-loading game.
-                var showingHome = screenLoader.source.toString().indexOf("HomeScreen") !== -1
-                var isExpectedHomeGame = root.expectedHomeGameId.length > 0 &&
-                    msg.game_id === root.expectedHomeGameId
-                if (!showingHome || isExpectedHomeGame) {
-                    root.expectedHomeGameId = ""
-                    if (screenLoader.source.toString().indexOf("BoardScreen") === -1) {
-                        screenLoader.source = "BoardScreen.qml"
-                    } else if (root.pendingReview &&
-                               root.pendingReview.gameId !== msg.game_id) {
-                        root.pendingReview = null
-                    }
-                    if (screenLoader.item && screenLoader.item.handleMessage) {
-                        screenLoader.item.handleMessage(msg)
-                    }
+                // Opening a board requires play intent. Automatically opening one
+                // interrupts review, while an explicit Resume for every seek adds a tap.
+                var screen = screenLoader.source.toString().split("/").pop()
+                var showingBoard = screen === "BoardScreen.qml"
+                var expectingHomeGame = screen === "HomeScreen.qml" &&
+                    msg.game_id === root.expectedHomeGameId && root.expectedHomeGameId.length > 0
+                var awaitingSeek = screen === "SeekScreen.qml" && screenLoader.item &&
+                    screenLoader.item.awaitingGame
+                if (!showingBoard && !expectingHomeGame && !awaitingSeek) return
+                if (!showingBoard) {
+                    screenLoader.source = "BoardScreen.qml"
+                } else if (root.pendingReview && root.pendingReview.gameId !== msg.game_id) {
+                    root.pendingReview = null
+                }
+                if (screenLoader.item && screenLoader.item.handleMessage) {
+                    screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "LogoutFailed" ||
                        msg.type === "GameOver" || msg.type === "MoveRejected" ||
                        msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
                        msg.type === "RatingDiff" || msg.type === "GameActionCompleted" ||
+                       msg.type === "GameActionFailed" ||
                        msg.type === "MovePreview" || msg.type === "MoveSubmitted") {
                 // Deliberately never navigates on its own (confirmed via the PC
                 // emulator: a bare reconnect message with no real game yet threw the
@@ -436,7 +431,10 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         source: "StartupScreen.qml"
-        onSourceChanged: root.pendingReview = null
+        onSourceChanged: {
+            root.pendingReview = null
+            root.expectedHomeGameId = ""
+        }
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend

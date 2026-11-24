@@ -34,6 +34,15 @@ TestCase {
                         moves: [move], fens: [startFen, startFen]})
     }
 
+    function boardState(gameId) {
+        return {
+            type: "BoardState", game_id: gameId, fen: startFen,
+            turn: "white", your_color: "white",
+            white_time_ms: 600000, black_time_ms: 600000,
+            legal_moves: [], position_history: [startFen], move_history: []
+        }
+    }
+
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length
@@ -72,6 +81,43 @@ TestCase {
     function test_terminalNoticeCannotNavAwayFromHistory() {
         endpoint.reply({type: "GameOver", game_id: "other", result: "draw", reason: "Draw"})
         verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
+    }
+
+    function test_boardOnlyOpensFromAScreenThatExpectsPlay() {
+        choose("selected-review")
+        endpoint.reply(boardState("background"))
+        verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
+        verify(screen.item.openingReview)
+
+        app.navigateTo("SeekScreen.qml")
+        endpoint.reply(boardState("background"))
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+        screen.item.submitComputerGame()
+        verify(screen.item.awaitingGame)
+        endpoint.reply(boardState("requested"))
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        compare(screen.item.gameId, "requested")
+    }
+
+    function test_onlyAnActionReplyForThisBoardChangesItsState() {
+        app.navigateTo("HomeScreen.qml")
+        app.expectNextGame("active")
+        endpoint.reply(boardState("active"))
+        screen.item.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.expected_game_id, "active")
+
+        endpoint.reply({type: "GameActionCompleted", game_id: "previous", action: "AddTime"})
+        compare(screen.item.pendingGameAction, "AddTime")
+        compare(screen.item.statusText, "")
+        endpoint.reply({type: "OpponentGone", game_id: "previous", gone: true})
+        verify(!screen.item.opponentGone)
+        endpoint.reply({type: "MoveRejected", game_id: "previous", reason: "old move"})
+        compare(screen.item.statusText, "")
+
+        endpoint.reply({type: "GameActionFailed", game_id: "active", action: "AddTime", message: "try again"})
+        compare(screen.item.pendingGameAction, "")
+        compare(screen.item.statusText, "try again")
     }
 
     function test_startupRetryKeepsTheSavedSignInFlow() {
@@ -144,7 +190,9 @@ TestCase {
         endpoint.reply({type: "RatingDiff", game_id: "g1", rating_diff: -5})
         compare(screen.item.statusText, "You lost · Checkmate · -5 rating")
         endpoint.reply({type: "BoardState", game_id: "g1", fen: startFen})
+        endpoint.reply({type: "MoveRejected", game_id: "g1", reason: "late HTTP reply"})
         verify(screen.item.gameOver)
         compare(screen.item.fen, finalFen)
+        compare(screen.item.statusText, "You lost · Checkmate · -5 rating")
     }
 }

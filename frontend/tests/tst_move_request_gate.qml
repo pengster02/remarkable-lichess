@@ -28,6 +28,7 @@ TestCase {
     function test_submitBlocksDuplicates() {
         verify(gate.submit("e2", "e4", null))
         compare(submitSpy.count, 1)
+        compare(submitSpy.signalArguments[0][0].expected_game_id, "g1")
         compare(gate.pending.from, "e2")
         verify(!gate.submit("d2", "d4", null))
         compare(submitSpy.count, 1)
