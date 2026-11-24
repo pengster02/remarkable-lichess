@@ -286,6 +286,12 @@ Rectangle {
         return chessDisplay.moveRows(boardScreen.moveHistory, [], [], boardScreen.positionHistory[0])
     }
 
+    function sameHistory(incoming, current) {
+        return incoming.length === current.length && incoming.every(function (entry, index) {
+            return entry === current[index]
+        })
+    }
+
     function showHistoryPosition(index) {
         if (boardScreen.positionHistory.length === 0) return
         var bounded = Math.max(0, Math.min(index, boardScreen.positionHistory.length - 1))
@@ -806,7 +812,7 @@ Rectangle {
     }
 
     function onBoardGesture(from, to) {
-        if (from === "" || to === "") return
+        if (from === "" || to === "" || boardScreen.viewingHistory) return
         if (from === to) {
             boardScreen.onSquareTapped(to)
             return
@@ -1713,10 +1719,20 @@ Rectangle {
             boardScreen.streamError = ""
             var positionChanged = boardScreen.liveFen !== msg.fen ||
                 gameChanged
+            var fullPositions = msg.position_history
+            var fullMoves = msg.move_history
+            // A transposition can keep the FEN and change the line. Applying
+            // every full snapshot interrupts browsing, while FEN alone misses it.
+            var rewrittenHistory = !positionChanged && fullPositions && fullMoves &&
+                fullPositions.length === fullMoves.length + 1 &&
+                fullPositions[fullPositions.length - 1] === msg.fen &&
+                (!boardScreen.sameHistory(fullMoves, boardScreen.moveHistory) ||
+                 !boardScreen.sameHistory(fullPositions, boardScreen.positionHistory))
+            var boardChanged = positionChanged || rewrittenHistory
             var previewConfirmed = boardScreen.previewFen.length > 0 &&
                 boardScreen.previewFen === msg.fen &&
                 boardScreen.gameId === nextGameId
-            if (boardScreen.liveFen !== "" && positionChanged && !previewConfirmed) {
+            if (boardScreen.liveFen !== "" && boardChanged && !previewConfirmed) {
                 var refreshSquares = boardScreen.changedSquaresBetweenFens(boardScreen.liveFen, msg.fen)
                 if (boardScreen.lastMove !== null) {
                     boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[0])
@@ -1734,7 +1750,7 @@ Rectangle {
                 boardScreen.flashSquares = refreshSquares
                 boardFlashTimer.restart()
             }
-            if (positionChanged) boardScreen.clearAnnotations()
+            if (boardChanged) boardScreen.clearAnnotations()
             if (gameChanged) {
                 boardScreen.resetPlayerStatuses()
                 boardScreen.pendingRatingDiffText = ""
@@ -1743,7 +1759,7 @@ Rectangle {
                 boardScreen.claimWinInSeconds = 0
             }
             boardScreen.gameId = nextGameId
-            if (positionChanged) {
+            if (boardChanged) {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
@@ -1751,9 +1767,9 @@ Rectangle {
                 // replaces our copy; a normal one-move advance sends neither array,
                 // just appended_move, so we grow our own copy by this message's fen
                 // and SAN (see backend protocol.rs BoardState).
-                if (msg.position_history !== undefined && msg.position_history !== null) {
-                    boardScreen.positionHistory = msg.position_history
-                    boardScreen.moveHistory = msg.move_history || []
+                if (fullPositions !== undefined && fullPositions !== null) {
+                    boardScreen.positionHistory = fullPositions
+                    boardScreen.moveHistory = fullMoves || []
                 } else {
                     boardScreen.positionHistory =
                         boardScreen.positionHistory.concat([msg.fen])
