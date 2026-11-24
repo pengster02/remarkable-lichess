@@ -637,6 +637,41 @@ TestCase {
         compare(screen.item.statusText, "Draw · 0 rating")
     }
 
+    function test_reviewRating_data() {
+        return [{tag: "event during export", source: "pending", expected: 0},
+                {tag: "event after export", source: "loaded", expected: -7},
+                {tag: "export only", source: "export", expected: 6}]
+    }
+
+    function test_reviewRating(data) {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(snapshot)
+        findChild(screen.item, "reviewFinishedGameButton").clicked()
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "RequestGameMoves")
+
+        var rating = {type: "RatingDiff", game_id: "finished", rating_diff: data.expected}
+        if (data.source === "pending") endpoint.reply(rating)
+        endpoint.reply({type: "RatingDiff", game_id: "other", rating_diff: 90})
+        var reply = {type: "GameMoves", request_id: request.request_id,
+                     moves: ["e4"], fens: [startFen, startFen]}
+        if (data.source === "export") reply.rating_diff = data.expected
+        endpoint.reply(reply)
+        verify(String(screen.source).endsWith("GameReviewScreen.qml"))
+        var review = screen.item
+        review.goNext()
+        if (data.source === "loaded") {
+            compare(review.game.rating_diff, null)
+            endpoint.reply(rating)
+        }
+        endpoint.reply({type: "RatingDiff", game_id: "other", rating_diff: 91})
+        compare(review.game.rating_diff, data.expected)
+        compare(review.currentIndex, 1)
+    }
+
     function test_playerStatusesReachOnlyTheSelectedBoardAndSurviveAnUpdate() {
         app.navigateTo("HomeScreen.qml")
         app.openGame("selected")
