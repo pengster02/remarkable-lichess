@@ -140,6 +140,16 @@ Item {
         moveTo(effectivePageStops[Math.min(effectivePageStops.length - 1, index + 1)])
     }
 
+    function showPageContaining(y, itemHeight) {
+        // Page origins keep Prev and Next aligned. Scrolling to the row can split adjacent rows, while a fixed row count misses layout changes.
+        var stops = effectivePageStops
+        var index = pageIndexFor(y)
+        while (index > 0 && y + itemHeight <= stops[index - 1] + pageHeight + positionTolerance) {
+            index--
+        }
+        moveTo(stops[index])
+    }
+
     function reveal(y, itemHeight) {
         // No-op when the row is already fully on screen -- avoids a contentY
         // write (and a full Content refresh) on every Prev/Next in review.
