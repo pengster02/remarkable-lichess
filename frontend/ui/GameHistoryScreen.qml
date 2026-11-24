@@ -184,7 +184,10 @@ Rectangle {
                 model: gameHistoryScreen.games
 
                 Rectangle {
+                id: gameCard
+                objectName: "historyGameRow"
                 required property var modelData
+                readonly property var analysis: modelData.your_analysis || null
                 width: parent.width
                 // Never thinner than the shared list-row touch floor, however
                 // little text a row happens to have.
@@ -220,28 +223,68 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: theme.spacingXs
 
-                    Row {
+                    Flow {
+                        id: gameHeading
+                        width: parent.width
                         spacing: theme.spacingXs
-                        Text {
-                            text: chessDisplay.resultLabel(modelData.result)
-                            font.pixelSize: theme.fontBody
-                            font.bold: true
-                            color: gameHistoryScreen.resultColor(modelData.result)
+                        Row {
+                            id: resultRow
+                            spacing: theme.spacingXs
+
+                            Text {
+                                objectName: "historyResult"
+                                width: Math.min(Math.ceil(implicitWidth), Math.max(0, gameHeading.width -
+                                    (ratingChange.visible ? ratingChange.width + resultRow.spacing : 0)))
+                                text: chessDisplay.resultLabel(modelData.result)
+                                font.pixelSize: theme.fontBody
+                                font.bold: true
+                                elide: Text.ElideRight
+                                color: gameHistoryScreen.resultColor(modelData.result)
+                            }
+
+                            Text {
+                                id: ratingChange
+                                objectName: "historyRatingChange"
+                                width: Math.ceil(implicitWidth)
+                                visible: modelData.rating_diff !== null && modelData.rating_diff !== undefined
+                                text: visible ? (modelData.rating_diff > 0 ? "+" : "") + modelData.rating_diff : ""
+                                font.pixelSize: theme.fontBody
+                                color: modelData.rating_diff > 0 ? theme.winText
+                                    : (modelData.rating_diff < 0 ? theme.lossText : theme.textMuted)
+                            }
                         }
-                        // Your own rating change from this one game (rated games
-                        // only -- Lichess never sends this for a casual game) --
-                        // same "+8"/"-12" convention Lichess's own game list uses.
-                        Text {
-                            visible: modelData.rating_diff !== null && modelData.rating_diff !== undefined
-                            text: modelData.rating_diff > 0 ? ("+" + modelData.rating_diff) : ("" + modelData.rating_diff)
-                            font.pixelSize: theme.fontBody
-                            color: modelData.rating_diff > 0 ? theme.winText : theme.lossText
-                        }
-                        Text {
-                            text: "vs " + (modelData.opponent_name || "Opponent") +
-                                  (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "")
-                            font.pixelSize: theme.fontBody
-                            color: theme.text
+
+                        Row {
+                            id: opponentRow
+                            spacing: theme.spacingXs
+                            readonly property real inlineWidth: gameHeading.width - resultRow.width - gameHeading.spacing
+                            readonly property real ratingSpace: opponentRating.visible ? opponentRating.width + spacing : 0
+                            // Let the identity wrap as a unit on narrow rows. Smaller text
+                            // hurts legibility and a permanent second line wastes space.
+                            readonly property real availableWidth: inlineWidth >= ratingSpace + theme.fontBody * 3
+                                ? inlineWidth : gameHeading.width
+
+                            Text {
+                                objectName: "historyOpponentName"
+                                // Cap only the name after rounding up. A shared label can
+                                // hide the rating, and rounding down clips fitting names.
+                                width: Math.min(Math.ceil(implicitWidth), Math.max(0, opponentRow.availableWidth -
+                                    opponentRow.ratingSpace))
+                                text: "vs " + (modelData.opponent_name || "Opponent")
+                                font.pixelSize: theme.fontBody
+                                elide: Text.ElideRight
+                                color: theme.text
+                            }
+
+                            Text {
+                                id: opponentRating
+                                objectName: "historyOpponentRating"
+                                width: Math.ceil(implicitWidth)
+                                text: modelData.opponent_rating ? "(" + modelData.opponent_rating + ")" : ""
+                                visible: text.length > 0
+                                font.pixelSize: theme.fontBody
+                                color: theme.text
+                            }
                         }
                     }
 
@@ -261,14 +304,15 @@ Rectangle {
                     // Lichess's computer analysis (most never are) -- same
                     // your_analysis field GameReviewScreen's own header shows.
                     Text {
-                        visible: modelData.your_analysis
-                        text: modelData.your_analysis
+                        objectName: "historyAnalysis"
+                        visible: text.length > 0
+                        text: gameCard.analysis
                             ? "Accuracy " +
-                              (modelData.your_analysis.accuracy !== null && modelData.your_analysis.accuracy !== undefined
-                                  ? modelData.your_analysis.accuracy + "%"
+                              (gameCard.analysis.accuracy !== null && gameCard.analysis.accuracy !== undefined
+                                  ? gameCard.analysis.accuracy + "%"
                                   : "n/a") +
-                              " · " + modelData.your_analysis.blunders + " blunders, " +
-                              modelData.your_analysis.mistakes + " mistakes"
+                              " · " + gameCard.analysis.blunders + " blunders, " +
+                              gameCard.analysis.mistakes + " mistakes"
                             : ""
                         font.pixelSize: theme.fontSmall
                         wrapMode: Text.WordWrap
