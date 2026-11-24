@@ -18,6 +18,7 @@ Item {
     readonly property bool pagingNeeded: contentHost.height > pager.height + 1
     readonly property bool continuousScrollingEnabled: viewport.interactive
     readonly property real pageHeight: viewport.height
+    readonly property real pageControlsHeight: pageBar.height + theme.spacingXs
     readonly property real pageStep: Math.max(1, viewport.height - theme.spacingSmall)
     readonly property real maximumContentY: Math.max(
         0,

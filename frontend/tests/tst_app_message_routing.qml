@@ -267,6 +267,107 @@ TestCase {
         tryVerify(function() { return findChild(review, "candidateMoveRow") === null })
     }
 
+    function test_archiveReplayPagesWholeMoveRows_data() {
+        return [
+            {tag: "Paper Pro Move timed", width: 954, height: 1696, timedPlies: 24},
+            {tag: "Paper Pro timed", width: 1620, height: 2160, timedPlies: 24},
+            {tag: "Paper Pro Move mixed", width: 954, height: 1696, timedPlies: 9},
+            {tag: "Paper Pro Move untimed", width: 954, height: 1696, timedPlies: 0}
+        ]
+    }
+
+    function test_archiveReplayPagesWholeMoveRows(data) {
+        width = data.width
+        height = data.height
+        var requestId = choose("score-sheet")
+        var moves = []
+        var fens = [startFen]
+        var clocks = []
+        for (var i = 0; i < 24; i++) {
+            moves.push(["Nf3", "Nf6", "Ng1", "Ng8"][i % 4])
+            fens.push(startFen)
+            if (i < data.timedPlies) clocks.push(600000 - i * 1000)
+        }
+        endpoint.reply({type: "GameMoves", request_id: requestId, moves: moves, fens: fens, clock_ms: clocks})
+        var review = screen.item
+        verify(waitForRendering(review))
+        var pager = findChild(review, "reviewMoveList")
+        var rows = []
+        function collectRows(item) {
+            if (item.objectName === "archiveMoveRow") rows.push(item)
+            for (var i = 0; i < item.children.length; i++) collectRows(item.children[i])
+        }
+        collectRows(pager)
+        compare(rows.length, 12)
+        function rowFits(row) {
+            var y = row.mapToItem(pager, 0, 0).y
+            return y >= -0.5 && y + row.height <= pager.pageHeight + 0.5
+        }
+        var next = findChild(pager, "pageDownButton")
+        var previous = findChild(pager, "pageUpButton")
+        var seenRows = {}
+        verify(pager.pageCount > 1)
+        for (var page = 1; page <= pager.pageCount; page++) {
+            compare(pager.currentPage, page)
+            for (var row = 0; row < rows.length; row++) {
+                if (!rowFits(rows[row])) continue
+                compare(rows[row].hasClock, row * 2 < data.timedPlies)
+                seenRows[row] = true
+            }
+            if (page < pager.pageCount) mouseClick(next, next.width / 2, next.height / 2)
+        }
+        compare(Object.keys(seenRows).length, rows.length)
+        for (page = pager.pageCount - 1; page > 0; page--) {
+            mouseClick(previous, previous.width / 2, previous.height / 2)
+            compare(pager.currentPage, page)
+        }
+
+        review.goLast()
+        tryVerify(function() { return rowFits(rows[11]) })
+        verify(findChild(rows[11], "blackMoveCell").isCurrent)
+        var white = findChild(rows[11], "whiteMoveCell")
+        mouseClick(white, white.width / 2, white.height / 2)
+        compare(review.currentIndex, 23)
+        verify(white.isCurrent)
+        review.goFirst()
+        tryCompare(pager, "contentY", 0)
+    }
+
+    function test_denseArchiveReplayKeepsATimedRowAndBothControlsUsable() {
+        screen.item.selectGameForReview({game_id: "dense-sheet", opponent_name: "Opponent",
+                                        opponent_rating: 1660, rating_diff: 6,
+                                        result: "win", speed: "rapid", rated: true, termination: "mate",
+                                        opening_name: "Italian Game: Giuoco Pianissimo, Italian Four Knights Variation",
+                                        created_at_ms: 1795500619000, your_color: "white",
+                                        your_analysis: {accuracy: 92, inaccuracies: 1, mistakes: 1, blunders: 0}})
+        var requestId = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        var moves = ["Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6"]
+        endpoint.reply({type: "GameMoves", request_id: requestId, moves: moves,
+                        fens: [startFen, startFen, startFen, startFen, startFen, startFen, startFen],
+                        clock_ms: [600000, 600000, 590000, 590000, 580000, 580000],
+                        analysis: [{eval_cp: 12, judgment: "Inaccuracy", judgment_comment: "Inaccuracy. d4 was best."}]})
+        var review = screen.item
+        review.goNext()
+        review.requestCloudEvaluation()
+        var cloud = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply({type: "CloudEvaluation", request_id: cloud.request_id, requested_fen: cloud.fen,
+                        evaluation: {depth: 29, knodes: 22000, eval_cp: 12, best_line: ["e4"]}})
+        verify(waitForRendering(review))
+        var pager = findChild(review, "reviewMoveList")
+        var row = findChild(pager, "archiveMoveRow")
+        verify(row.hasClock)
+        verify(pager.pageHeight >= row.height)
+        verify(findChild(review, "cloudBestLineButton").visible)
+        verify(findChild(review, "reviewMoveJudgment").visible)
+        var next = findChild(pager, "pageDownButton")
+        var previous = findChild(pager, "pageUpButton")
+        mouseClick(next, next.width / 2, next.height / 2)
+        compare(pager.currentPage, 2)
+        mouseClick(previous, previous.width / 2, previous.height / 2)
+        compare(pager.currentPage, 1)
+        compare(review.currentIndex, 1)
+    }
+
     function test_exploreStatusReportsFailuresAndCheckmateAlongsideTheCandidate() {
         var base = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1"
         var afterMate = "7k/6Q1/6K1/8/8/8/8/8 b - - 1 1"

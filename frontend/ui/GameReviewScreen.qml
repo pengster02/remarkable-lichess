@@ -671,8 +671,15 @@ Rectangle {
         }
 
         Item {
+            id: boardSection
             width: parent.width
             height: grid.height
+            // Reserve a complete row before sizing the board. Hiding metadata
+            // loses context, and a fixed smaller board wastes room on quiet screens.
+            readonly property real availableHeight: backButton.y - boardArea.y - y -
+                theme.touchTarget - boardArea.spacing -
+                (fileLabels.visible ? fileLabels.height + boardArea.spacing : 0) -
+                moveList.anchors.topMargin - moveList.anchors.bottomMargin - moveList.minimumUsableHeight
 
             Column {
                 id: rankLabels
@@ -708,7 +715,8 @@ Rectangle {
                 rows: 8
                 width: Math.max(0, Math.min(
                     boardArea.width - rankLabels.width - theme.spacingXs,
-                    gameReviewScreen.height * 0.42
+                    gameReviewScreen.height * 0.42,
+                    boardSection.availableHeight
                 ))
                 height: width
 
@@ -776,6 +784,7 @@ Rectangle {
         }
 
         Row {
+            id: fileLabels
             objectName: "boardFileLabels"
             x: boardSurface.x
             width: grid.width
@@ -940,11 +949,15 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: moveRowsColumn.height
-        onPageHeightChanged: updateMovePageStops()
+        readonly property real minimumUsableHeight: Math.min(contentHeight, pageControlsHeight +
+            (gameReviewScreen.clockMs.length > 0 ? theme.moveRowWithClockHeight : theme.touchTarget))
+        onPageHeightChanged: {
+            updateMovePageStops()
+            Qt.callLater(revealCurrentMove)
+        }
 
         function updateMovePageStops() {
-            if (!moveRowsColumn || !candidateRepeater) return
-            pageStops = candidateRepeater.count > 0 ? rowPageStops(moveRowsColumn.children) : []
+            if (moveRowsColumn) pageStops = rowPageStops(moveRowsColumn.children)
         }
 
         function revealCurrentMove() {
