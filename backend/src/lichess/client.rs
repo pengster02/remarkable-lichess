@@ -609,52 +609,31 @@ impl LichessClient {
 fn response_to_lines(
     resp: reqwest::Response,
 ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>> {
-    lines_from_chunks(Box::pin(
-        resp.bytes_stream()
-            .filter_map(|chunk| async move {
-                match chunk {
-                    Ok(bytes) => Some(bytes),
-                    // A mid-stream transport error otherwise looked identical to a
-                    // clean close; log it so a dropped stream is at least diagnosable.
-                    Err(error) => {
-                        log::warn!("stream chunk read error: {error}");
-                        None
-                    }
-                }
-            })
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
-    ))
+    lines_from_chunks(resp.bytes_stream())
 }
 
-/// Reassembles NDJSON lines from a stream of raw chunk texts -- unlike
-/// calling `.lines()` on each chunk independently (the previous approach
-/// here), this survives a line split across two chunks. That split is a
-/// real, eventual certainty on Lichess's held-open board/event streams: HTTP
-/// chunk boundaries have no relationship to `\n` boundaries, so a
-/// `gameFull`/`gameState` line straddling one produced two unparseable JSON
-/// fragments (each silently dropped by `parse_ndjson_line`) -- missed
-/// moves/game-over events in a long game, with no visible symptom beyond the
-/// board just not updating. Fixed by carrying the trailing partial line
-/// across chunks and only ever emitting complete (`\n`-terminated, or
-/// final-and-nonempty-at-stream-end) lines. Kept decoupled from
-/// `reqwest::Response` (unlike `response_to_lines` above, which just wires
-/// its real byte stream in) so the exact cross-chunk-split scenario can be
-/// tested directly against a synthetic chunk stream -- no mock HTTP server
-/// can reliably force a specific chunk boundary to exercise this.
-fn lines_from_chunks(
-    chunks: std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>,
-) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>> {
-    struct State {
-        // Boxed/pinned so this field is `Unpin` regardless of the caller's
-        // concrete stream type -- `stream::unfold`'s closure needs to call
-        // `.next()` via `&mut` each step.
-        chunks: std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>,
-        carry: String,
+// HTTP chunks can split a UTF-8 character. Decoding each chunk corrupts it,
+// while buffering the entire response never delivers a live board update.
+fn lines_from_chunks<C, E>(
+    chunks: impl futures_util::Stream<Item = Result<C, E>> + Send + 'static,
+) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>
+where
+    C: AsRef<[u8]> + Send,
+    E: std::fmt::Display + Send,
+{
+    struct State<S> {
+        chunks: std::pin::Pin<Box<S>>,
+        carry: Vec<u8>,
         pending: std::collections::VecDeque<String>,
         chunks_exhausted: bool,
     }
 
-    let state = State { chunks, carry: String::new(), pending: std::collections::VecDeque::new(), chunks_exhausted: false };
+    let state = State {
+        chunks: Box::pin(chunks),
+        carry: Vec::new(),
+        pending: std::collections::VecDeque::new(),
+        chunks_exhausted: false,
+    };
 
     Box::pin(futures_util::stream::unfold(state, |mut state| async move {
         loop {
@@ -662,23 +641,33 @@ fn lines_from_chunks(
                 return Some((line, state));
             }
             if state.chunks_exhausted {
-                if state.carry.is_empty() {
-                    return None;
-                }
-                // The connection closed right after a final line with no
-                // trailing newline -- still surface it rather than quietly
-                // discarding it, same as every complete line above.
-                return Some((std::mem::take(&mut state.carry), state));
+                return None;
             }
             match state.chunks.next().await {
-                Some(chunk_text) => {
-                    state.carry.push_str(&chunk_text);
-                    while let Some(pos) = state.carry.find('\n') {
-                        state.pending.push_back(state.carry[..pos].to_string());
-                        state.carry.drain(..=pos);
+                Some(Ok(chunk)) => {
+                    for segment in chunk.as_ref().split_inclusive(|byte| *byte == b'\n') {
+                        if let Some(body) = segment.strip_suffix(b"\n") {
+                            state.carry.extend_from_slice(body);
+                            state.pending.push_back(String::from_utf8_lossy(&state.carry).into_owned());
+                            state.carry.clear();
+                        } else {
+                            state.carry.extend_from_slice(segment);
+                        }
                     }
                 }
-                None => state.chunks_exhausted = true,
+                Some(Err(error)) => {
+                    log::warn!("stream chunk read error: {error}");
+                    return None;
+                }
+                None => {
+                    // Only a clean close can complete a record without a newline.
+                    if state.carry.is_empty() {
+                        return None;
+                    }
+                    state.chunks_exhausted = true;
+                    let line = String::from_utf8_lossy(&state.carry).into_owned();
+                    return Some((line, state));
+                }
             }
         }
     }))
@@ -690,16 +679,58 @@ mod tests {
     use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    async fn read_http_stream(response: &'static [u8]) -> Vec<String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (socket, _) = server.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            loop {
+                let mut header = String::new();
+                assert_ne!(socket.read_line(&mut header).await.unwrap(), 0);
+                if header == "\r\n" {
+                    break;
+                }
+            }
+            socket.write_all(response).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        let client = LichessClient::with_base_url("test-token".into(), endpoint);
+        let lines = client.stream_lines("/test").await.unwrap();
+        let result = lines.collect().await;
+        task.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn streamed_json_preserves_utf8_split_between_http_chunks() {
+        let lines = read_http_stream(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\n{\"name\":\"\xc3\r\n4\r\n\xa9\"}\n\r\n0\r\n\r\n",
+        ).await;
+        assert_eq!(lines, [r#"{"name":"é"}"#]);
+    }
+
+    #[tokio::test]
+    async fn interrupted_http_stream_keeps_complete_lines_and_discards_the_tail() {
+        let lines = read_http_stream(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\ncomplete\n{\"done\":\"accepted\"}",
+        ).await;
+        assert_eq!(lines, ["complete"]);
+    }
+
     #[tokio::test]
     async fn lines_from_chunks_reassembles_a_json_line_split_across_two_chunks() {
         // The exact E1 regression scenario: an HTTP chunk boundary lands
         // mid-line. A plain per-chunk `.lines()` call would previously yield
         // two unparseable fragments here instead of one complete line.
         let chunks = vec![
-            r#"{"type":"gameState","statu"#.to_string(),
-            "s\":\"started\"}\n".to_string(),
+            Ok::<_, reqwest::Error>(br#"{"type":"gameState","statu"#.as_slice()),
+            Ok(b"s\":\"started\"}\n".as_slice()),
         ];
-        let mut lines = lines_from_chunks(Box::pin(futures_util::stream::iter(chunks)));
+        let mut lines = lines_from_chunks(futures_util::stream::iter(chunks));
         let mut collected = Vec::new();
         while let Some(line) = lines.next().await {
             collected.push(line);
@@ -709,8 +740,8 @@ mod tests {
 
     #[tokio::test]
     async fn lines_from_chunks_splits_multiple_complete_lines_from_one_chunk() {
-        let chunks = vec!["line-one\nline-two\nline-three\n".to_string()];
-        let mut lines = lines_from_chunks(Box::pin(futures_util::stream::iter(chunks)));
+        let chunks = [Ok::<_, reqwest::Error>(b"line-one\nline-two\nline-three\n")];
+        let mut lines = lines_from_chunks(futures_util::stream::iter(chunks));
         let mut collected = Vec::new();
         while let Some(line) = lines.next().await {
             collected.push(line);
@@ -723,8 +754,8 @@ mod tests {
         // The connection closing right after the last line, before a
         // trailing '\n' arrives, must still surface that line rather than
         // silently dropping it.
-        let chunks = vec!["complete\nincomplete-tail".to_string()];
-        let mut lines = lines_from_chunks(Box::pin(futures_util::stream::iter(chunks)));
+        let chunks = [Ok::<_, reqwest::Error>(b"complete\nincomplete-tail")];
+        let mut lines = lines_from_chunks(futures_util::stream::iter(chunks));
         let mut collected = Vec::new();
         while let Some(line) = lines.next().await {
             collected.push(line);
