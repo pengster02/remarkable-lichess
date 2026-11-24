@@ -86,6 +86,7 @@ QtObject {
 
     // ~9mm minimum finger target (81px at this panel's 229 PPI).
     readonly property int touchTarget: 96
+    readonly property int moveRowWithClockHeight: 128
     readonly property int listRowHeight: 120
     readonly property int boardDragThreshold: 12
 

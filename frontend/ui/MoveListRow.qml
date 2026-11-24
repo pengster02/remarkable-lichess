@@ -17,7 +17,7 @@ Item {
         (blackMove && blackMove.clockLabel && blackMove.clockLabel.length > 0)
     readonly property int numberColumnWidth: theme.touchTarget
 
-    height: hasClock ? 128 : theme.touchTarget
+    height: hasClock ? theme.moveRowWithClockHeight : theme.touchTarget
 
     Row {
         id: columns
