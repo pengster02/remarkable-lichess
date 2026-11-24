@@ -26,34 +26,27 @@ TestCase {
     }
 
     function test_submitBlocksDuplicates() {
-        verify(gate.submit("e2", "e4", null))
+        verify(gate.submit("e2", "e4", null, 1))
         compare(submitSpy.count, 1)
         compare(submitSpy.signalArguments[0][0].expected_game_id, "g1")
+        compare(submitSpy.signalArguments[0][0].request_id, 1)
         compare(gate.pending.from, "e2")
-        verify(!gate.submit("d2", "d4", null))
+        verify(!gate.submit("d2", "d4", null, 2))
         compare(submitSpy.count, 1)
     }
 
-    function test_acknowledgeMustMatch() {
-        gate.submit("e7", "e8", "q")
-        verify(!gate.acknowledge("g1", "e7", "e8", "r"))
-        compare(gate.accepted, false)
-        verify(gate.acknowledge("g1", "e7", "e8", "q"))
-        compare(gate.accepted, true)
+    function test_onlyMatchingBoardResolutionReleasesGate() {
+        gate.submit("e2", "e4", null, 2)
+        verify(!gate.matches("g2", 2))
+        verify(!gate.resolve("g1", 1))
+        verify(!gate.resolve("g1", undefined))
         verify(gate.pending !== null)
-    }
-
-    function test_matchingStreamMoveReleasesGate() {
-        gate.submit("e2", "e4", null)
-        verify(!gate.resolve("g1", ["d2", "d4"]))
-        verify(gate.pending !== null)
-        verify(gate.resolve("g1", ["e2", "e4"]))
+        verify(gate.resolve("g1", 2))
         compare(gate.pending, null)
-        compare(gate.accepted, false)
     }
 
     function test_gameChangeClearsStaleMove() {
-        gate.submit("e2", "e4", null)
+        gate.submit("e2", "e4", null, 3)
         verify(gate.resolve("g2", null))
         compare(gate.pending, null)
     }

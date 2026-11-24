@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -133,6 +133,17 @@ enum ChallengeAction {
     Decline,
 }
 
+struct MoveSubmission {
+    game_id: String,
+    request_id: Option<u32>,
+    expected_moves: String,
+    uci: String,
+    from: String,
+    to: String,
+    promotion: Option<String>,
+    canceled: oneshot::Receiver<()>,
+}
+
 fn game_for_request<'a>(
     active: Option<&'a GameSession>,
     expected_game_id: Option<&str>,
@@ -200,6 +211,7 @@ pub struct LichessBackend {
     // the whole five-minute sign-in window would leave Cancel and the
     // paste-a-token fallback queued behind it, unable to run.
     login_handle: Option<tokio::task::JoinHandle<()>>,
+    move_submission: Option<tokio::task::JoinHandle<()>>,
     game_stream: Option<GameStream>,
     // appload-client's own send_message does two unsynchronized raw libc::send()
     // calls (header, then payload) with no locking at all -- confirmed by reading
@@ -230,6 +242,7 @@ impl LichessBackend {
             cloud_evaluations: None,
             cloud_retry_after: Arc::new(Mutex::new(None)),
             login_handle: None,
+            move_submission: None,
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
         }
@@ -835,6 +848,7 @@ impl LichessBackend {
     }
 
     async fn stop_game_stream(&mut self) {
+        stop_task(&mut self.move_submission).await;
         if let Some(stream) = self.game_stream.as_mut() {
             abort_task(&mut stream.task).await;
             self.game_stream = None;
@@ -895,82 +909,54 @@ impl LichessBackend {
         from: String,
         to: String,
         promotion: Option<String>,
+        request_id: Option<u32>,
     ) {
-        let reject = |reason| BackendMessage::MoveRejected {
-            game_id: expected_game_id.map(str::to_owned), reason,
+        let reject = |game_id, reason| BackendMessage::MoveRejected {
+            game_id, request_id, reason,
         };
         let Some(client) = self.client.clone() else {
-            self.send(replier, &reject("Not connected to Lichess".into()));
+            self.send(replier, &reject(expected_game_id.map(str::to_owned), "Not connected to Lichess".into()));
             return;
         };
-        let result = {
-            let guard = self.session.lock().await;
-            let session = match game_for_request(guard.as_ref(), expected_game_id) {
-                Ok(session) => session,
+        let submission = {
+            let mut guard = self.session.lock().await;
+            if let Err(reason) = game_for_request(guard.as_ref(), expected_game_id) {
+                self.send(replier, &reject(expected_game_id.map(str::to_owned), reason.into()));
+                return;
+            }
+            let session = guard.as_mut().expect("active game checked above");
+            let uci = match session.try_move(&from, &to, promotion.as_deref()) {
+                Ok(uci) => uci,
                 Err(reason) => {
-                    self.send(replier, &reject(reason.into()));
+                    self.send(replier, &reject(Some(session.game_id.clone()), reason.into()));
                     return;
                 }
             };
-            match session.try_move(&from, &to, promotion.as_deref()) {
-                Ok(uci) => match session.preview_move(&uci) {
-                    Ok(preview) => {
-                        // A streamed update must not overtake the preview of this position.
-                        self.send(replier, &preview);
-                        Ok((uci, session.game_id.clone(), session.state.moves.clone()))
-                    }
-                    Err(error) => Err(Box::new(BackendMessage::MoveRejected {
-                        game_id: Some(session.game_id.clone()),
-                        reason: error.to_string(),
-                    })),
-                },
-                Err(rejected) => Err(rejected),
+            let (preview, canceled) = match session.begin_move(&uci, request_id) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    self.send(replier, &reject(Some(session.game_id.clone()), error.to_string()));
+                    return;
+                }
+            };
+            // A streamed update must not overtake the preview of this position.
+            self.send(replier, &preview);
+            MoveSubmission {
+                game_id: session.game_id.clone(),
+                request_id,
+                expected_moves: session.state.moves.clone(),
+                uci,
+                from,
+                to,
+                promotion,
+                canceled,
             }
         };
-        match result {
-            Ok((uci, game_id, expected_moves)) => {
-                let submitted_at = Instant::now();
-                let response = client.make_move(&game_id, &uci).await;
-                let elapsed = submitted_at.elapsed();
-                if elapsed >= Duration::from_millis(750) {
-                    log::warn!(
-                        "make_move {game_id} {uci} took {}ms",
-                        elapsed.as_millis()
-                    );
-                } else {
-                    log::debug!(
-                        "make_move {game_id} {uci} took {}ms",
-                        elapsed.as_millis()
-                    );
-                }
-                match response {
-                    Ok(()) => {
-                        self.send(
-                            replier,
-                            &BackendMessage::MoveSubmitted {
-                                game_id: game_id.clone(),
-                                from,
-                                to,
-                                promotion,
-                            },
-                        );
-                        let mut guard = self.session.lock().await;
-                        if let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) {
-                            match session.apply_accepted_move(&expected_moves, &uci) {
-                                Ok(Some(board_state)) => self.send(replier, &board_state),
-                                Ok(None) => {}
-                                Err(error) => log::warn!("couldn't apply accepted move locally: {error}"),
-                            }
-                        }
-                    }
-                    Err(error) => self.send(
-                        replier,
-                        &BackendMessage::MoveRejected { game_id: Some(game_id), reason: error.to_string() },
-                    ),
-                }
-            }
-            Err(rejected) => self.send(replier, &rejected),
-        }
+        // Only a settled request can reach here with an earlier task still present.
+        stop_task(&mut self.move_submission).await;
+        self.move_submission = Some(tokio::spawn(submit_move(
+            client, submission, self.session.clone(), replier.clone(), self.write_lock.clone(),
+        )));
     }
 
     fn spawn_account_stream(&mut self, replier: BackendReplier<Self>) {
@@ -1174,6 +1160,55 @@ async fn refresh_home(
     tokio::join!(games, ratings);
 }
 
+async fn submit_move(
+    client: LichessClient,
+    submission: MoveSubmission,
+    session: Arc<Mutex<Option<GameSession>>>,
+    replier: BackendReplier<LichessBackend>,
+    write_lock: Arc<std::sync::Mutex<()>>,
+) {
+    let MoveSubmission { game_id, request_id, expected_moves, uci, from, to, promotion, mut canceled } = submission;
+    let submitted_at = Instant::now();
+    let response = tokio::select! {
+        biased;
+        _ = &mut canceled => return,
+        response = client.make_move(&game_id, &uci) => response,
+    };
+    let elapsed = submitted_at.elapsed();
+    if elapsed >= Duration::from_millis(750) {
+        log::warn!("make_move {game_id} {uci} took {}ms", elapsed.as_millis());
+    } else {
+        log::debug!("make_move {game_id} {uci} took {}ms", elapsed.as_millis());
+    }
+    let mut guard = session.lock().await;
+    let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) else { return };
+    // An authoritative board can settle the move between HTTP completion and this lock.
+    if canceled.try_recv() != Err(oneshot::error::TryRecvError::Empty) {
+        return;
+    }
+    match response {
+        Ok(()) => {
+            send_locked(&replier, &write_lock, &BackendMessage::MoveSubmitted {
+                game_id, from, to, promotion,
+            });
+            match session.apply_accepted_move(&expected_moves, &uci) {
+                Ok(Some(board)) => send_locked(&replier, &write_lock, &board),
+                Ok(None) => session.cancel_move(),
+                Err(error) => {
+                    session.cancel_move();
+                    log::warn!("couldn't apply accepted move locally: {error}");
+                }
+            }
+        }
+        Err(error) => {
+            session.cancel_move();
+            send_locked(&replier, &write_lock, &BackendMessage::MoveRejected {
+                game_id: Some(game_id), request_id, reason: error.to_string(),
+            });
+        }
+    }
+}
+
 async fn stop_task(slot: &mut Option<tokio::task::JoinHandle<()>>) {
     if let Some(handle) = slot.as_mut() {
         abort_task(handle).await;
@@ -1349,6 +1384,11 @@ fn spawn_game_stream(
                                             s.opponent_departure = opponent_departure;
                                             if s.berserked || opponent_departure.is_some() {
                                                 board_msg = s.board_state();
+                                            }
+                                            if let Some(previous) = guard.as_mut().filter(|session| {
+                                                session.game_id == s.game_id
+                                            }) {
+                                                s.inherit_pending_move(previous, &mut board_msg);
                                             }
                                             if full.state.status != "started" {
                                                 stream_finished = true;
@@ -1553,6 +1593,10 @@ impl AppLoadBackend for LichessBackend {
             stop_game_request(&mut self.review_export).await;
             self.stop_cloud_evaluations().await;
             stop_game_request(&mut self.pending_seek).await;
+            stop_task(&mut self.move_submission).await;
+            if let Some(session) = self.session.lock().await.as_mut() {
+                session.cancel_move();
+            }
             if self.client.is_none() {
                 self.check_saved_sign_in(replier).await;
             } else if let Some(username) = self.username.clone() {
@@ -1615,8 +1659,8 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::CancelSeek { request_id: None } => {
                 stop_game_request(&mut self.pending_seek).await;
             }
-            FrontendMessage::MakeMove { from, to, promotion } => {
-                self.handle_make_move(replier, expected_game_id, from, to, promotion).await
+            FrontendMessage::MakeMove { from, to, promotion, request_id } => {
+                self.handle_make_move(replier, expected_game_id, from, to, promotion, request_id).await
             }
             FrontendMessage::Resign => {
                 self.execute_game_action(replier, GameAction::Resign, expected_game_id, |client, game_id| async move {

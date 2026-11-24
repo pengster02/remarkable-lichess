@@ -440,8 +440,7 @@ Rectangle {
                        msg.type === "GameStreamReconnecting" || msg.type === "GameStreamFailed" ||
                        msg.type === "OpponentGone" ||
                        msg.type === "GameActionCompleted" ||
-                       msg.type === "GameActionFailed" ||
-                       msg.type === "MovePreview" || msg.type === "MoveSubmitted") {
+                       msg.type === "GameActionFailed" || msg.type === "MovePreview") {
                 // Deliberately never navigates on its own (confirmed via the PC
                 // emulator: a bare reconnect message with no real game yet threw the
                 // user onto a genuinely empty, un-escapable Board screen). Only
