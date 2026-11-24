@@ -62,6 +62,10 @@ Rectangle {
     // Bind replies to the selected board even while it loads. Trusting the next
     // snapshot or waiting to set the ID until the first frame both allow a stale board.
     property string selectedGameId: ""
+    // Keep resolved IDs across navigation until a newer list omits them. Waiting
+    // for the list keeps old rows visible, while removing a row only on its page
+    // lets an in-flight list restore it.
+    property var resolvedChallengeIds: []
 
     function connectivityLabel() {
         if (!root.connectivityKnown) return "Connecting…"
@@ -102,6 +106,7 @@ Rectangle {
         root.authenticationState = "required"
         root.username = ""
         root.selectedGameId = ""
+        root.resolvedChallengeIds = []
         root.pendingReview = null
         root.reviewGame = null
         root.reviewMoves = []
@@ -284,6 +289,7 @@ Rectangle {
         onMessageReceived: (type, contents) => {
             var msg = JSON.parse(contents)
             if (msg.type === "TokenVerified") {
+                if (root.username !== (msg.username || "")) root.resolvedChallengeIds = []
                 root.hasToken = true
                 root.authenticationState = "authenticated"
                 root.username = msg.username || ""
@@ -352,10 +358,25 @@ Rectangle {
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "GameStarted" || msg.type === "ComputerGameCreated" ||
                        msg.type === "ChallengeResolved" || msg.type === "ChallengeAccepted" ||
+                       msg.type === "ChallengeDeclined" || msg.type === "ChallengeActionFailed" ||
                        msg.type === "OpenChallengeCreated" ||
                        msg.type === "PendingChallenges" ||
                        msg.type === "ChallengesLoadFailed" ||
                        msg.type === "GameHistory") {
+                if (root.hasToken && (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined")) {
+                    var resolved = msg.game_id || msg.challenge_id
+                    if (root.resolvedChallengeIds.indexOf(resolved) === -1)
+                        root.resolvedChallengeIds = root.resolvedChallengeIds.concat([resolved])
+                } else if (msg.type === "PendingChallenges" && root.resolvedChallengeIds.length > 0) {
+                    var pending = msg.challenges || []
+                    var ids = pending.map(function(challenge) { return challenge.id })
+                    root.resolvedChallengeIds = root.resolvedChallengeIds.filter(function(id) {
+                        return ids.indexOf(id) !== -1
+                    })
+                    msg.challenges = pending.filter(function(challenge) {
+                        return root.resolvedChallengeIds.indexOf(challenge.id) === -1
+                    })
+                }
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }

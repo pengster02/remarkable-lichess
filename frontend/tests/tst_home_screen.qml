@@ -11,12 +11,14 @@ TestCase {
     property var sentMessages: []
     property int expectedGameStarts: 0
     property string expectedGameId: ""
+    property int requestSequence: 0
 
     HomeScreen {
         id: home
         width: 1696
         height: 2384
         backendSender: function(message) { testCase.sentMessages.push(message) }
+        nextRequestId: function() { return ++testCase.requestSequence }
         navigateTo: function() {}
         openGame: function(gameId) {
             testCase.expectedGameStarts++
@@ -36,8 +38,7 @@ TestCase {
         home.loadError = ""
         home.challengesError = ""
         home.actionError = ""
-        home.pendingChallengeId = ""
-        home.pendingChallengeAction = ""
+        home.clearChallengeAction()
         home.ongoingGames = []
         home.ratings = []
     }
@@ -91,7 +92,8 @@ TestCase {
 
         home.handleMessage({type: "PendingChallenges", challenges: []})
         compare(home.pendingChallengeId, "abc123")
-        home.handleMessage({type: "ChallengeAccepted", game_id: "abc123"})
+        home.handleMessage({type: "ChallengeAccepted", game_id: "abc123",
+                            request_id: sentMessages[0].request_id})
         compare(home.pendingChallengeId, "")
         compare(home.pendingChallengeAction, "")
         compare(expectedGameStarts, 1)

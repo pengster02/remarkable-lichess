@@ -8,6 +8,7 @@ Rectangle {
     ChessDisplay { id: chessDisplay }
     property var backendSender
     property var navigateTo
+    property var nextRequestId
     property var openGame: function() {}
     property bool darkMode: false
     // Every now-playing game, not just one -- replaces the old singular
@@ -39,6 +40,7 @@ Rectangle {
     property string actionError: ""
     property string pendingChallengeId: ""
     property string pendingChallengeAction: ""
+    property int pendingChallengeRequestId: 0
 
     onBackendSenderChanged: {
         if (homeScreen.backendSender) homeScreen.refresh()
@@ -64,10 +66,18 @@ Rectangle {
         homeScreen.actionError = ""
         homeScreen.pendingChallengeId = challengeId
         homeScreen.pendingChallengeAction = action
+        homeScreen.pendingChallengeRequestId = homeScreen.nextRequestId()
         homeScreen.backendSender({
             type: action === "accept" ? "AcceptChallenge" : "DeclineChallenge",
-            id: challengeId
+            id: challengeId,
+            request_id: homeScreen.pendingChallengeRequestId
         })
+    }
+
+    function clearChallengeAction() {
+        homeScreen.pendingChallengeId = ""
+        homeScreen.pendingChallengeAction = ""
+        homeScreen.pendingChallengeRequestId = 0
     }
 
     function connectivityLabel() {
@@ -330,17 +340,22 @@ Rectangle {
             homeScreen.ratings = msg.ratings || []
         } else if (msg.type === "PendingChallenges") {
             homeScreen.challengesError = ""
-            if (homeScreen.pendingChallengeAction !== "accept") {
-                homeScreen.pendingChallengeId = ""
-                homeScreen.pendingChallengeAction = ""
-            }
             homeScreen.pendingChallenges = msg.challenges || []
-        } else if (msg.type === "ChallengeAccepted") {
-            if (homeScreen.pendingChallengeAction !== "accept" ||
-                    msg.game_id !== homeScreen.pendingChallengeId) return
-            homeScreen.pendingChallengeId = ""
-            homeScreen.pendingChallengeAction = ""
-            homeScreen.openGame(msg.game_id)
+        } else if (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined") {
+            var action = msg.type === "ChallengeAccepted" ? "accept" : "decline"
+            var id = msg.game_id || msg.challenge_id
+            homeScreen.pendingChallenges = homeScreen.pendingChallenges.filter(function(challenge) {
+                return challenge.id !== id
+            })
+            if (action !== homeScreen.pendingChallengeAction || id !== homeScreen.pendingChallengeId ||
+                    msg.request_id !== homeScreen.pendingChallengeRequestId) return
+            homeScreen.clearChallengeAction()
+            if (action === "accept") homeScreen.openGame(id)
+        } else if (msg.type === "ChallengeActionFailed") {
+            if (msg.challenge_id !== homeScreen.pendingChallengeId ||
+                    msg.request_id !== homeScreen.pendingChallengeRequestId) return
+            homeScreen.clearChallengeAction()
+            homeScreen.actionError = msg.message || "Lichess could not complete that action."
         } else if (msg.type === "ConnectivityState") {
             homeScreen.connectivityKnown = true
             homeScreen.online = msg.online || false
@@ -356,8 +371,6 @@ Rectangle {
             homeScreen.challengesError = msg.message ||
                 "Couldn't load challenges."
         } else if (msg.type === "ErrorMsg") {
-            homeScreen.pendingChallengeId = ""
-            homeScreen.pendingChallengeAction = ""
             homeScreen.actionError = msg.message || "Lichess could not complete that action."
         }
     }

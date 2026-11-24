@@ -66,6 +66,11 @@ enum TokenCheck {
     SignIn,
 }
 
+enum ChallengeAction {
+    Accept,
+    Decline,
+}
+
 fn game_for_request<'a>(
     active: Option<&'a GameSession>,
     expected_game_id: Option<&str>,
@@ -935,6 +940,44 @@ impl LichessBackend {
         });
         self.account_stream = Some(AccountStream { task, challenge_refresh });
     }
+
+    fn queue_challenge_refresh(&self) {
+        if let Some(account) = &self.account_stream {
+            let _ = account.challenge_refresh.try_send(());
+        }
+    }
+
+    async fn handle_challenge_action(
+        &self,
+        replier: &BackendReplier<Self>,
+        id: String,
+        request_id: Option<u32>,
+        action: ChallengeAction,
+    ) {
+        let result = match (&self.client, &action) {
+            (Some(client), ChallengeAction::Accept) => client.accept_challenge(&id).await,
+            (Some(client), ChallengeAction::Decline) => client.decline_challenge(&id).await,
+            (None, _) => Err(anyhow::anyhow!("Sign in to Lichess to respond to challenges.")),
+        };
+        match result {
+            Ok(()) => {
+                let reply = match action {
+                    ChallengeAction::Accept => BackendMessage::ChallengeAccepted { game_id: id, request_id },
+                    ChallengeAction::Decline => BackendMessage::ChallengeDeclined { challenge_id: id, request_id },
+                };
+                self.send(replier, &reply);
+                self.queue_challenge_refresh();
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let reply = match request_id {
+                    Some(request_id) => BackendMessage::ChallengeActionFailed { challenge_id: id, request_id, message },
+                    None => BackendMessage::ErrorMsg { message },
+                };
+                self.send(replier, &reply);
+            }
+        }
+    }
 }
 
 async fn read_account_events(
@@ -1470,25 +1513,12 @@ impl AppLoadBackend for LichessBackend {
                 })
                 .await;
             }
-            FrontendMessage::RequestChallenges => {
-                if let Some(account) = &self.account_stream {
-                    let _ = account.challenge_refresh.try_send(());
-                }
+            FrontendMessage::RequestChallenges => self.queue_challenge_refresh(),
+            FrontendMessage::AcceptChallenge { id, request_id } => {
+                self.handle_challenge_action(replier, id, request_id, ChallengeAction::Accept).await;
             }
-            FrontendMessage::AcceptChallenge { id } => {
-                if let Some(client) = &self.client {
-                    match client.accept_challenge(&id).await {
-                        Ok(()) => self.send(replier, &BackendMessage::ChallengeAccepted { game_id: id }),
-                        Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
-                    }
-                }
-            }
-            FrontendMessage::DeclineChallenge { id } => {
-                if let Some(client) = &self.client {
-                    if let Err(e) = client.decline_challenge(&id).await {
-                        self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
-                    }
-                }
+            FrontendMessage::DeclineChallenge { id, request_id } => {
+                self.handle_challenge_action(replier, id, request_id, ChallengeAction::Decline).await;
             }
             FrontendMessage::RequestSettings => self.handle_request_settings(replier),
             FrontendMessage::SaveSettings {
