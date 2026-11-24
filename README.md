@@ -90,9 +90,9 @@ is replaced by resign, and draw and takeback become available.
 
 ### Review and analysis
 
-Every finished game is replayable. The score sheet is directly tappable, the
-board and move list stay in sync, and analysis that costs network traffic is
-always something you ask for explicitly.
+Finished standard games and games started from a custom position are replayable.
+Tap the score sheet to jump to a move. The board and move list stay in sync, and
+network analysis runs on request.
 
 | Game history | Replay | Board options |
 | --- | --- | --- |

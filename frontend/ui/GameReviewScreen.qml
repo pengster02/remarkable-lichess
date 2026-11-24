@@ -486,7 +486,8 @@ Rectangle {
         return chessDisplay.moveRows(
             gameReviewScreen.moves,
             gameReviewScreen.clockMs,
-            gameReviewScreen.analysis
+            gameReviewScreen.analysis,
+            gameReviewScreen.fens[0]
         )
     }
 
@@ -930,7 +931,7 @@ Rectangle {
                 if (moveList.contentY !== 0) moveList.moveTo(0)
                 return
             }
-            var rowIndex = Math.floor((gameReviewScreen.currentIndex - 1) / 2)
+            var rowIndex = chessDisplay.moveRowIndex(gameReviewScreen.currentIndex, gameReviewScreen.fens[0])
             var item = moveRowRepeater.itemAt(rowIndex)
             if (!item) return
             moveList.reveal(item.y, item.height)

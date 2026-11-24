@@ -1,5 +1,5 @@
 use crate::game::outcome::outcome;
-use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game};
+use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{BackendMessage, LegalMove, PlayerIdentity};
 use shakmaty::{Chess, Position};
@@ -259,7 +259,7 @@ fn single_appended_move<'a>(previous: &str, next: &'a str) -> Option<&'a str> {
 impl GameSession {
     pub fn from_game_full(full: &GameFull, my_id: &str) -> anyhow::Result<(Self, BackendMessage)> {
         anyhow::ensure!(
-            matches!(full.variant.key.as_str(), "standard" | "fromPosition"),
+            supports_variant(&full.variant.key),
             "{} games are not supported yet",
             full.variant.name
         );

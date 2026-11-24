@@ -50,6 +50,10 @@ pub fn legal_moves(pos: &Chess) -> Vec<LegalMove> {
         .collect()
 }
 
+pub(crate) fn supports_variant(key: &str) -> bool {
+    matches!(key, "standard" | "fromPosition")
+}
+
 pub fn starting_position(initial_fen: &str) -> Result<Chess> {
     if initial_fen == "startpos" {
         return Ok(Chess::default());

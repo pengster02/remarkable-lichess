@@ -391,6 +391,9 @@ pub struct MoveJudgment {
 // flags are needed to ask for them.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GameExport {
+    pub variant: Option<String>,
+    #[serde(rename = "initialFen")]
+    pub initial_fen: Option<String>,
     #[serde(default)]
     pub moves: String,
     #[serde(default)]

@@ -462,7 +462,7 @@ pub enum BackendMessage {
     OpenChallengeCreated { url: String, url_white: String, url_black: String },
     // `fens[0]` is the starting position, `fens[i]` is the position after SAN
     // move `moves[i-1]` -- always `fens.len() == moves.len() + 1` (see
-    // game::replay::fens_for_moves). Sent once per RequestGameMoves, not
+    // game::replay::fens_for_export). Sent once per RequestGameMoves, not
     // streamed -- a finished game's move list never changes. `clock_ms`/
     // `analysis` are each aligned with `moves` (not `fens` -- no entry for the
     // starting position) and may be shorter than `moves` or empty entirely:

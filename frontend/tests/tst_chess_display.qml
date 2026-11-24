@@ -40,6 +40,23 @@ TestCase {
         compare(rows[1].black, null)
     }
 
+    function test_moveRowsKeepBlackFirstCustomNumberingAndSelection() {
+        var initialFen = "4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17"
+        var rows = display.moveRows(["e5", "a4"], [599000, 598000], [], initialFen)
+        compare(rows.length, 2)
+        compare(rows[0].number, 17)
+        compare(rows[0].white, null)
+        compare(rows[0].black.san, "e5")
+        compare(rows[0].black.clockLabel, "9:59")
+        compare(rows[0].black.fenIndex, 1)
+        compare(rows[1].number, 18)
+        compare(rows[1].white.san, "a4")
+        compare(rows[1].white.fenIndex, 2)
+        compare(display.moveRowIndex(1, initialFen), 0)
+        compare(display.moveRowIndex(2, initialFen), 1)
+        compare(display.moveRows([], [], [], initialFen).length, 0)
+    }
+
     function test_resultFallbackNeverLeaksCamelCase() {
         compare(display.resultLabel("win"), "Win")
         compare(display.resultLabel("noStart"), "Opponent didn't join")
