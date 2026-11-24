@@ -503,8 +503,9 @@ Rectangle {
     }
 
     function requestGameAction(message, action) {
-        if (boardScreen.pendingGameAction.length > 0) return
+        if (boardScreen.gameId.length === 0 || boardScreen.pendingGameAction.length > 0) return
         boardScreen.pendingGameAction = action
+        message.expected_game_id = boardScreen.gameId
         boardScreen.backendSender(message)
         boardScreen.showGameActions = false
     }
@@ -1708,6 +1709,9 @@ Rectangle {
             if (gameChanged) {
                 boardScreen.resetPlayerStatuses()
                 boardScreen.pendingRatingDiffText = ""
+                boardScreen.pendingGameAction = ""
+                boardScreen.opponentGone = false
+                boardScreen.claimWinInSeconds = 0
             }
             boardScreen.gameId = nextGameId
             if (positionChanged) {
@@ -1811,6 +1815,7 @@ Rectangle {
                 boardScreen.pendingRatingDiffText = diffText
             }
         } else if (msg.type === "GameActionCompleted") {
+            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             if (boardScreen.pendingGameAction === msg.action) {
                 boardScreen.pendingGameAction = ""
             }
@@ -1820,6 +1825,12 @@ Rectangle {
                 boardScreen.statusText = "Berserk activated"
             } else if (msg.action === "AddTime") {
                 boardScreen.statusText = "15 seconds added to opponent"
+            }
+        } else if (msg.type === "GameActionFailed") {
+            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
+            if (boardScreen.pendingGameAction === msg.action) {
+                boardScreen.pendingGameAction = ""
+                boardScreen.statusText = msg.message
             }
         } else if (msg.type === "MovePreview") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0) return
@@ -1849,11 +1860,13 @@ Rectangle {
             moveRequestGate.acknowledge(
                 msg.game_id, msg.from, msg.to, msg.promotion || null)
         } else if (msg.type === "MoveRejected") {
+            if (boardScreen.gameOver || (msg.game_id && msg.game_id !== boardScreen.gameId)) return
             boardScreen.rollbackMovePreview()
             boardScreen.statusText = "Move rejected: " + msg.reason
             boardScreen.selectedSquare = ""
             moveRequestGate.clear()
         } else if (msg.type === "GameStreamReconnecting") {
+            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             // The move POST and game stream are independent connections. Rolling
             // back here made a valid optimistic move snap back whenever only the
             // stream dropped; MoveRejected or the next BoardState are authoritative.
@@ -1864,6 +1877,7 @@ Rectangle {
                 boardScreen.statusText = "Reconnecting..."
             }
         } else if (msg.type === "OpponentGone") {
+            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             boardScreen.opponentGone = msg.gone
             boardScreen.claimWinInSeconds = msg.claim_win_in_seconds || 0
         } else if (msg.type === "GameMovesFailed") {

@@ -165,7 +165,7 @@ TestCase {
         verify(topName.text.indexOf("Patron") !== -1)
         verify(topName.text.indexOf("White heart") !== -1)
 
-        board.handleMessage({type: "OpponentGone", gone: true, claim_win_in_seconds: 8})
+        board.handleMessage({type: "OpponentGone", game_id: "identity-game", gone: true, claim_win_in_seconds: 8})
         compare(topPlayerBar.presenceText, "Disconnected")
     }
 
@@ -384,7 +384,7 @@ TestCase {
             last_move: ["e2", "e4"],
             in_check: false
         })
-        board.handleMessage({type: "GameStreamReconnecting"})
+        board.handleMessage({type: "GameStreamReconnecting", game_id: "g1"})
         compare(board.previewFen, previewFen)
         compare(board.fen, previewFen)
         compare(board.turn, "black")
@@ -393,7 +393,7 @@ TestCase {
         compare(board.topStatusText(), "Waiting for opponent")
 
         board.liveFen = ""
-        board.handleMessage({type: "GameStreamReconnecting"})
+        board.handleMessage({type: "GameStreamReconnecting", game_id: "g1"})
         compare(board.statusText, "Reconnecting...")
     }
 

@@ -24,6 +24,7 @@ Rectangle {
     // there's deliberately no "Cancel" for it, just Back to Home.
     property var openChallengeUrls: null
     property string pendingAction: ""
+    readonly property bool awaitingGame: waiting || pendingAction.length > 0 || openChallengeUrls !== null
     property string formError: ""
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||

@@ -22,6 +22,16 @@ pub struct LegalMove {
     pub promotion: Option<String>,
 }
 
+// One envelope carries the board identity without duplicating a field across
+// commands. Inferring it from the active session can target a different game.
+#[cfg(any(feature = "transport", test))]
+#[derive(Deserialize)]
+pub(crate) struct FrontendRequest {
+    pub expected_game_id: Option<String>,
+    #[serde(flatten)]
+    pub message: FrontendMessage,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum FrontendMessage {
@@ -398,7 +408,8 @@ pub enum BackendMessage {
         outcome: Option<Box<GameOutcome>>,
     },
     GameOver { game_id: String, result: String, reason: String },
-    GameActionCompleted { action: GameAction },
+    GameActionCompleted { game_id: String, action: GameAction },
+    GameActionFailed { game_id: String, action: GameAction, message: String },
     MovePreview {
         game_id: String,
         fen: String,
@@ -414,8 +425,12 @@ pub enum BackendMessage {
         to: String,
         promotion: Option<String>,
     },
-    MoveRejected { reason: String },
-    GameStreamReconnecting,
+    MoveRejected {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        game_id: Option<String>,
+        reason: String,
+    },
+    GameStreamReconnecting { game_id: String },
     ErrorMsg { message: String },
     // Sent whenever Lichess's own `opponentGone` stream event fires (confirmed
     // against OpponentGoneEvent.yaml). `claim_win_in_seconds` is only meaningful
@@ -423,7 +438,7 @@ pub enum BackendMessage {
     // no-idle-redraw reasoning as the clock (see BoardScreen.qml) -- the frontend
     // just shows/hides a "Claim victory" action and lets Lichess's own endpoint
     // reject an early claim, same as every other server-authoritative action here.
-    OpponentGone { gone: bool, claim_win_in_seconds: Option<u64> },
+    OpponentGone { game_id: String, gone: bool, claim_win_in_seconds: Option<u64> },
     PlayerStatuses { game_id: String, players: Box<[PlayerStatusSummary]> },
     PendingChallenges { challenges: Vec<ChallengeInfo> },
     SettingsState {
@@ -608,10 +623,32 @@ mod tests {
             FrontendMessage::ClaimVictory
         );
         let json = serde_json::to_string(&BackendMessage::GameActionCompleted {
+            game_id: "g1".into(),
             action: GameAction::AddTime,
         })
         .unwrap();
-        assert_eq!(json, r#"{"type":"GameActionCompleted","action":"AddTime"}"#);
+        assert_eq!(json, r#"{"type":"GameActionCompleted","game_id":"g1","action":"AddTime"}"#);
+    }
+
+    #[test]
+    fn board_request_envelope_preserves_bound_and_legacy_commands() {
+        let bound: FrontendRequest = serde_json::from_str(
+            r#"{"type":"Resign","expected_game_id":"g1"}"#,
+        ).unwrap();
+        assert_eq!(bound.message, FrontendMessage::Resign);
+        assert_eq!(bound.expected_game_id.as_deref(), Some("g1"));
+
+        let legacy: FrontendRequest = serde_json::from_str(
+            r#"{"type":"ResumeGame","game_id":"g2"}"#,
+        ).unwrap();
+        assert_eq!(legacy.message, FrontendMessage::ResumeGame { game_id: "g2".into() });
+        assert_eq!(legacy.expected_game_id, None);
+
+        let bound_move: FrontendRequest = serde_json::from_str(
+            r#"{"type":"MakeMove","from":"e2","to":"e4","promotion":null,"expected_game_id":"g1"}"#,
+        ).unwrap();
+        assert!(matches!(bound_move.message, FrontendMessage::MakeMove { .. }));
+        assert_eq!(bound_move.expected_game_id.as_deref(), Some("g1"));
     }
 
     #[test]
@@ -786,7 +823,7 @@ mod tests {
 
     #[test]
     fn opponent_gone_serializes_with_type_tag() {
-        let msg = BackendMessage::OpponentGone { gone: true, claim_win_in_seconds: Some(8) };
+        let msg = BackendMessage::OpponentGone { game_id: "g1".into(), gone: true, claim_win_in_seconds: Some(8) };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"OpponentGone""#));
         assert!(json.contains(r#""claim_win_in_seconds":8"#));
@@ -794,8 +831,8 @@ mod tests {
 
     #[test]
     fn reconnect_signal_is_scoped_to_the_game_stream() {
-        let json = serde_json::to_string(&BackendMessage::GameStreamReconnecting).unwrap();
-        assert_eq!(json, r#"{"type":"GameStreamReconnecting"}"#);
+        let json = serde_json::to_string(&BackendMessage::GameStreamReconnecting { game_id: "g1".into() }).unwrap();
+        assert_eq!(json, r#"{"type":"GameStreamReconnecting","game_id":"g1"}"#);
     }
 
     #[test]
