@@ -23,7 +23,7 @@ TestCase {
 
     function init() {
         boardMessages = []
-        board.statusText = ""
+        board.statusMessage = ""
         board.streamReconnecting = false
         board.gameOver = false
         board.showGameOverDialog = false
@@ -174,14 +174,14 @@ TestCase {
     }
 
     function test_liveStatusUsesTopPlayerBar() {
-        board.statusText = ""
+        board.statusMessage = ""
         board.gameOver = false
         board.yourColor = "white"
         board.turn = "white"
         compare(board.topStatusText(), "Your move")
         board.turn = "black"
         compare(board.topStatusText(), "Waiting for opponent")
-        board.statusText = "Reconnecting..."
+        board.statusMessage = "Reconnecting..."
         compare(board.topStatusText(), "Reconnecting...")
     }
 
