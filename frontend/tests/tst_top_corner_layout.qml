@@ -3,10 +3,12 @@ import QtTest 1.2
 import "../ui"
 
 TestCase {
+    id: testCase
     name: "TopCornerLayout"
     when: windowShown
     width: 1696
     height: 2384
+    property var boardMessages: []
 
     Theme {
         id: theme
@@ -16,10 +18,11 @@ TestCase {
         id: board
         width: 1696
         height: 2384
-        backendSender: function() {}
+        backendSender: function(message) { testCase.boardMessages.push(message) }
     }
 
     function init() {
+        boardMessages = []
         board.statusText = ""
         board.gameOver = false
         board.showGameOverDialog = false
@@ -248,6 +251,75 @@ TestCase {
         verify(board.positionHistory === retainedPositionHistory)
         compare(board.whiteTimeMs, 59000)
         compare(board.drawOfferedByOpponent, true)
+    }
+
+    function test_rewrittenHistoryCanEndAtTheSamePosition() {
+        var start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        var finalFen = "r1bqkb1r/pppppppp/2n2n2/8/8/2N2N2/PPPPPPPP/R1BQKB1R w KQkq - 4 3"
+        var original = [
+            start,
+            "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1",
+            "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2",
+            "rnbqkb1r/pppppppp/5n2/8/8/2N2N2/PPPPPPPP/R1BQKB1R b KQkq - 3 2",
+            finalFen
+        ]
+        var corrected = [
+            start,
+            "rnbqkbnr/pppppppp/8/8/8/2N5/PPPPPPPP/R1BQKBNR b KQkq - 1 1",
+            "r1bqkbnr/pppppppp/2n5/8/8/2N5/PPPPPPPP/R1BQKBNR w KQkq - 2 2",
+            "r1bqkbnr/pppppppp/2n5/8/8/2N2N2/PPPPPPPP/R1BQKB1R b KQkq - 3 2",
+            finalFen
+        ]
+        var snapshot = {
+            type: "BoardState", game_id: "pathgame", fen: finalFen, turn: "white",
+            white_time_ms: 60000, black_time_ms: 60000, legal_moves: [],
+            last_move: ["b8", "c6"], position_history: original,
+            move_history: ["Nf3", "Nf6", "Nc3", "Nc6"]
+        }
+        board.handleMessage(snapshot)
+        board.showHistoryPosition(1)
+        var retainedHistory = board.positionHistory
+        snapshot.position_history = original.slice()
+        snapshot.move_history = snapshot.move_history.slice()
+        board.handleMessage(snapshot)
+        verify(board.positionHistory === retainedHistory)
+        compare(board.historyIndex, 1)
+        compare(board.fen, original[1])
+
+        snapshot.position_history = corrected
+        snapshot.move_history = ["Nc3", "Nc6", "Nf3", "Nf6"]
+        snapshot.last_move = ["g8", "f6"]
+        board.handleMessage(snapshot)
+        compare(board.moveHistory, snapshot.move_history)
+        compare(board.positionHistory, corrected)
+        compare(board.liveLastMove, snapshot.last_move)
+        compare(board.historyIndex, 4)
+        board.showHistoryPosition(1)
+        compare(board.fen, corrected[1])
+    }
+
+    function test_dragInHistoryDoesNotSendALiveMove() {
+        var start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        board.handleMessage({
+            type: "BoardState", game_id: "historical-drag", fen: afterE5, turn: "white",
+            white_time_ms: 60000, black_time_ms: 60000, your_color: "white",
+            legal_moves: [{from: "g1", to: "f3", promotion: null}],
+            position_history: [start, afterE4, afterE5], move_history: ["e4", "e5"]
+        })
+        board.showHistoryPosition(0)
+        verify(board.viewingHistory)
+        board.onBoardGesture("g1", "f3")
+        compare(boardMessages.length, 0)
+        compare(board.fen, start)
+
+        board.returnToLive()
+        board.onBoardGesture("g1", "f3")
+        compare(boardMessages.length, 1)
+        compare(boardMessages[0].type, "MakeMove")
+        compare(boardMessages[0].expected_game_id, "historical-drag")
+        board.handleMessage({type: "MoveRejected", game_id: "historical-drag", reason: "fixture cleanup"})
     }
 
     function test_incrementalMovesAppendToHistoryAndFullSyncReplaces() {
