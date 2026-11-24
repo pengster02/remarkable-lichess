@@ -32,6 +32,7 @@ Rectangle {
     property string previewFen: ""
     property string turn: "white"
     property string liveTurn: "white"
+    readonly property string activeTurnColor: boardScreen.gameOver ? "" : boardScreen.turn
     // Pushed from main.qml's root state (TokenVerified's username) -- shown
     // on your own player bar below the board, matching every reference
     // client's "your side is a real labeled player too" treatment.
@@ -840,14 +841,13 @@ Rectangle {
             flair: boardScreen.flairFor(boardScreen.topColor)
             clockMs: boardScreen.displayClockFor(boardScreen.topColor)
             showClock: boardScreen.initialClockMs !== null
-            active: boardScreen.turn === boardScreen.topColor
+            active: boardScreen.activeTurnColor === boardScreen.topColor
             opponent: boardScreen.topColor !== boardScreen.yourColor
             lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
             materialAdvantage: boardScreen.showCapturedPieces ? boardScreen.materialAdvantageFor(boardScreen.topColor) : 0
             capturedPieces: boardScreen.showCapturedPieces ? boardScreen.capturedPiecesFor(boardScreen.topColor) : []
             statusText: boardScreen.topStatusText()
-            statusEmphasized: !boardScreen.gameOver &&
-                boardScreen.turn === boardScreen.yourColor
+            statusEmphasized: boardScreen.activeTurnColor === boardScreen.yourColor
             pieceSet: boardScreen.pieceSet
         }
 
@@ -1105,7 +1105,7 @@ Rectangle {
             flair: boardScreen.flairFor(boardScreen.bottomColor)
             clockMs: boardScreen.displayClockFor(boardScreen.bottomColor)
             showClock: boardScreen.initialClockMs !== null
-            active: boardScreen.turn === boardScreen.bottomColor
+            active: boardScreen.activeTurnColor === boardScreen.bottomColor
             opponent: boardScreen.bottomColor !== boardScreen.yourColor
             lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
             materialAdvantage: boardScreen.showCapturedPieces ? boardScreen.materialAdvantageFor(boardScreen.bottomColor) : 0

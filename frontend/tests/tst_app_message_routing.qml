@@ -125,9 +125,13 @@ TestCase {
         verify(unverified)
         var authEndpoint = findChild(unverified, "testAppLoadEndpoint")
         var startup = findChild(unverified, "screenLoader")
+        var connectivityBar = findChild(unverified, "connectivityBar")
+        verify(!connectivityBar.visible)
+        compare(connectivityBar.height, 0)
         authEndpoint.reply({type: "AuthenticationCheckFailed", message: "Lichess is unavailable"})
         verify(String(startup.source).endsWith("StartupScreen.qml"))
         compare(startup.item.checkError, "Lichess is unavailable")
+        verify(!connectivityBar.visible)
         compare(authEndpoint.sentMessages.length, 0)
 
         var retry = findChild(startup.item, "retryAuthenticationButton")
@@ -140,6 +144,7 @@ TestCase {
 
         authEndpoint.reply({type: "TokenVerified", username: "player"})
         verify(String(startup.source).endsWith("HomeScreen.qml"))
+        verify(connectivityBar.visible)
         authEndpoint.reply({type: "AuthenticationCheckFailed", message: "old error"})
         verify(String(startup.source).endsWith("HomeScreen.qml"))
     }
@@ -183,6 +188,8 @@ TestCase {
         compare(screen.item.moveHistory[3], "Qh4#")
         compare(screen.item.displayClockFor("white"), 597000)
         compare(screen.item.displayClockFor("black"), 598240)
+        verify(!findChild(screen.item, "topPlayerBar").active)
+        verify(!findChild(screen.item, "bottomPlayerBar").active)
         verify(screen.item.canNavigateHome)
 
         endpoint.reply({type: "RatingDiff", game_id: "other", rating_diff: -12})

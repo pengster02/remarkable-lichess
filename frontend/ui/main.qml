@@ -558,10 +558,14 @@ Rectangle {
     // because the host still looks them up on the root.
     Rectangle {
         id: topBar
+        objectName: "connectivityBar"
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: theme.topBarHeight
+        // Startup supplies its own feedback. A placeholder repeats it and an
+        // empty bar would leave a gap until connectivity is known.
+        visible: root.connectivityKnown || root.authenticationState !== "checking"
+        height: visible ? theme.topBarHeight : 0
         z: 1000
         color: theme.background
 
