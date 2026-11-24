@@ -997,11 +997,12 @@ Rectangle {
         pieceCodeFor: function(piece) {
             return gameReviewScreen.promotionPieceCode(piece)
         }
+        onDismissed: gameReviewScreen.pendingPromotion = null
         onChosen: (piece) => {
-            var from = gameReviewScreen.pendingPromotion.from
-            var to = gameReviewScreen.pendingPromotion.to
+            var move = gameReviewScreen.pendingPromotion
+            if (move === null) return
             gameReviewScreen.pendingPromotion = null
-            gameReviewScreen.submitExplorationMove(from, to, piece)
+            gameReviewScreen.submitExplorationMove(move.from, move.to, piece)
         }
     }
 
