@@ -34,6 +34,7 @@ pub struct GameSession {
     pending_move: Option<PendingMove>,
     pending_game_action: Option<PendingGameAction>,
     pub initial_fen: String,
+    initial_in_check: bool,
     pub position: Chess,
     pub legal: Vec<LegalMove>,
     pub last_move: Option<(String, String)>,
@@ -253,6 +254,7 @@ fn to_board_state(
             && session.opponent_is_human
             && session.initial_clock_ms.is_some(),
         move_history,
+        initial_in_check: position_history.as_ref().map(|_| session.initial_in_check),
         position_history,
         appended_move,
         captured_by_white: session.captured_by_white.clone().into_boxed_slice(),
@@ -316,6 +318,7 @@ impl GameSession {
             pending_move: None,
             pending_game_action: None,
             initial_fen: full.initial_fen.clone(),
+            initial_in_check: replay.initial_in_check,
             position,
             legal,
             last_move,
@@ -784,6 +787,34 @@ mod tests {
             }
             _ => panic!("expected BoardState"),
         }
+    }
+
+    #[test]
+    fn initial_check_travels_with_full_history_on_resume_and_takeback() {
+        let mut full = sample_full("g7g6");
+        full.variant.key = "fromPosition".into();
+        full.initial_fen =
+            "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2".into();
+        let (mut session, initial) = GameSession::from_game_full(&full, "my-id").unwrap();
+        assert!(matches!(initial, BackendMessage::BoardState {
+            initial_in_check: Some(true), in_check: false, ..
+        }));
+        let mut state = full.state;
+        state.moves = "g7g6 h5f3".into();
+        assert!(matches!(session.apply_state_update(state.clone()).unwrap(), BackendMessage::BoardState {
+            initial_in_check: None, appended_move: Some(_), ..
+        }));
+        state.wtime -= 1_000;
+        assert!(matches!(session.apply_state_update(state.clone()).unwrap(), BackendMessage::BoardState {
+            initial_in_check: None, position_history: None, appended_move: None, ..
+        }));
+        assert!(matches!(session.board_state(), BackendMessage::BoardState {
+            initial_in_check: Some(true), in_check: false, ..
+        }));
+        state.moves = "g7g6".into();
+        assert!(matches!(session.apply_state_update(state).unwrap(), BackendMessage::BoardState {
+            initial_in_check: Some(true), position_history: Some(ref fens), ..
+        } if fens.len() == 2 && fens[0] == full.initial_fen));
     }
 
     #[test]

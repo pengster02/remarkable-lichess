@@ -523,6 +523,10 @@ pub enum BackendMessage {
         move_history: Option<Box<[String]>>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         position_history: Option<Box<[String]>>,
+        // Part of the full history snapshot. Later plies already carry SAN,
+        // and re-sending this flag on every move or deriving it in QML is unnecessary.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        initial_in_check: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         appended_move: Option<Box<str>>,
         captured_by_white: Box<[String]>,
@@ -1118,6 +1122,7 @@ mod tests {
             can_give_time: true,
             move_history: Some(vec![].into_boxed_slice()),
             position_history: Some(vec!["startpos".into()].into_boxed_slice()),
+            initial_in_check: Some(false),
             appended_move: None,
             captured_by_white: vec!["bP".into()].into_boxed_slice(),
             captured_by_black: vec![].into_boxed_slice(),
@@ -1148,6 +1153,7 @@ mod tests {
         assert!(json.contains(r#""game_stream_connected":false"#));
         assert!(json.contains(r#""captured_by_white":["bP"]"#));
         assert!(json.contains(r#""fen":"startpos""#));
+        assert!(json.contains(r#""initial_in_check":false"#));
         assert!(json.contains(r#""your_player":{"id":"alice","name":"Alice","title":"IM","rating":1700,"provisional":true}"#));
     }
 
