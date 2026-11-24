@@ -17,7 +17,11 @@ Rectangle {
     property bool streaming: false
     property bool patron: false
     property string flair: ""
-    property string identityDetailText: playerBar.buildIdentityDetails()
+    readonly property string ratingText: playerBar.rating === null
+        ? "" : "(" + playerBar.rating + (playerBar.provisional ? "?" : "") + ")"
+    readonly property string materialText: playerBar.materialAdvantage > 0
+        ? "+" + playerBar.materialAdvantage : ""
+    readonly property string profileText: playerBar.buildProfileText()
     property int clockMs: 0
     // Untimed/correspondence games have no clock to show at all.
     property bool showClock: true
@@ -40,17 +44,14 @@ Rectangle {
         return words.join(" ")
     }
 
-    function buildIdentityDetails() {
+    function buildProfileText() {
         var details = []
-        if (playerBar.rating !== null) {
-            details.push("(" + playerBar.rating + (playerBar.provisional ? "?" : "") + ")")
-        }
         if (playerBar.presenceText.length > 0) details.push(playerBar.presenceText)
         if (playerBar.streaming) details.push("Live")
         if (playerBar.patron) details.push("Patron")
         var flairName = playerBar.flairLabel(playerBar.flair)
         if (flairName.length > 0) details.push(flairName)
-        return details.join("  ·  ")
+        return details.join(" · ")
     }
 
     Theme { id: theme; darkMode: playerBar.darkMode }
@@ -87,16 +88,17 @@ Rectangle {
         anchors.right: clockChip.visible ? clockChip.left : parent.right
         anchors.rightMargin: theme.spacingSmall
         anchors.verticalCenter: parent.verticalCenter
-        spacing: theme.spacingXs / 2
+        spacing: theme.spacingXs / 3
 
         Row {
             width: parent.width
             height: theme.fontLarge
-            spacing: playerBar.playerTitle.length > 0 ? theme.spacingXs : 0
+            spacing: theme.spacingXs
 
             Rectangle {
+                id: titleBadge
                 visible: playerBar.playerTitle.length > 0
-                width: visible ? titleLabel.implicitWidth + theme.spacingXs : 0
+                width: visible ? Math.ceil(titleLabel.implicitWidth) + theme.spacingXs : 0
                 height: parent.height
                 radius: theme.cardRadius / 2
                 color: "transparent"
@@ -117,22 +119,48 @@ Rectangle {
 
             Text {
                 objectName: "playerNameText"
-                width: parent.width - x
+                // Reserve the numbers before eliding the name. Shrinking
+                // all text hurts legibility, and wrapping shifts the board.
+                width: Math.floor(Math.min(implicitWidth, Math.max(0, parent.width
+                    - (titleBadge.visible ? titleBadge.width + parent.spacing : 0)
+                    - (ratingLabel.visible ? ratingLabel.width + parent.spacing : 0)
+                    - (materialLabel.visible ? materialLabel.width + parent.spacing : 0))))
                 height: parent.height
                 verticalAlignment: Text.AlignVCenter
-                text: playerBar.playerName +
-                      (playerBar.identityDetailText.length > 0
-                          ? "  " + playerBar.identityDetailText
-                          : "") +
-                      (playerBar.materialAdvantage > 0 ? "  |  +" + playerBar.materialAdvantage : "")
+                text: playerBar.playerName
                 font.pixelSize: theme.fontLabel
                 font.bold: playerBar.opponent
                 elide: Text.ElideRight
                 color: theme.text
             }
+
+            Text {
+                id: ratingLabel
+                objectName: "playerRatingText"
+                visible: text.length > 0
+                width: Math.ceil(implicitWidth)
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
+                text: playerBar.ratingText
+                font.pixelSize: theme.fontLabel
+                color: theme.text
+            }
+
+            Text {
+                id: materialLabel
+                objectName: "playerMaterialText"
+                visible: text.length > 0
+                width: Math.ceil(implicitWidth)
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
+                text: playerBar.materialText
+                font.pixelSize: theme.fontSmall
+                color: theme.textMuted
+            }
         }
 
         Row {
+            id: playRow
             height: theme.fontLarge
             width: parent.width
             spacing: theme.spacingXs
@@ -140,13 +168,15 @@ Rectangle {
                 playerBar.capturedPieces.length > 0
 
             Text {
+                id: playStatus
                 objectName: "playerStatusText"
                 visible: playerBar.statusText.length > 0
                 width: visible
                     ? Math.min(
                         implicitWidth,
-                        parent.width - capturedPiecesRow.width -
-                            (capturedPiecesRow.visible ? theme.spacingXs : 0)
+                        Math.max(0, parent.width
+                            - Math.min(capturedPiecesRow.naturalWidth, parent.width / 2)
+                            - (capturedPiecesRow.visible ? parent.spacing : 0))
                     )
                     : 0
                 height: parent.height
@@ -165,24 +195,45 @@ Rectangle {
 
             Row {
                 id: capturedPiecesRow
+                objectName: "playerCapturedPieces"
                 height: parent.height
                 spacing: 2
-                visible: playerBar.capturedPieces.length > 0
+                readonly property int pieceCount: playerBar.capturedPieces.length
+                readonly property real naturalWidth: Math.max(0, pieceCount * (theme.fontLarge + spacing) - spacing)
+                readonly property real pieceWidth: pieceCount > 0
+                    ? Math.min(theme.fontLarge, Math.max(0, (playRow.width - playStatus.width
+                        - (playStatus.width > 0 ? playRow.spacing : 0)
+                        - (pieceCount - 1) * spacing) / pieceCount))
+                    : 0
+                visible: pieceCount > 0
 
                 Repeater {
                     model: playerBar.capturedPieces
                     Image {
                         required property string modelData
-                        width: theme.fontLarge
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: capturedPiecesRow.pieceWidth
                         height: width
                         source: "../assets/pieces/" + playerBar.pieceSet + "/" + modelData + ".png"
                         fillMode: Image.PreserveAspectFit
                         smooth: false
-                        sourceSize.width: width
-                        sourceSize.height: height
+                        sourceSize.width: theme.fontLarge
+                        sourceSize.height: theme.fontLarge
                     }
                 }
             }
+        }
+
+        Text {
+            objectName: "playerProfileText"
+            visible: text.length > 0
+            width: parent.width
+            height: theme.fontSmall
+            verticalAlignment: Text.AlignVCenter
+            text: playerBar.profileText
+            font.pixelSize: theme.fontEyebrow
+            elide: Text.ElideRight
+            color: theme.textMuted
         }
     }
 
@@ -201,6 +252,7 @@ Rectangle {
 
         Text {
             id: clockText
+            objectName: "playerClockText"
             anchors.centerIn: parent
             text: playerBar.formatClock(playerBar.clockMs)
             font.pixelSize: theme.fontClock
