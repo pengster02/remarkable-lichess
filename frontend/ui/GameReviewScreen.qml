@@ -75,6 +75,10 @@ Rectangle {
     property var variationMoves: []
     readonly property string variationStartFen: variationFens[0] || ""
     readonly property var candidateRows: chessDisplay.moveRows(variationMoves, [], [], variationStartFen)
+    // A normalized FEN can still be the archived move, and hiding all Explore
+    // annotations would also hide the judgment when Undo returns to that move.
+    readonly property var displayedArchiveAnalysis: variationMoves.length === 0
+        ? analysisAt(currentIndex - 1) : null
     onVariationMovesChanged: if (moveList) Qt.callLater(moveList.revealCurrentMove)
     property string selectedSquare: ""
     property var pendingPromotion: null
@@ -622,38 +626,26 @@ Rectangle {
                 elide: Text.ElideRight
                 color: theme.text
             }
-            // Engine eval for the position on the board right now -- from
-            // analysis[currentIndex - 1], the ply that produced fens[currentIndex]
-            // (analysis has no entry for the starting position, same off-by-one
-            // as fens/moves themselves). Empty for an unanalyzed game or before
-            // any move has been made yet.
             Text {
                 visible: !gameReviewScreen.exploreMode
-                text: gameReviewScreen.evalLabel(gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1))
+                text: gameReviewScreen.evalLabel(gameReviewScreen.displayedArchiveAnalysis)
                 font.pixelSize: theme.fontLabel
                 font.bold: true
                 color: theme.textMuted
             }
         }
 
-        // The comment for whichever move is currently displayed, when that
-        // move was actually flagged -- e.g. "Blunder. Nxg6 was best.", the
-        // exact caption Lichess's own analysis board shows.
         Text {
-            visible: gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1) !== null &&
-                !!gameReviewScreen.analysisAt(
-                    gameReviewScreen.currentIndex - 1
-                ).judgment_comment
-            text: gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1)
-                ? (gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1).judgment_comment || "")
-                : ""
+            objectName: "reviewMoveJudgment"
+            visible: text.length > 0
+            text: gameReviewScreen.displayedArchiveAnalysis
+                ? gameReviewScreen.displayedArchiveAnalysis.judgment_comment || "" : ""
             font.pixelSize: theme.fontSmall
             wrapMode: Text.WordWrap
             width: parent.width
             color: gameReviewScreen.judgmentColor(
-                gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1)
-                    ? gameReviewScreen.analysisAt(gameReviewScreen.currentIndex - 1).judgment
-                    : null
+                gameReviewScreen.displayedArchiveAnalysis
+                    ? gameReviewScreen.displayedArchiveAnalysis.judgment : null
             )
         }
 

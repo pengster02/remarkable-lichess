@@ -300,6 +300,83 @@ TestCase {
         compare(review.currentFen(), base)
     }
 
+    function test_exploreJudgmentFollowsTheArchivedMove() {
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var archiveE4 = afterE4.replace(" - ", " e3 ")
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var e4Comment = "Inaccuracy. d4 was best."
+        var e5Comment = "Mistake. c5 was best."
+        var requestId = choose("archive-judgments")
+        endpoint.reply({type: "GameMoves", request_id: requestId,
+                        fens: [startFen, archiveE4, afterE5], moves: ["e4", "e5"],
+                        analysis: [
+                            {eval_cp: 0, judgment: "Inaccuracy", judgment_comment: e4Comment},
+                            {eval_cp: 50, judgment: "Mistake", judgment_comment: e5Comment}
+                        ]})
+        var review = screen.item
+        var judgment = findChild(review, "reviewMoveJudgment")
+        verify(!judgment.visible)
+        review.goNext()
+        verify(judgment.visible)
+        compare(judgment.text, e4Comment)
+
+        function loadBase(requestedFen) {
+            endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                            requested_fen: requestedFen, fen: afterE4,
+                            legal_moves: [{from: "e7", to: "e5"}]})
+            compare(review.currentFen(), afterE4)
+            verify(judgment.visible)
+            compare(judgment.text, e4Comment)
+        }
+
+        function playE5() {
+            verify(review.requestExplorationMove("e7", "e5"))
+            verify(judgment.visible)
+            endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                            from_fen: afterE4, fen: afterE5, san: "e5"})
+            compare(review.currentFen(), afterE5)
+            compare(review.variationMoves, ["e5"])
+            verify(!judgment.visible)
+        }
+
+        review.beginExploration()
+        loadBase(archiveE4)
+        playE5()
+        review.requestCloudEvaluation()
+        var cloud = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(cloud.fen, afterE5)
+        endpoint.reply({type: "CloudEvaluation", request_id: cloud.request_id, requested_fen: cloud.fen,
+                        evaluation: {depth: 24, knodes: 50, eval_cp: 10, best_line: ["Nf3"]}})
+        compare(review.cloudBestLineLabel(), "Best line: Nf3")
+        verify(!judgment.visible)
+
+        review.undoExplorationMove()
+        loadBase(afterE4)
+        compare(review.cloudBestLineLabel(), "")
+        playE5()
+        review.rebaseExploration()
+        loadBase(archiveE4)
+        playE5()
+        review.stopExploration()
+        compare(review.currentFen(), archiveE4)
+        verify(judgment.visible)
+        compare(judgment.text, e4Comment)
+
+        review.beginExploration()
+        loadBase(archiveE4)
+        playE5()
+        var archiveRow = findChild(review, "archiveMoveRow")
+        compare(archiveRow.whiteMove.judgment, "Inaccuracy")
+        compare(archiveRow.blackMove.judgment, "Mistake")
+        var archivedMove = findChild(archiveRow, "blackMoveCell")
+        mouseClick(archivedMove, archivedMove.width / 2, archivedMove.height / 2)
+        compare(review.currentIndex, 2)
+        compare(review.variationMoves, [])
+        verify(judgment.visible)
+        compare(judgment.text, e5Comment)
+        compare(review.cloudBestLineLabel(), "Best line: Nf3")
+    }
+
     function test_exploreRefreshCoversFootprintAndOverlappingPulses_data() {
         return [
             {tag: "new move before the first pulse ends", highlights: false, settleFirst: false,
