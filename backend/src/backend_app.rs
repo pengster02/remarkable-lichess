@@ -1,3 +1,4 @@
+use crate::game::outcome::{outcome, termination_label};
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
 use crate::lichess::client::{LichessClient, LICHESS_BASE_URL};
@@ -141,7 +142,8 @@ impl LichessBackend {
                 // Releases the callback port when a token arrives some other
                 // way (a pasted token, or a restart picking up the saved file)
                 // while a QR sign-in is still waiting on its redirect.
-                self.handle_cancel_login();
+                stop_task(&mut self.login_handle).await;
+                self.stop_game_activity().await;
                 let _ = std::fs::write(&self.token_path, &token);
                 self.client = Some(client);
                 self.my_id = Some(account.id.clone());
@@ -149,8 +151,8 @@ impl LichessBackend {
                 // Needed so GameSession can work out which color the local account is
                 // playing (see game::session::resolve_your_color) and orient the board
                 // accordingly, instead of always assuming white.
-                self.spawn_streams(replier.clone(), account.id.clone());
                 self.send(replier, &BackendMessage::TokenVerified { username: account.username });
+                self.spawn_streams(replier.clone(), account.id);
             }
             Err(e) => {
                 log::warn!("activate_token: rejected: {e}");
@@ -345,8 +347,9 @@ impl LichessBackend {
             return;
         }
         let Some(my_id) = self.my_id.clone() else { return };
-        let handle = spawn_game_stream(client, game_id, replier.clone(), self.session.clone(), my_id, self.write_lock.clone());
-        replace_game_stream_handle(&self.game_stream_handle, handle).await;
+        replace_game_stream_handle(&self.game_stream_handle, || {
+            spawn_game_stream(client, game_id, replier.clone(), self.session.clone(), my_id, self.write_lock.clone())
+        }).await;
     }
 
     async fn handle_request_game_history(
@@ -379,15 +382,31 @@ impl LichessBackend {
     /// independent of `self.session` (which models the *live*, currently
     /// in-progress game, if any) so reviewing an old game can never disturb
     /// whatever's actually being played right now.
-    async fn handle_request_game_moves(&mut self, replier: &BackendReplier<Self>, game_id: String) {
+    async fn handle_request_game_moves(
+        &self,
+        replier: &BackendReplier<Self>,
+        game_id: String,
+        request_id: Option<u32>,
+    ) {
+        let fail = |message| {
+            let reply = match request_id {
+                Some(request_id) => BackendMessage::GameMovesFailed { request_id, message },
+                None => BackendMessage::ErrorMsg { message },
+            };
+            self.send(replier, &reply);
+        };
         let Some(client) = self.client.clone() else {
-            self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+            if request_id.is_some() {
+                fail("Not signed in to Lichess".into());
+            } else {
+                self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+            }
             return;
         };
         let export = match client.export_game(&game_id).await {
             Ok(export) => export,
             Err(e) => {
-                self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() });
+                fail(e.to_string());
                 return;
             }
         };
@@ -407,8 +426,8 @@ impl LichessBackend {
             })
             .collect();
         match crate::game::replay::fens_for_moves(&moves) {
-            Ok(fens) => self.send(replier, &BackendMessage::GameMoves { moves, fens, clock_ms, analysis }),
-            Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: format!("replaying game moves: {e}") }),
+            Ok(fens) => self.send(replier, &BackendMessage::GameMoves { request_id, moves, fens, clock_ms, analysis }),
+            Err(e) => fail(format!("replaying game moves: {e}")),
         }
     }
 
@@ -625,22 +644,29 @@ impl LichessBackend {
         );
     }
 
-    /// There was previously no in-app way to do this at all -- switching
-    /// accounts or recovering from a revoked token meant editing files on the
-    /// device directly. Reuses TokenInvalid to drive the frontend back to
-    /// LoginScreen, same message it already handles for a rejected token.
-    fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
-        let _ = std::fs::remove_file(&self.token_path);
+    async fn handle_log_out(&mut self, replier: &BackendReplier<Self>) {
+        stop_task(&mut self.login_handle).await;
+        if let Err(error) = std::fs::remove_file(&self.token_path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                self.send(replier, &BackendMessage::LogoutFailed {
+                    message: format!("Could not remove the saved sign-in: {error}"),
+                });
+                return;
+            }
+        }
+        self.stop_game_activity().await;
         self.client = None;
         self.my_id = None;
-        self.handle_cancel_seek();
-        // Otherwise the account event stream's reconnect loop keeps running
-        // with the now-revoked token, spamming Reconnecting forever (see
-        // account_stream_handle's own comment).
-        if let Some(handle) = self.account_stream_handle.take() {
-            handle.abort();
-        }
-        self.send(replier, &BackendMessage::TokenInvalid { reason: "logged out".into() });
+        self.username = None;
+        self.send(replier, &BackendMessage::AuthenticationRequired);
+    }
+
+    async fn stop_game_activity(&mut self) {
+        stop_task(&mut self.pending_seek).await;
+        stop_task(&mut self.account_stream_handle).await;
+        let mut game_stream = self.game_stream_handle.lock().await;
+        stop_task(&mut game_stream).await;
+        *self.session.lock().await = None;
     }
 
     /// Shared by every in-game action (resign/draw/takeback/abort/claim-victory) --
@@ -757,18 +783,11 @@ impl LichessBackend {
         }
     }
 
-    pub fn spawn_streams(&mut self, replier: BackendReplier<Self>, my_id: String) {
+    fn spawn_streams(&mut self, replier: BackendReplier<Self>, my_id: String) {
         let Some(client) = self.client.clone() else { return };
         let session_handle = self.session.clone();
         let write_lock = self.write_lock.clone();
         let game_stream_handle = self.game_stream_handle.clone();
-        // Abort whatever account event stream was already running before
-        // starting a new one -- otherwise a second call here (e.g. logging
-        // in again without an intervening logout) would leak the first one
-        // exactly like the leak this field exists to prevent on logout.
-        if let Some(old) = self.account_stream_handle.take() {
-            old.abort();
-        }
         let handle = tokio::spawn(async move {
             let mut backoff_secs: u64 = 1;
             loop {
@@ -780,35 +799,24 @@ impl LichessBackend {
                         match parse_ndjson_line::<EventStreamMessage>(&line) {
                                 Some(EventStreamMessage::GameStart { game }) => {
                                     log::info!("GameStart: {}", game.id);
-                                    let handle = spawn_game_stream(
-                                        client.clone(),
-                                        game.id,
-                                        replier.clone(),
-                                        session_handle.clone(),
-                                        my_id.clone(),
-                                        write_lock.clone(),
-                                    );
-                                    replace_game_stream_handle(&game_stream_handle, handle).await;
+                                    replace_game_stream_handle(&game_stream_handle, || {
+                                        spawn_game_stream(
+                                            client.clone(), game.id, replier.clone(),
+                                            session_handle.clone(), my_id.clone(), write_lock.clone(),
+                                        )
+                                    }).await;
                                 }
                                 Some(EventStreamMessage::Challenge)
                                 | Some(EventStreamMessage::ChallengeCanceled)
                                 | Some(EventStreamMessage::ChallengeDeclined) => {
                                     send_pending_challenges(&client, &replier, &write_lock).await;
                                 }
-                                // Best-effort match against whatever game is currently
-                                // tracked, same "not exhaustive, server/session is still
-                                // authoritative" posture as e.g. the Abort button's own
-                                // comment -- if a new game has already replaced `session`
-                                // by the time this arrives (or this event is for some
-                                // other game entirely), silently drop it rather than
-                                // misattribute a rating change to the wrong game.
                                 Some(EventStreamMessage::GameFinish { game }) => {
                                     if let Some(rating_diff) = game.rating_diff {
-                                        let is_current_game =
-                                            session_handle.lock().await.as_ref().is_some_and(|s| s.game_id == game.id);
-                                        if is_current_game {
-                                            send_locked(&replier, &write_lock, &BackendMessage::RatingDiff { rating_diff });
-                                        }
+                                        send_locked(&replier, &write_lock, &BackendMessage::RatingDiff {
+                                            game_id: game.id,
+                                            rating_diff,
+                                        });
                                     }
                                 }
                             _ => {}
@@ -880,39 +888,20 @@ async fn send_pending_challenges(
 /// start, so only one is ever alive regardless of which path triggered it.
 async fn replace_game_stream_handle(
     slot: &Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    new_handle: tokio::task::JoinHandle<()>,
+    spawn: impl FnOnce() -> tokio::task::JoinHandle<()>,
 ) {
     let mut guard = slot.lock().await;
-    if let Some(old) = guard.take() {
-        old.abort();
-    }
-    *guard = Some(new_handle);
+    stop_task(&mut guard).await;
+    *guard = Some(spawn());
 }
 
-/// The live board stream's own equivalent of history_game_to_summary's
-/// win/loss/draw derivation -- kept as its own function (not inlined at each
-/// of GameOver's two call sites below) so both stay in sync. Distinct from
-/// that history-side function's exact return shape though: this one has to
-/// match BoardScreen.qml's existing GameOver contract, where `result` is
-/// either a winning color ("white"/"black") or "draw", not "win"/"loss"/
-/// "draw" from your own point of view -- `winner.unwrap_or_else(|| "draw")`
-/// (the previous behavior here) mislabeled every no-winner, non-draw ending
-/// (aborted, noStart, cheat, ...) as a draw. Falls back to the raw status
-/// itself for those, same as history_game_to_summary's own fallback --
-/// BoardScreen.qml's outcome text already handles a non-color/non-"draw"
-/// result by just capitalizing it.
-fn game_over_result(status: &str, winner: &Option<String>) -> String {
-    match winner {
-        Some(w) => w.clone(),
-        None if matches!(status, "draw" | "stalemate") => "draw".to_string(),
-        None => status.to_string(),
-    }
-}
-
-fn game_over_message(status: &str, winner: &Option<String>) -> BackendMessage {
-    BackendMessage::GameOver {
-        result: game_over_result(status, winner),
-        reason: termination_label(Some(status)),
+async fn stop_task(slot: &mut Option<tokio::task::JoinHandle<()>>) {
+    if let Some(handle) = slot.as_mut() {
+        // Keep the handle in the slot if this wait is cancelled. Aborting without
+        // joining can leak an in-flight update, and taking first loses the handle.
+        handle.abort();
+        let _ = handle.await;
+        *slot = None;
     }
 }
 
@@ -1013,16 +1002,8 @@ fn spawn_game_stream(
                                             }
                                             if full.state.status != "started" {
                                                 game_over = true;
-                                                // Don't bother storing a session for a
-                                                // game that's already over -- and clear
-                                                // whatever stale one might still be here
-                                                // from an earlier finished game (see the
-                                                // clearing below, same reasoning).
                                                 *guard = None;
-                                                Some(game_over_message(
-                                                    &full.state.status,
-                                                    &full.state.winner,
-                                                ))
+                                                Some(board_msg)
                                             } else {
                                                 if !player_status_requested {
                                                     let ids = [s.your_player.id.clone(), s.opponent_player.id.clone()]
@@ -1050,45 +1031,29 @@ fn spawn_game_stream(
                                     }
                                 }
                                 GameStreamMessage::State(state) => match guard.as_mut() {
-                                    Some(s) => {
+                                    Some(s) if s.game_id == game_id => {
                                         let is_over = state.status != "started";
-                                        if is_over {
-                                            game_over = true;
-                                        }
-                                        // Taken before apply_state_update consumes `state`,
-                                        // and only when the game actually ended, so the
-                                        // common in-progress update still clones nothing.
-                                        let outcome = is_over
-                                            .then(|| (state.status.clone(), state.winner.clone()));
+                                        let fallback = is_over.then(|| outcome(&state.status, state.winner.as_deref()));
                                         let result = match s.apply_state_update(state) {
                                             Ok(msg) => Some(msg),
                                             Err(error) => {
                                                 log::warn!(
                                                     "couldn't apply gameState for {game_id}: {error}"
                                                 );
-                                                None
+                                                fallback.map(|outcome| BackendMessage::GameOver {
+                                                    game_id: game_id.clone(),
+                                                    result: outcome.result,
+                                                    reason: outcome.reason,
+                                                })
                                             }
                                         };
-                                        if let Some((status, winner)) = outcome {
-                                            let msg = Some(game_over_message(&status, &winner));
-                                            // Otherwise this finished game's session sits
-                                            // here indefinitely: handle_resume_game's
-                                            // already_tracking check keys off `session`
-                                            // being non-empty for this exact game_id, so a
-                                            // stale entry here silently blocked ever
-                                            // re-attaching a stream to it (e.g. tapping
-                                            // Resume again on a game that just ended),
-                                            // and current_game_id() would keep pointing
-                                            // in-game actions (resign/draw/takeback) at a
-                                            // dead game in the gap before the next one's
-                                            // own Full snapshot overwrites this.
+                                        if is_over {
+                                            game_over = true;
                                             *guard = None;
-                                            msg
-                                        } else {
-                                            result
                                         }
+                                        result
                                     }
-                                    None => None,
+                                    _ => None,
                                 },
                                 // Doesn't touch `guard` -- opponent-connection status is
                                 // orthogonal to the cached position/session state.
@@ -1143,8 +1108,33 @@ fn spawn_game_stream(
 
 #[cfg(test)]
 mod stream_watchdog_tests {
-    use super::{next_stream_line, LineStream};
+    use super::{next_stream_line, replace_game_stream_handle, stop_task, LineStream};
+    use std::sync::Arc;
     use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn stream_replacement_waits_for_the_old_task_to_stop() {
+        let owner = Arc::new(());
+        let old_stream = tokio::spawn({
+            let owner = Arc::clone(&owner);
+            async move {
+                std::future::pending::<()>().await;
+                drop(owner);
+            }
+        });
+        let slot = Arc::new(Mutex::new(Some(old_stream)));
+
+        replace_game_stream_handle(&slot, || {
+            assert_eq!(Arc::strong_count(&owner), 1);
+            tokio::spawn(std::future::pending())
+        }).await;
+
+        let mut handle = slot.lock().await;
+        assert!(handle.is_some());
+        stop_task(&mut handle).await;
+        assert!(handle.is_none());
+    }
 
     #[tokio::test]
     async fn idle_stream_times_out_so_the_reconnect_loop_can_run() {
@@ -1344,15 +1334,15 @@ impl AppLoadBackend for LichessBackend {
                     },
                 )
             }
-            FrontendMessage::LogOut => self.handle_log_out(replier),
+            FrontendMessage::LogOut => self.handle_log_out(replier).await,
             FrontendMessage::RequestGameHistory { rated, speed, color } => {
                 self.handle_request_game_history(replier, rated, speed, color).await
             }
             FrontendMessage::CreateOpenChallenge { minutes, increment, rated } => {
                 self.handle_create_open_challenge(replier, minutes, increment, rated).await
             }
-            FrontendMessage::RequestGameMoves { game_id } => {
-                self.handle_request_game_moves(replier, game_id).await
+            FrontendMessage::RequestGameMoves { game_id, request_id } => {
+                self.handle_request_game_moves(replier, game_id, request_id).await
             }
             FrontendMessage::RequestCloudEvaluation { fen } => {
                 self.handle_request_cloud_evaluation(replier, fen).await
@@ -1438,124 +1428,6 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         speed: game.speed,
         opening_name: game.opening.map(|o| o.name),
         created_at_ms: game.created_at,
-    }
-}
-
-/// Human-readable form of Lichess's own GameStatusName -- distinct from
-/// `result` (win/loss/draw) above, since two "win"s can still differ in how
-/// they actually happened (checkmate vs. an opponent resigning vs. running
-/// out the clock), which win/loss/draw alone can't convey. Falls back to a
-/// title-cased copy of the raw status for anything not explicitly listed here
-/// (e.g. a future status Lichess adds) rather than hiding it as "unknown".
-fn termination_label(status: Option<&str>) -> String {
-    match status {
-        Some("created") => "Game created".to_string(),
-        Some("started") => "In progress".to_string(),
-        Some("aborted") => "Aborted".to_string(),
-        Some("mate") => "Checkmate".to_string(),
-        Some("resign") => "Resignation".to_string(),
-        Some("stalemate") => "Stalemate".to_string(),
-        Some("timeout") => "Opponent left".to_string(),
-        Some("outoftime") => "Time forfeit".to_string(),
-        Some("draw") => "Draw".to_string(),
-        Some("cheat") => "Cheat detected".to_string(),
-        Some("noStart") => "Opponent didn't join".to_string(),
-        Some("unknownFinish") => "Unknown finish".to_string(),
-        Some("insufficientMaterialClaim") => "Insufficient material".to_string(),
-        Some("variantEnd") => "Variant ending".to_string(),
-        Some(other) => humanize_identifier(other),
-        None => "Unknown".to_string(),
-    }
-}
-
-fn humanize_identifier(value: &str) -> String {
-    let mut spaced = String::new();
-    for character in value.chars() {
-        if character == '_' || character == '-' {
-            if !spaced.ends_with(' ') {
-                spaced.push(' ');
-            }
-        } else {
-            if character.is_uppercase() && !spaced.is_empty() && !spaced.ends_with(' ') {
-                spaced.push(' ');
-            }
-            spaced.push(character);
-        }
-    }
-
-    let mut characters = spaced.chars();
-    match characters.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
-        None => "Unknown".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod game_over_result_tests {
-    use super::{game_over_message, game_over_result, termination_label};
-    use crate::protocol::BackendMessage;
-
-    #[test]
-    fn a_real_winner_is_reported_as_their_color_regardless_of_status() {
-        assert_eq!(game_over_result("mate", &Some("white".to_string())), "white");
-        assert_eq!(game_over_result("resign", &Some("black".to_string())), "black");
-        assert_eq!(game_over_result("outoftime", &Some("white".to_string())), "white");
-    }
-
-    #[test]
-    fn a_genuine_no_winner_draw_or_stalemate_is_reported_as_draw() {
-        assert_eq!(game_over_result("draw", &None), "draw");
-        assert_eq!(game_over_result("stalemate", &None), "draw");
-    }
-
-    #[test]
-    fn game_over_reason_is_human_readable() {
-        assert_eq!(
-            game_over_message("outoftime", &Some("black".to_string())),
-            BackendMessage::GameOver {
-                result: "black".to_string(),
-                reason: "Time forfeit".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn every_official_game_status_has_a_readable_label() {
-        let cases = [
-            ("created", "Game created"),
-            ("started", "In progress"),
-            ("aborted", "Aborted"),
-            ("mate", "Checkmate"),
-            ("resign", "Resignation"),
-            ("stalemate", "Stalemate"),
-            ("timeout", "Opponent left"),
-            ("draw", "Draw"),
-            ("outoftime", "Time forfeit"),
-            ("cheat", "Cheat detected"),
-            ("noStart", "Opponent didn't join"),
-            ("unknownFinish", "Unknown finish"),
-            ("insufficientMaterialClaim", "Insufficient material"),
-            ("variantEnd", "Variant ending"),
-        ];
-
-        for (status, label) in cases {
-            assert_eq!(termination_label(Some(status)), label);
-        }
-
-        assert_eq!(
-            termination_label(Some("futureFinishReason")),
-            "Future Finish Reason"
-        );
-    }
-
-    #[test]
-    fn a_no_winner_non_draw_status_is_reported_as_itself_not_mislabeled_a_draw() {
-        // The E7 regression this guards: an aborted game has no winner but
-        // was never a draw either -- BoardScreen previously showed
-        // "Game over: Draw (aborted)", which is simply wrong.
-        assert_eq!(game_over_result("aborted", &None), "aborted");
-        assert_eq!(game_over_result("noStart", &None), "noStart");
-        assert_eq!(game_over_result("cheat", &None), "cheat");
     }
 }
 

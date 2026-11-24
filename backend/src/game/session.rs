@@ -1,3 +1,4 @@
+use crate::game::outcome::outcome;
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game};
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{BackendMessage, LegalMove, PlayerIdentity};
@@ -173,9 +174,10 @@ fn to_board_state(
         move_count >= 1
     };
     let elapsed_ms = elapsed_whole_millis(session.state_received_at, now);
+    let active = state.status == "started";
     let mut white_time_ms = state.wtime;
     let mut black_time_ms = state.btime;
-    if state.status == "started" && session.initial_clock_ms.is_some() {
+    if active && session.initial_clock_ms.is_some() {
         match session.position.turn() {
             shakmaty::Color::White => white_time_ms = white_time_ms.saturating_sub(elapsed_ms),
             shakmaty::Color::Black => black_time_ms = black_time_ms.saturating_sub(elapsed_ms),
@@ -194,7 +196,7 @@ fn to_board_state(
         turn: turn_name(&session.position),
         white_time_ms,
         black_time_ms,
-        legal_moves: session.legal.clone().into_boxed_slice(),
+        legal_moves: if active { session.legal.clone().into_boxed_slice() } else { Box::default() },
         last_move: session.last_move.clone().map(Box::new),
         your_color: session.your_color.clone(),
         in_check: session.position.is_check(),
@@ -202,19 +204,19 @@ fn to_board_state(
         takeback_offered_by_opponent: takeback_by_opponent,
         draw_offered_by_you: draw_by_you,
         takeback_offered_by_you: takeback_by_you,
-        can_abort: move_count < 2 && !session.is_tournament,
-        can_berserk: session.is_tournament && !session.berserked && !has_moved,
-        can_offer_draw: has_played_full_move
+        can_abort: active && move_count < 2 && !session.is_tournament,
+        can_berserk: active && session.is_tournament && !session.berserked && !has_moved,
+        can_offer_draw: active && has_played_full_move
             && session.opponent_is_human
             && !draw_by_you
             && !draw_by_opponent,
-        can_offer_takeback: has_played_full_move
+        can_offer_takeback: active && has_played_full_move
             && !session.rated
             && !session.is_tournament
             && session.opponent_is_human
             && !takeback_by_you
             && !takeback_by_opponent,
-        can_give_time: !session.rated
+        can_give_time: active && !session.rated
             && !session.is_tournament
             && session.opponent_is_human
             && session.initial_clock_ms.is_some(),
@@ -228,6 +230,7 @@ fn to_board_state(
         game_description: session.game_description.clone().into_boxed_str(),
         first_move_time_ms: first_move_time_ms.map(Box::new),
         initial_clock_ms: session.initial_clock_ms.map(Box::new),
+        outcome: (!active).then(|| Box::new(outcome(&state.status, state.winner.as_deref()))),
     }
 }
 
@@ -490,6 +493,43 @@ mod tests {
             }
             _ => panic!("expected BoardState"),
         }
+    }
+
+    #[test]
+    fn checkmating_move_and_outcome_arrive_in_the_same_board_update() {
+        let full = sample_full("f2f3 e7e5 g2g4");
+        let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let mut state = full.state;
+        state.moves.push_str(" d8h4");
+        state.status = "mate".into();
+        state.winner = Some("black".into());
+        state.btime = 598_240;
+
+        let BackendMessage::BoardState { fen, appended_move, outcome, black_time_ms, .. } =
+            session.apply_state_update(state).unwrap() else { panic!("expected a board update") };
+        assert!(fen.contains("6Pq"));
+        assert_eq!(appended_move.as_deref(), Some("Qh4#"));
+        assert_eq!(black_time_ms, 598_240);
+        let outcome = outcome.unwrap();
+        assert_eq!(outcome.result, "black");
+        assert_eq!(outcome.reason, "Checkmate");
+    }
+
+    #[test]
+    fn finished_game_full_contains_a_board_and_disables_play() {
+        let mut full = sample_full("e2e4 e7e5");
+        full.state.status = "resign".into();
+        full.state.winner = Some("white".into());
+        let (_, message) = GameSession::from_game_full(&full, "my-id").unwrap();
+
+        let BackendMessage::BoardState {
+            outcome, position_history, legal_moves, can_offer_draw, can_offer_takeback, ..
+        } = message else { panic!("expected a full board update") };
+        assert_eq!(position_history.unwrap().len(), 3);
+        assert!(legal_moves.is_empty());
+        assert!(!can_offer_draw);
+        assert!(!can_offer_takeback);
+        assert_eq!(outcome.unwrap().reason, "Resignation");
     }
 
     #[test]

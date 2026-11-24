@@ -28,12 +28,9 @@ Rectangle {
     property string filterSpeed: "all"
     // "all"/"white"/"black" -- that endpoint's own `color` query param.
     property string filterColor: "all"
-    // Set when a tapped game's RequestGameMoves comes back as ErrorMsg instead
-    // of GameMoves (see main.qml, which only navigates to GameReviewScreen on
-    // the latter) -- so a bad export/replay leaves the user on this screen
-    // with a visible reason instead of silently doing nothing.
     property string errorMessage: ""
     property bool loading: true
+    property bool openingReview: false
     property bool showFilters: false
     property string draftRated: "all"
     property string draftSpeed: "all"
@@ -102,9 +99,9 @@ Rectangle {
             darkMode: gameHistoryScreen.darkMode
             eyebrow: "Archive"
             title: "Game history"
-            detail: gameHistoryScreen.loading
-                ? "Loading your games"
-                : (gameHistoryScreen.games.length + " recent games")
+            detail: gameHistoryScreen.openingReview ? "Opening game…"
+                : (gameHistoryScreen.loading ? "Loading your games"
+                   : gameHistoryScreen.games.length + " recent games")
         }
 
         // Drafting in a dialog avoids a network request on every tap; instant
@@ -190,12 +187,6 @@ Rectangle {
                     color: gameHistoryScreen.resultColor(modelData.result)
                 }
 
-                // Opens GameReviewScreen once the reply lands -- see main.qml's
-                // GameMoves handler. Not an immediate navigation: staying here
-                // until the reply arrives is what lets an ErrorMsg reply (bad
-                // export/replay) show inline instead of landing on a broken
-                // review screen (see the game-review design spec's error
-                // handling section).
                 MouseArea {
                     anchors.fill: parent
                     onClicked: {
@@ -350,6 +341,8 @@ Rectangle {
             gameHistoryScreen.games = msg.games || []
         } else if (msg.type === "ErrorMsg") {
             gameHistoryScreen.loading = false
+            gameHistoryScreen.errorMessage = msg.message
+        } else if (msg.type === "GameMovesFailed") {
             gameHistoryScreen.errorMessage = msg.message
         }
     }

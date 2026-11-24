@@ -47,6 +47,10 @@ Rectangle {
     // way GameReviewScreen's header gets to show who was played and how it
     // ended, not just a bare, contextless board.
     property var reviewGame: null
+    // A sequence ID distinguishes retries of the same game. A game ID alone would
+    // accept old retries, and blocking all taps would prevent changing selection.
+    property int reviewRequestSequence: 0
+    property var pendingReview: null
 
     // Connectivity lives at the root (not per-screen) so the persistent top bar
     // can show it on every screen -- fed by the backend's ConnectivityState (see
@@ -75,12 +79,29 @@ Rectangle {
     }
 
     function openGameReview(gameId, game) {
-        root.reviewGame = game || null
-        root.sendToBackend({type: "RequestGameMoves", game_id: gameId})
+        if (root.pendingReview && root.pendingReview.gameId === gameId) return
+        root.reviewRequestSequence += 1
+        root.pendingReview = {id: root.reviewRequestSequence, gameId: gameId, game: game || null}
+        root.sendToBackend({type: "RequestGameMoves", game_id: gameId,
+                            request_id: root.pendingReview.id})
     }
 
     function expectNextGame(gameId) {
         root.expectedHomeGameId = gameId
+    }
+
+    function requireAuthentication() {
+        root.hasToken = false
+        root.authenticationState = "required"
+        root.username = ""
+        root.expectedHomeGameId = ""
+        root.pendingReview = null
+        root.reviewGame = null
+        root.reviewMoves = []
+        root.reviewFens = []
+        root.reviewClockMs = []
+        root.reviewAnalysis = []
+        screenLoader.source = "LoginScreen.qml"
     }
 
     function toggleDarkMode() {
@@ -262,10 +283,7 @@ Rectangle {
                 endpoint.sendMessage(1, JSON.stringify({type: "RequestSettings"}))
                 screenLoader.source = "HomeScreen.qml"
             } else if (msg.type === "AuthenticationRequired") {
-                root.hasToken = false
-                root.authenticationState = "required"
-                root.expectedHomeGameId = ""
-                screenLoader.source = "LoginScreen.qml"
+                root.requireAuthentication()
             } else if (msg.type === "SettingsState") {
                 // Updates root state (not just forwarded to the current screen)
                 // since it needs to persist across navigation, same as darkMode --
@@ -287,14 +305,12 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "TokenInvalid") {
-                root.hasToken = false
-                root.authenticationState = "required"
-                root.expectedHomeGameId = ""
-                screenLoader.source = "LoginScreen.qml"
+                root.requireAuthentication()
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "LoginCompleted") {
+                if (root.authenticationState !== "required") return
                 // The backend's sign-in task only got as far as saving the
                 // token; asking for it to be activated has to come from here
                 // because that task can't touch the backend's own state (see
@@ -329,15 +345,20 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "GameMoves") {
-                // Only reachable from GameHistoryScreen's RequestGameMoves -- an
-                // ErrorMsg reply instead (bad export/replay) leaves the source
-                // unchanged, so GameHistoryScreen stays up and shows it inline.
-                root.reviewMoves = msg.moves || []
-                root.reviewFens = msg.fens || []
-                root.reviewClockMs = msg.clock_ms || []
-                root.reviewAnalysis = msg.analysis || []
-                screenLoader.source = "GameReviewScreen.qml"
+            } else if (msg.type === "GameMoves" || msg.type === "GameMovesFailed") {
+                var request = root.pendingReview
+                if (!request || msg.request_id !== request.id) return
+                root.pendingReview = null
+                if (msg.type === "GameMovesFailed") {
+                    screenLoader.item.handleMessage(msg)
+                } else {
+                    root.reviewGame = request.game
+                    root.reviewMoves = msg.moves || []
+                    root.reviewFens = msg.fens || []
+                    root.reviewClockMs = msg.clock_ms || []
+                    root.reviewAnalysis = msg.analysis || []
+                    screenLoader.source = "GameReviewScreen.qml"
+                }
             } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" ||
                        msg.type === "CloudEvaluation" ||
                        msg.type === "CloudEvaluationUnavailable" ||
@@ -345,7 +366,8 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "BoardState" || msg.type === "GameOver" || msg.type === "MoveRejected") {
+            } else if (msg.type === "BoardState") {
+                if (!root.hasToken) return
                 // Never force-navigate away from Home: a user who explicitly went
                 // back to Home (or never left it yet) should stay there even if a
                 // still-running per-game stream keeps delivering messages -- this
@@ -355,19 +377,23 @@ Rectangle {
                 // Board itself) still auto-advances to Board normally, since that's
                 // the desired flow for a freshly-started/still-loading game.
                 var showingHome = screenLoader.source.toString().indexOf("HomeScreen") !== -1
-                var isExpectedHomeGame = msg.type === "BoardState" &&
-                    root.expectedHomeGameId.length > 0 &&
+                var isExpectedHomeGame = root.expectedHomeGameId.length > 0 &&
                     msg.game_id === root.expectedHomeGameId
                 if (!showingHome || isExpectedHomeGame) {
                     root.expectedHomeGameId = ""
                     if (screenLoader.source.toString().indexOf("BoardScreen") === -1) {
                         screenLoader.source = "BoardScreen.qml"
+                    } else if (root.pendingReview &&
+                               root.pendingReview.gameId !== msg.game_id) {
+                        root.pendingReview = null
                     }
                     if (screenLoader.item && screenLoader.item.handleMessage) {
                         screenLoader.item.handleMessage(msg)
                     }
                 }
-            } else if (msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
+            } else if (msg.type === "LogoutFailed" ||
+                       msg.type === "GameOver" || msg.type === "MoveRejected" ||
+                       msg.type === "GameStreamReconnecting" || msg.type === "OpponentGone" ||
                        msg.type === "RatingDiff" || msg.type === "GameActionCompleted" ||
                        msg.type === "MovePreview" || msg.type === "MoveSubmitted") {
                 // Deliberately never navigates on its own (confirmed via the PC
@@ -399,12 +425,14 @@ Rectangle {
 
     Loader {
         id: screenLoader
+        objectName: "screenLoader"
         // Sits below the persistent top bar so no screen underlaps it.
         anchors.top: topBar.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         source: "StartupScreen.qml"
+        onSourceChanged: root.pendingReview = null
         onLoaded: {
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend
@@ -507,6 +535,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGameReview")) {
                 item.openGameReview = root.openGameReview
+            }
+            if (item.hasOwnProperty("openingReview")) {
+                item.openingReview = Qt.binding(function() { return root.pendingReview !== null })
             }
             if (item.hasOwnProperty("expectNextGame")) {
                 item.expectNextGame = root.expectNextGame

@@ -130,7 +130,11 @@ pub enum FrontendMessage {
     // fetches its full move list and replays it once (see game::replay), so
     // GameReviewScreen can navigate purely by array indexing, no chess logic
     // or network round-trip per step (see the game-review design spec).
-    RequestGameMoves { game_id: String },
+    RequestGameMoves {
+        game_id: String,
+        #[serde(default)]
+        request_id: Option<u32>,
+    },
     RequestCloudEvaluation { fen: String },
     RequestAnalysisPosition { fen: String },
     MakeAnalysisMove {
@@ -240,7 +244,7 @@ pub struct HistoryGameSummary {
     // "noStart") for the rare case where there's no winner and it wasn't a draw.
     pub result: String,
     // How the game actually ended -- "Checkmate"/"Resignation"/"Time forfeit"/
-    // etc. (see backend_app.rs's termination_label), distinct from `result`
+    // etc. (see game::outcome::termination_label), distinct from `result`
     // above: two "win"s can still differ in how they happened, which
     // win/loss/draw alone can't convey.
     pub termination: String,
@@ -277,6 +281,12 @@ pub struct MoveAnalysis {
     pub judgment_comment: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GameOutcome {
+    pub result: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CloudEvaluationLine {
     pub eval_cp: Option<i32>,
@@ -293,6 +303,7 @@ pub enum BackendMessage {
     // as a placeholder while a saved token is still being checked. Alternatives:
     // infer this from LoginFailed, or let the frontend start OAuth immediately.
     AuthenticationRequired,
+    LogoutFailed { message: String },
     TokenVerified { username: String },
     TokenInvalid { reason: String },
     // Everything the sign-in screen needs to draw itself. `authorize_url` is
@@ -379,8 +390,12 @@ pub enum BackendMessage {
         // fixed number of seconds remaining). None for an untimed/correspondence
         // game.
         initial_clock_ms: Option<Box<u64>>,
+        // Pair the outcome with the final position and clocks. Separate messages can
+        // execute a queued premove between updates, while a second snapshot type duplicates board data.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        outcome: Option<Box<GameOutcome>>,
     },
-    GameOver { result: String, reason: String },
+    GameOver { game_id: String, result: String, reason: String },
     GameActionCompleted { action: GameAction },
     MovePreview {
         game_id: String,
@@ -437,7 +452,15 @@ pub enum BackendMessage {
     // Lichess only has clock data for timed games and only has analysis for a
     // game that's actually been through its computer review, so the frontend
     // must index defensively rather than assume equal length.
-    GameMoves { moves: Vec<String>, fens: Vec<String>, clock_ms: Vec<u32>, analysis: Vec<MoveAnalysis> },
+    GameMoves {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+        moves: Vec<String>,
+        fens: Vec<String>,
+        clock_ms: Vec<u32>,
+        analysis: Vec<MoveAnalysis>,
+    },
+    GameMovesFailed { request_id: u32, message: String },
     CloudEvaluation {
         requested_fen: String,
         evaluation: CloudEvaluationLine,
@@ -460,16 +483,9 @@ pub enum BackendMessage {
         status: String,
     },
     // Sent when the account event stream's `gameFinish` (see
-    // lichess::models::GameFinishInfo) arrives for the currently-tracked
-    // game and carries a rating change (rated games only -- casual games
-    // never send this at all, see backend_app.rs's GameFinish handling).
-    // Arrives independently of (and in no guaranteed order relative to)
-    // `GameOver`, which comes from a different stream (the per-game board
-    // stream's terminal GameState update) that has no rating info at all --
-    // deliberately two separate messages rather than trying to force them
-    // into one, since one can arrive without the other (e.g. a casual game
-    // never gets this one) or in either order.
-    RatingDiff { rating_diff: i32 },
+    // lichess::models::GameFinishInfo) can arrive before or after the final board,
+    // whose stream carries no rating change.
+    RatingDiff { game_id: String, rating_diff: i32 },
 }
 
 #[cfg(test)]
@@ -705,9 +721,16 @@ mod tests {
     fn request_game_moves_parses_and_game_moves_serializes_with_type_tag() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"RequestGameMoves","game_id":"abcd1234"}"#).unwrap(),
-            FrontendMessage::RequestGameMoves { game_id: "abcd1234".into() }
+            FrontendMessage::RequestGameMoves { game_id: "abcd1234".into(), request_id: None }
+        );
+        assert_eq!(
+            serde_json::from_value::<FrontendMessage>(serde_json::json!({
+                "type": "RequestGameMoves", "game_id": "abcd1234", "request_id": 7,
+            })).unwrap(),
+            FrontendMessage::RequestGameMoves { game_id: "abcd1234".into(), request_id: Some(7) }
         );
         let json = serde_json::to_string(&BackendMessage::GameMoves {
+            request_id: Some(7),
             moves: vec!["e4".into(), "e5".into()],
             fens: vec!["startpos".into(), "after-e4".into(), "after-e5".into()],
             clock_ms: vec![],
@@ -715,12 +738,22 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""type":"GameMoves""#));
+        assert!(json.contains(r#""request_id":7"#));
         assert!(json.contains(r#""moves":["e4","e5"]"#));
+
+        let failure = serde_json::to_value(BackendMessage::GameMovesFailed {
+            request_id: 7,
+            message: "unavailable".into(),
+        }).unwrap();
+        assert_eq!(failure, serde_json::json!({
+            "type": "GameMovesFailed", "request_id": 7, "message": "unavailable",
+        }));
     }
 
     #[test]
     fn game_moves_serializes_clock_and_analysis_when_present() {
         let json = serde_json::to_string(&BackendMessage::GameMoves {
+            request_id: None,
             moves: vec!["e4".into()],
             fens: vec!["startpos".into(), "after-e4".into()],
             clock_ms: vec![29900],
@@ -732,6 +765,7 @@ mod tests {
             }],
         })
         .unwrap();
+        assert!(!json.contains("request_id"));
         assert!(json.contains(r#""clock_ms":[29900]"#));
         assert!(json.contains(r#""mate_in":3"#));
         assert!(json.contains(r#""judgment":"Blunder""#));
@@ -739,8 +773,12 @@ mod tests {
 
     #[test]
     fn rating_diff_serializes_with_type_tag_including_negative_values() {
-        let json = serde_json::to_string(&BackendMessage::RatingDiff { rating_diff: -9 }).unwrap();
+        let json = serde_json::to_string(&BackendMessage::RatingDiff {
+            game_id: "g1".into(),
+            rating_diff: -9,
+        }).unwrap();
         assert!(json.contains(r#""type":"RatingDiff""#));
+        assert!(json.contains(r#""game_id":"g1""#));
         assert!(json.contains(r#""rating_diff":-9"#));
     }
 
@@ -813,6 +851,7 @@ mod tests {
             game_description: "Casual Rapid • 10 min + 0 sec/move".into(),
             first_move_time_ms: None,
             initial_clock_ms: Some(Box::new(600_000)),
+            outcome: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));

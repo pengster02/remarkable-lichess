@@ -122,7 +122,7 @@ Shared QML interaction tests:
 docker exec remarkable-lichess-local sh -lc \
   'cd /workspace/remarkable-lichess &&
    QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner \
-   -input frontend/tests -import frontend/ui'
+   -input frontend/tests -import frontend/ui -import frontend/tests/imports'
 ```
 
 Always also run:

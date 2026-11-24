@@ -250,6 +250,8 @@ docker exec remarkable-lichess-local sh -lc \
 
 AppLoad restarts on its own. Loose QML edits are not picked up — the RCC has to
 be rebuilt.
+Restart with `./scripts/run-local.sh` after frontend/backend message changes
+so the QML bundle and backend use the same protocol.
 
 ---
 
@@ -275,7 +277,7 @@ A new backend binary needs a full AppLoad relaunch, not just a file copy.
 
 ## Validate changes
 
-Backend — 162 tests, including `wiremock`-backed Lichess client coverage:
+Backend tests, including `wiremock`-backed Lichess client coverage:
 
 ```bash
 cd backend
@@ -293,7 +295,7 @@ build in a Linux container:
 cross check --features transport --target aarch64-unknown-linux-gnu
 ```
 
-QML lint and the 14 shared interaction test suites, using the emulator's Qt:
+QML lint and interaction tests, using the emulator's Qt:
 
 ```bash
 docker exec remarkable-lichess-local sh -lc \
@@ -305,7 +307,7 @@ docker exec remarkable-lichess-local sh -lc \
 docker exec remarkable-lichess-local sh -lc \
   'cd /workspace/remarkable-lichess &&
    QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner \
-   -input frontend/tests -import frontend/ui'
+   -input frontend/tests -import frontend/ui -import frontend/tests/imports'
 ```
 
 [`docs/DEVELOPER_HANDOFF.md`](docs/DEVELOPER_HANDOFF.md) carries a 14-step
