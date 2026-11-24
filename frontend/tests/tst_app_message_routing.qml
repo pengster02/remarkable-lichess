@@ -682,50 +682,96 @@ TestCase {
         compare(board.topStatusText(), "Waiting for opponent")
     }
 
-    function showPendingMovePreview() {
+    function showPendingMovePreview(whiteClock) {
         verify(screen.item.submitMove("e2", "e4", null))
         var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
         var preview = {
             type: "MovePreview", game_id: "active", request_id: request.request_id,
             fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-            turn: "black", last_move: ["e2", "e4"], white_time_ms: 597000, black_time_ms: 600000
+            turn: "black", last_move: ["e2", "e4"],
+            white_time_ms: whiteClock === undefined ? 597000 : whiteClock, black_time_ms: 600000
         }
         endpoint.reply(preview)
         return preview
     }
 
-    function test_previewAndRollbackEachUseTheirOwnClockAge() {
+    function test_previewAndRollbackEachUseTheirOwnClockAge_data() {
+        return [{tag: "running main clock", paused: false},
+                {tag: "paused main clock with first move deadline", paused: true}]
+    }
+
+    function test_previewAndRollbackEachUseTheirOwnClockAge(data) {
         app.openGame("active")
         var snapshot = boardState("active")
-        snapshot.first_move_time_ms = 14000
+        if (data.paused) snapshot.first_move_time_ms = 14000
         snapshot.initial_clock_ms = 600000
         endpoint.reply(snapshot)
         var board = screen.item
-        var preview = showPendingMovePreview()
+        var predictedWhite = data.paused ? 600000 : 597000
+        var preview = showPendingMovePreview(predictedWhite)
         var previewAt = board.previewClock.receivedAt
         compare(board.displayFirstMoveTimeMs(), null)
 
         endpoint.reply({type: "GameStreamReconnecting", game_id: "active"})
-        snapshot.white_time_ms = 599000
-        snapshot.first_move_time_ms = 13000
+        snapshot.white_time_ms = data.paused ? 600000 : 599000
+        if (data.paused) snapshot.first_move_time_ms = 13000
         snapshot.game_stream_connected = true
         endpoint.reply(snapshot)
         var liveAt = board.liveClock.receivedAt
         board.clockNowMs = Math.max(previewAt, liveAt) + 2000
         compare(board.fen, preview.fen)
-        compare(board.whiteTimeMs, 597000)
-        compare(board.displayClockFor("black"), 600000 - Math.floor((board.clockNowMs - previewAt) / 1000) * 1000)
+        compare(board.whiteTimeMs, predictedWhite)
+        var previewAge = Math.floor((board.clockNowMs - previewAt) / 1000) * 1000
+        compare(board.displayClockFor("black"), 600000 - (data.paused ? 0 : previewAge))
         compare(board.displayFirstMoveTimeMs(), null)
         compare(board.topStatusText(), "Submitting e2–e4")
 
         endpoint.reply({type: "MoveRejected", game_id: "active", request_id: preview.request_id,
                         reason: "try again"})
         compare(board.fen, startFen)
-        compare(board.whiteTimeMs, 599000)
-        compare(board.displayClockFor("white"), 597000)
-        compare(board.displayFirstMoveTimeMs(), 11000)
+        compare(board.whiteTimeMs, snapshot.white_time_ms)
+        compare(board.displayClockFor("white"), data.paused ? 600000 : 597000)
+        compare(board.displayFirstMoveTimeMs(), data.paused ? 11000 : null)
         endpoint.reply(snapshot)
         compare(board.topStatusText(), "Move rejected: try again")
+    }
+
+    function test_mainClockStartsOnlyAfterTheAuthoritativeOpeningUpdate() {
+        app.openGame("active")
+        var board = screen.item
+        var afterWhite = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var afterBlack = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var snapshot = Object.assign(boardState("active"), {
+            fen: afterWhite, turn: "black", your_color: "black",
+            position_history: [startFen, afterWhite], move_history: ["e4"],
+            legal_moves: [{from: "e7", to: "e5"}], first_move_time_ms: 0, initial_clock_ms: 600000
+        })
+        endpoint.reply(snapshot)
+        board.clockNowMs = board.liveClock.receivedAt + 3000
+        compare(board.displayFirstMoveTimeMs(), 0)
+        compare(board.displayClockFor("black"), 600000)
+        verify(board.submitMove("e7", "e5", null))
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        var accepted = Object.assign({}, snapshot, {
+            fen: afterBlack, turn: "white", position_history: [startFen, afterWhite, afterBlack],
+            move_history: ["e4", "e5"], first_move_time_ms: null, main_clock_paused: true,
+            last_move: ["e7", "e5"], resolved_move_request_id: request.request_id
+        })
+        endpoint.reply(accepted)
+        board.clockNowMs = board.liveClock.receivedAt + 3000
+        compare(board.fen, afterBlack)
+        verify(board.mainClockPaused)
+        compare(board.displayFirstMoveTimeMs(), null)
+        compare(board.displayClockFor("white"), 600000)
+        compare(board.displayClockFor("black"), 600000)
+
+        endpoint.reply(Object.assign({}, accepted, {
+            main_clock_paused: false, white_time_ms: 599000, resolved_move_request_id: null
+        }))
+        board.clockNowMs = board.liveClock.receivedAt + 2000
+        verify(!board.mainClockPaused)
+        compare(board.displayClockFor("white"), 597000)
+        compare(board.displayClockFor("black"), 600000)
     }
 
     function test_authoritativeBoardAndOutcomeReplaceThePreviewClocks() {

@@ -207,20 +207,22 @@ fn to_board_state(
     };
     let elapsed_ms = elapsed_whole_millis(session.state_received_at, now);
     let active = state.status == "started";
+    let main_clock_paused = active && state.expiration.is_some();
     let mut white_time_ms = state.wtime;
     let mut black_time_ms = state.btime;
-    if active && session.initial_clock_ms.is_some() {
+    if active && session.initial_clock_ms.is_some() && !main_clock_paused {
         match session.position.turn() {
             shakmaty::Color::White => white_time_ms = white_time_ms.saturating_sub(elapsed_ms),
             shakmaty::Color::Black => black_time_ms = black_time_ms.saturating_sub(elapsed_ms),
         }
     }
-    let first_move_time_ms = state.expiration.as_ref().map(|expiration| {
-        expiration
-            .millis_to_move
+    // A predicted move preserves the confirmed pause. Reusing its deadline
+    // assigns it to the next turn, while clearing the pause starts time early.
+    let first_move_time_ms = state.expiration.as_ref()
+        .filter(|_| active && session.prior_moves_before_prediction.is_none())
+        .map(|expiration| expiration.millis_to_move
             .saturating_sub(expiration.idle_millis)
-            .saturating_sub(elapsed_ms)
-    });
+            .saturating_sub(elapsed_ms));
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
         position_id: session.position_id,
@@ -259,6 +261,7 @@ fn to_board_state(
         opponent_player: Box::new(session.opponent_player.clone()),
         game_description: session.game_description.clone().into_boxed_str(),
         first_move_time_ms: first_move_time_ms.map(Box::new),
+        main_clock_paused,
         initial_clock_ms: session.initial_clock_ms.map(Box::new),
         outcome: (!active).then(|| {
             let mut result = outcome(&state.status, state.winner.as_deref());
@@ -410,14 +413,13 @@ impl GameSession {
 
     pub fn apply_state_update(&mut self, state: GameState) -> anyhow::Result<BackendMessage> {
         let changed = state.status != "started" || state.moves != self.state.moves;
-        let mut board = self.update_state(state, true)?;
+        let mut board = self.update_state(state, true, None)?;
         if changed {
             self.resolve_move(&mut board);
         }
         if self.state.status != "started" {
             self.cancel_game_action();
         }
-        self.prior_moves_before_prediction = None;
         Ok(board)
     }
 
@@ -430,7 +432,12 @@ impl GameSession {
         self.apply_state_update(state).map(Some)
     }
 
-    fn update_state(&mut self, state: GameState, game_stream_connected: bool) -> anyhow::Result<BackendMessage> {
+    fn update_state(
+        &mut self,
+        state: GameState,
+        game_stream_connected: bool,
+        prior_moves_before_prediction: Option<String>,
+    ) -> anyhow::Result<BackendMessage> {
         enum Change {
             Appended(String),
             Rebuilt,
@@ -471,6 +478,7 @@ impl GameSession {
         self.state = state;
         self.state_received_at = Instant::now();
         self.game_stream_connected = game_stream_connected;
+        self.prior_moves_before_prediction = prior_moves_before_prediction;
         let history = match &change {
             Change::Appended(san) => HistoryDelivery::Append(san),
             Change::Rebuilt => HistoryDelivery::Full,
@@ -487,24 +495,17 @@ impl GameSession {
         if self.state.moves != expected_moves || self.state.status != "started" {
             return Ok(None);
         }
-        let elapsed_ms = elapsed_whole_millis(self.state_received_at, Instant::now());
         let mut state = self.state.clone();
-        match self.position.turn() {
-            shakmaty::Color::White => {
-                state.wtime = state.wtime.saturating_sub(elapsed_ms).saturating_add(state.winc)
-            }
-            shakmaty::Color::Black => {
-                state.btime = state.btime.saturating_sub(elapsed_ms).saturating_add(state.binc)
-            }
-        }
+        (state.wtime, state.btime) = self.predicted_move_clocks();
         state.moves = if expected_moves.trim().is_empty() {
             uci.to_string()
         } else {
             format!("{} {}", expected_moves.trim(), uci)
         };
-        let mut board = self.update_state(state, self.game_stream_connected)?;
+        let mut board = self.update_state(
+            state, self.game_stream_connected, Some(expected_moves.to_owned()),
+        )?;
         self.resolve_move(&mut board);
-        self.prior_moves_before_prediction = Some(expected_moves.to_owned());
         Ok(Some(board))
     }
 
@@ -567,25 +568,26 @@ impl GameSession {
         self.pending_game_action = None;
     }
 
+    fn predicted_move_clocks(&self) -> (u64, u64) {
+        let (white, black) = (self.state.wtime, self.state.btime);
+        if self.state.expiration.is_some() {
+            return (white, black);
+        }
+        let elapsed_ms = elapsed_whole_millis(self.state_received_at, Instant::now());
+        match self.position.turn() {
+            shakmaty::Color::White => (
+                white.saturating_sub(elapsed_ms).saturating_add(self.state.winc), black,
+            ),
+            shakmaty::Color::Black => (
+                white, black.saturating_sub(elapsed_ms).saturating_add(self.state.binc),
+            ),
+        }
+    }
+
     fn preview_move(&self, uci: &str, request_id: Option<u32>) -> anyhow::Result<BackendMessage> {
         anyhow::ensure!(self.state.status == "started", "game is not active");
-        let mover = self.position.turn();
         let position = apply_uci_move(&self.position, uci)?;
-        let elapsed_ms = elapsed_whole_millis(self.state_received_at, Instant::now());
-        let mut white_time_ms = self.state.wtime;
-        let mut black_time_ms = self.state.btime;
-        match mover {
-            shakmaty::Color::White => {
-                white_time_ms = white_time_ms
-                    .saturating_sub(elapsed_ms)
-                    .saturating_add(self.state.winc);
-            }
-            shakmaty::Color::Black => {
-                black_time_ms = black_time_ms
-                    .saturating_sub(elapsed_ms)
-                    .saturating_add(self.state.binc);
-            }
-        }
+        let (white_time_ms, black_time_ms) = self.predicted_move_clocks();
         Ok(BackendMessage::MovePreview {
             game_id: self.game_id.clone(),
             request_id,
@@ -1305,21 +1307,89 @@ mod tests {
     }
 
     #[test]
-    fn first_move_expiration_accounts_for_cached_elapsed_time() {
-        let mut full = sample_full("");
-        full.state.expiration = Some(crate::lichess::models::GameExpiration {
-            idle_millis: 4_000,
-            millis_to_move: 15_000,
-        });
-        let (session, _msg) = GameSession::from_game_full(&full, "my-id").unwrap();
-        let msg = session.board_state_at(
-            session.state_received_at + std::time::Duration::from_millis(2_400),
-        );
-        match msg {
-            BackendMessage::BoardState { first_move_time_ms, .. } => {
-                assert_eq!(first_move_time_ms.as_deref(), Some(&9_000));
+    fn cached_first_move_deadline_ages_without_changing_either_main_clock() {
+        use std::time::Duration;
+
+        for moves in ["", "e2e4"] {
+            let mut full = sample_full(moves);
+            full.state.expiration = Some(crate::lichess::models::GameExpiration {
+                idle_millis: 4_000,
+                millis_to_move: 15_000,
+            });
+            let (session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+            for (age_ms, expected_deadline) in [(2_400, 9_000), (12_000, 0)] {
+                let now = session.state_received_at + Duration::from_millis(age_ms);
+                let BackendMessage::BoardState {
+                    white_time_ms, black_time_ms, first_move_time_ms, main_clock_paused, ..
+                } = session.board_state_at(now) else {
+                    panic!("expected BoardState");
+                };
+                assert_eq!((white_time_ms, black_time_ms), (600_000, 600_000));
+                assert_eq!(first_move_time_ms.as_deref(), Some(&expected_deadline));
+                assert!(main_clock_paused);
             }
-            _ => panic!("expected BoardState"),
+        }
+    }
+
+    #[test]
+    fn opening_predictions_keep_the_pause_until_the_stream_confirms_the_clocks() {
+        use std::time::Duration;
+
+        for (moves, played, confirmed_moves) in [
+            ("", "e2e4", "e2e4"),
+            ("e2e4", "e7e5", "e2e4 e7e5"),
+        ] {
+            let mut full = sample_full(moves);
+            full.state.winc = 2_000;
+            full.state.binc = 2_000;
+            full.state.expiration = Some(crate::lichess::models::GameExpiration {
+                idle_millis: 4_000,
+                millis_to_move: 15_000,
+            });
+            let (mut session, _) = GameSession::from_game_full(&full, "my-id").unwrap();
+            session.state_received_at -= Duration::from_secs(5);
+            let (preview, _canceled) = session.begin_move(played, Some(8)).unwrap();
+            let BackendMessage::MovePreview { white_time_ms, black_time_ms, .. } = preview else {
+                panic!("expected MovePreview");
+            };
+            assert_eq!((white_time_ms, black_time_ms), (600_000, 600_000));
+
+            let accepted = session.apply_accepted_move(moves, played).unwrap().unwrap();
+            assert!(matches!(accepted, BackendMessage::BoardState {
+                resolved_move_request_id: Some(8), first_move_time_ms: None,
+                main_clock_paused: true, white_time_ms: 600_000, black_time_ms: 600_000, ..
+            }));
+            assert!(session.apply_stream_update(full.state.clone()).unwrap().is_none());
+            let now = session.state_received_at + Duration::from_secs(3);
+            assert!(matches!(session.board_state_at(now), BackendMessage::BoardState {
+                first_move_time_ms: None, main_clock_paused: true,
+                white_time_ms: 600_000, black_time_ms: 600_000, ..
+            }));
+
+            let mut confirmed = full.state;
+            confirmed.moves = confirmed_moves.to_owned();
+            let still_paused = moves.is_empty();
+            if still_paused {
+                confirmed.expiration.as_mut().unwrap().idle_millis = 1_000;
+            } else {
+                confirmed.expiration = None;
+            }
+            session.apply_stream_update(confirmed).unwrap().unwrap();
+            let now = session.state_received_at + Duration::from_secs(2);
+            let BackendMessage::BoardState {
+                white_time_ms, black_time_ms, first_move_time_ms, main_clock_paused, ..
+            } = session.board_state_at(now) else {
+                panic!("expected confirmed BoardState");
+            };
+            assert_eq!(main_clock_paused, still_paused);
+            assert_eq!(black_time_ms, 600_000);
+            if still_paused {
+                assert_eq!(white_time_ms, 600_000);
+                assert_eq!(first_move_time_ms.as_deref(), Some(&12_000));
+            } else {
+                assert_eq!(white_time_ms, 598_000);
+                assert!(first_move_time_ms.is_none());
+            }
         }
     }
 

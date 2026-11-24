@@ -534,6 +534,8 @@ pub enum BackendMessage {
         opponent_player: Box<PlayerIdentity>,
         game_description: Box<str>,
         first_move_time_ms: Option<Box<u64>>,
+        #[serde(default)]
+        main_clock_paused: bool,
         // Each side's starting clock allotment in ms (see
         // game::session::GameSession's own field for why the frontend needs
         // this alongside the live white_time_ms/black_time_ms -- a low-time
@@ -1130,6 +1132,7 @@ mod tests {
             }),
             game_description: "Casual Rapid • 10 min + 0 sec/move".into(),
             first_move_time_ms: None,
+            main_clock_paused: false,
             initial_clock_ms: Some(Box::new(600_000)),
             outcome: None,
         };

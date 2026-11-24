@@ -49,9 +49,11 @@ Rectangle {
     property string username: ""
     // Keep clock values with their receipt time so rollback restores their age.
     // Copying displayed values loses that age and a shared timestamp mixes turns.
-    property var liveClock: ({whiteMs: 0, blackMs: 0, firstMoveMs: null, receivedAt: 0})
+    property var liveClock: ({whiteMs: 0, blackMs: 0, firstMoveMs: null, paused: false, receivedAt: 0})
     property var previewClock: null
     readonly property var displayedClock: boardScreen.previewClock || boardScreen.liveClock
+    readonly property bool mainClockPaused: boardScreen.liveClock.paused === true ||
+        boardScreen.liveClock.firstMoveMs !== null
     readonly property double whiteTimeMs: boardScreen.displayedClock.whiteMs
     readonly property double blackTimeMs: boardScreen.displayedClock.blackMs
     // Fixed for the game's lifetime (see game::session::GameSession) -- null
@@ -224,8 +226,8 @@ Rectangle {
         repeat: true
         running: boardScreen.visible &&
             boardScreen.liveClockEnabled &&
-            (boardScreen.initialClockMs !== null ||
-                boardScreen.displayedClock.firstMoveMs !== null) &&
+            (boardScreen.displayedClock.firstMoveMs !== null ||
+                (boardScreen.initialClockMs !== null && !boardScreen.mainClockPaused)) &&
             !boardScreen.gameOver &&
             boardScreen.streamError.length === 0 &&
             boardScreen.fen.length > 0
@@ -491,7 +493,8 @@ Rectangle {
 
     function displayClockFor(color) {
         var base = color === "white" ? boardScreen.whiteTimeMs : boardScreen.blackTimeMs
-        if (!boardScreen.liveClockEnabled || color !== boardScreen.turn || boardScreen.gameOver) {
+        if (!boardScreen.liveClockEnabled || boardScreen.mainClockPaused ||
+                color !== boardScreen.turn || boardScreen.gameOver) {
             return base
         }
         return Math.max(0, base - boardScreen.clockElapsedMs())
@@ -505,9 +508,8 @@ Rectangle {
     // Faster only when the visible clock text is about to change often.
     // Above one minute, 10s ticks are enough and much kinder to e-ink.
     function clockRefreshIntervalMs() {
-        var ms = boardScreen.displayClockFor(boardScreen.turn)
-        var firstMoveMs = boardScreen.displayFirstMoveTimeMs()
-        if (firstMoveMs !== null) ms = Math.min(ms, firstMoveMs)
+        var ms = boardScreen.displayFirstMoveTimeMs()
+        if (ms === null) ms = boardScreen.displayClockFor(boardScreen.turn)
         if (ms <= 15000) return 1000
         if (ms <= 60000) return 5000
         return 10000
@@ -1726,6 +1728,7 @@ Rectangle {
             whiteMs: boardScreen.displayClockFor("white"),
             blackMs: boardScreen.displayClockFor("black"),
             firstMoveMs: null,
+            paused: false,
             receivedAt: 0
         }
         var outcome
@@ -1876,6 +1879,7 @@ Rectangle {
                 whiteMs: msg.white_time_ms,
                 blackMs: msg.black_time_ms,
                 firstMoveMs: msg.first_move_time_ms !== undefined ? msg.first_move_time_ms : null,
+                paused: msg.main_clock_paused === true,
                 receivedAt: msg.outcome ? 0 : Date.now()
             }
             boardScreen.clockPulse += 1
