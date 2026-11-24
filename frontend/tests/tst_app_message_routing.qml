@@ -321,6 +321,42 @@ TestCase {
         verify(review.requestExplorationMove("d2", "d4"))
     }
 
+    function test_cancelExplorePromotionKeepsTheVariation() {
+        var reviewId = choose("promotion-game")
+        var fen = "7k/P7/8/8/8/8/8/4K3 w - - 0 1"
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [fen]})
+        var review = screen.item
+        review.beginExploration()
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: fen, fen: fen, legal_moves: [
+                            {from: "a7", to: "a8", promotion: "n"},
+                            {from: "a7", to: "a8", promotion: "q"}
+                        ]})
+        review.onExplorationGesture("a7", "a8")
+        var cancel = findChild(review, "promotionCancelButton")
+        verify(cancel && waitForRendering(cancel))
+        var before = endpoint.sentMessages.length
+        mouseClick(cancel, cancel.width / 2, cancel.height / 2)
+        verify(!cancel.visible)
+        compare(review.pendingPromotion, null)
+        compare(review.pendingAnalysisRequestId, 0)
+        compare(review.exploreFen, fen)
+        compare(review.variationFens, [fen])
+        compare(review.variationMoves, [])
+        compare(endpoint.sentMessages.length, before)
+
+        review.onExplorationGesture("a7", "a8")
+        verify(cancel.visible)
+        findChild(review, "promotionDialog").chosen("n")
+        var move = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(move.type, "MakeAnalysisMove")
+        compare(move.fen, fen)
+        compare(move.promotion, "n")
+        endpoint.reply({type: "AnalysisMove", request_id: move.request_id, from_fen: fen,
+                        fen: "N6k/8/8/8/8/8/8/4K3 b - - 0 1", san: "a8=N"})
+        compare(review.variationMoves, ["a8=N"])
+    }
+
     function test_leavingReviewCancelsCloudEvaluationForThatReview() {
         var reviewId = choose("cloud-game")
         endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [startFen]})

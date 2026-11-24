@@ -199,7 +199,12 @@ Rectangle {
     property bool confirmResign: false
     property var pendingPremove: null
     onPremovesEnabledChanged: {
-        if (!boardScreen.premovesEnabled) boardScreen.cancelPremove()
+        if (!boardScreen.premovesEnabled) {
+            boardScreen.cancelPremove()
+            if (boardScreen.pendingPromotion && boardScreen.pendingPromotion.premove) {
+                boardScreen.pendingPromotion = null
+            }
+        }
     }
     property bool gameOver: false
     property bool showGameOverDialog: false
@@ -758,11 +763,12 @@ Rectangle {
                 boardScreen.isOwnPiece(boardScreen.pieceAt(to)) || from === to) {
             return false
         }
-        boardScreen.pendingPremove = null
         if (boardScreen.isPromotionPremove(from, to)) {
             if (boardScreen.autoQueenPromotion) {
                 boardScreen.queuePremove(from, to, "q")
             } else {
+                // Replace the queued move on choice. Clearing it on open loses
+                // it on Cancel, and restoring it later can revive a stale move.
                 boardScreen.pendingPromotion = {
                     from: from,
                     to: to,
@@ -1560,6 +1566,7 @@ Rectangle {
                 pieceCodeFor: function(piece) {
                     return boardScreen.promotionPieceCode(piece)
                 }
+                onDismissed: boardScreen.clearMovePrompts()
                 onChosen: (piece) => {
                     var move = boardScreen.pendingPromotion
                     if (move === null) return

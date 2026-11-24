@@ -2,6 +2,7 @@ import QtQuick 2.5
 
 AppDialog {
     id: promotionDialog
+    objectName: "promotionDialog"
     property var options: []
     property var pieceCodeFor: function() { return "" }
     property string pieceSet: "cburnett"
@@ -57,5 +58,14 @@ AppDialog {
                 }
             }
         }
+    }
+
+    // An explicit target avoids accidental backdrop dismissal and lets the
+    // player leave even when move confirmation is disabled.
+    AppButton {
+        objectName: "promotionCancelButton"
+        width: parent.width
+        text: "Cancel"
+        onClicked: promotionDialog.dismissed()
     }
 }

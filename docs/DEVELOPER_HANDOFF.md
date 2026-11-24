@@ -189,6 +189,8 @@ Minimum emulator smoke test:
 - Overlays use `AppDialog`, promotion uses `PromotionDialog`, and live/review
   notation uses `MoveTokenButton`. Extend these components instead of creating
   screen-local popup or button styles.
+  Promotion Cancel discards the draft in live play and Explore. Choosing a
+  promotion for a premove replaces the previous queue only after piece selection.
 - Abort, draw offer, resignation, and Berserk use `ConfirmAction`; keep their
   confirmation and cancel behavior shared instead of duplicating armed-state
   button pairs.
