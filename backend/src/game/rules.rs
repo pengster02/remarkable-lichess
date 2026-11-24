@@ -8,6 +8,7 @@ pub struct GameReplay {
     pub position: Chess,
     pub move_history: Vec<String>,
     pub position_history: Vec<String>,
+    pub initial_in_check: bool,
     pub captured_by_white: Vec<String>,
     pub captured_by_black: Vec<String>,
 }
@@ -87,6 +88,7 @@ pub fn replay_uci_moves_with_history(initial_fen: &str, moves: &str) -> Result<(
 
 pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
     let mut pos = starting_position(initial_fen)?;
+    let initial_in_check = pos.is_check();
     let mut history = Vec::new();
     let mut position_history =
         vec![Fen::from_position(&pos, EnPassantMode::Legal).to_string()];
@@ -97,6 +99,7 @@ pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
             position: pos,
             move_history: history,
             position_history,
+            initial_in_check,
             captured_by_white,
             captured_by_black,
         });
@@ -118,6 +121,7 @@ pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
         position: pos,
         move_history: history,
         position_history,
+        initial_in_check,
         captured_by_white,
         captured_by_black,
     })

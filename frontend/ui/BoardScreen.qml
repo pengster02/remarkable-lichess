@@ -135,6 +135,7 @@ Rectangle {
     // actually changes, same as everything else here.
     property var moveHistory: []
     property var positionHistory: []
+    property bool initialInCheck: false
     property int historyIndex: -1
     property bool viewingHistory: boardScreen.isViewingHistory()
     property var capturedByWhite: []
@@ -396,8 +397,10 @@ Rectangle {
     function checkedKingSquare() {
         var fen = boardScreen.fen
         if (boardScreen.isViewingHistory()) {
-            if (!chessDisplay.moveGivesCheck(boardScreen.moveHistory[boardScreen.historyIndex - 1])) return ""
-            return chessDisplay.kingSquare(boardScreen.buildPieceMap(fen), chessDisplay.sideToMove(fen))
+            var inCheck = boardScreen.historyIndex === 0 ? boardScreen.initialInCheck :
+                chessDisplay.moveGivesCheck(boardScreen.moveHistory[boardScreen.historyIndex - 1])
+            return inCheck
+                ? chessDisplay.kingSquare(boardScreen.buildPieceMap(fen), chessDisplay.sideToMove(fen)) : ""
         }
         return boardScreen.inCheck
             ? chessDisplay.kingSquare(boardScreen.buildPieceMap(fen), boardScreen.turn) : ""
@@ -537,6 +540,7 @@ Rectangle {
         if (boardScreen.awaitingBoard) return "Loading game..."
         if (boardScreen.gameOver) return "Game over"
         if (boardScreen.viewingHistory) {
+            if (boardScreen.historyIndex === 0) return "Viewing starting position"
             return "Viewing move " + boardScreen.historyIndex + " of " +
                 boardScreen.moveHistory.length
         }
@@ -1544,6 +1548,17 @@ Rectangle {
                     horizontalAlignment: Text.AlignHCenter
                     color: theme.textMuted
                 }
+                AppButton {
+                    objectName: "historyStartingPositionButton"
+                    width: parent.width
+                    text: "Starting position"
+                    visible: boardScreen.positionHistory.length > 1
+                    highlighted: boardScreen.viewingHistory && boardScreen.historyIndex === 0
+                    onClicked: {
+                        boardScreen.showHistoryPosition(0)
+                        boardScreen.showMoves = false
+                    }
+                }
                 Repeater {
                     model: boardScreen.moveRows()
 
@@ -1830,6 +1845,7 @@ Rectangle {
                 gameChanged
             var fullPositions = msg.position_history
             var fullMoves = msg.move_history
+            var hasFullHistory = fullPositions !== undefined && fullPositions !== null
             // A transposition can keep the FEN and change the line. Applying
             // every full snapshot interrupts browsing, while FEN alone misses it.
             var rewrittenHistory = !positionChanged && fullPositions && fullMoves &&
@@ -1864,8 +1880,15 @@ Rectangle {
                     boardScreen.cancelPremove()
                 }
             }
+            var initialInCheck = !gameChanged && boardScreen.initialInCheck
+            if (hasFullHistory) {
+                initialInCheck = typeof msg.initial_in_check === "boolean" ? msg.initial_in_check :
+                    fullPositions.length === 1 && msg.in_check === true
+            }
+            var previous = boardChanged || initialInCheck !== boardScreen.initialInCheck
+                ? boardScreen.captureBoardAppearance() : null
+            boardScreen.initialInCheck = initialInCheck
             if (boardChanged) {
-                var previous = boardScreen.captureBoardAppearance()
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
@@ -1874,7 +1897,7 @@ Rectangle {
                 // replaces our copy; a normal one-move advance sends neither array,
                 // just appended_move, so we grow our own copy by this message's fen
                 // and SAN (see backend protocol.rs BoardState).
-                if (fullPositions !== undefined && fullPositions !== null) {
+                if (hasFullHistory) {
                     boardScreen.positionHistory = fullPositions
                     boardScreen.moveHistory = fullMoves || []
                 } else {
@@ -1895,8 +1918,8 @@ Rectangle {
                 boardScreen.liveInCheck = msg.in_check || false
                 boardScreen.capturedByWhite = msg.captured_by_white || []
                 boardScreen.capturedByBlack = msg.captured_by_black || []
-                boardScreen.refreshBoard(previous)
             }
+            if (previous) boardScreen.refreshBoard(previous)
             boardScreen.liveClock = {
                 whiteMs: msg.white_time_ms,
                 blackMs: msg.black_time_ms,

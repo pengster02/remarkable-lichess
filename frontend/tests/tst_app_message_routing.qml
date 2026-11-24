@@ -381,6 +381,8 @@ TestCase {
         compare(pager.pageCount, 1)
         verify(!pager.pagingNeeded)
         var row = findChild(pager, "liveMoveRow")
+        var start = findChild(pager, "historyStartingPositionButton")
+        compare(start.visible, data.plies > 0)
         if (data.plies > 0) {
             compare(row.whiteMove.san, "e4")
             verify(findChild(row, "whiteMoveCell").isCurrent)
@@ -390,6 +392,70 @@ TestCase {
         var close = findChild(loader.item, "historyCloseButton")
         mouseClick(close, close.width / 2, close.height / 2)
         tryCompare(loader, "item", null)
+    }
+
+    function test_liveMovesOpensTheCustomStartWithoutSubmittingAMove_data() {
+        return [
+            {tag: "Paper Pro Move black", width: 954, height: 1696, side: "black"},
+            {tag: "Paper Pro white", width: 1620, height: 2160, side: "white"}
+        ]
+    }
+
+    function test_liveMovesOpensTheCustomStartWithoutSubmittingAMove(data) {
+        width = data.width
+        height = data.height
+        var base = "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2"
+        var replyFen = "rnbqkbnr/ppppp2p/5pp1/7Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3"
+        var live = "rnbqkbnr/ppppp2p/5pp1/8/4P3/5Q2/PPPP1PPP/RNB1KBNR b KQkq - 1 3"
+        app.openGame("live-custom-start")
+        var snapshot = boardState("live-custom-start")
+        snapshot.fen = live
+        snapshot.turn = "black"
+        snapshot.your_color = data.side
+        snapshot.position_history = [base, replyFen, live]
+        snapshot.move_history = ["g6", "Qf3"]
+        snapshot.legal_moves = [{from: "b8", to: "c6"}]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var open = findChild(board, "boardToolbar").children[1]
+        var loader = findChild(board, "moveHistoryLoader")
+        verify(waitForRendering(board))
+        var requests = endpoint.sentMessages.length
+        mouseClick(open, open.width / 2, open.height / 2)
+        verify(waitForRendering(loader.item))
+        var start = findChild(loader.item, "historyStartingPositionButton")
+        verify(start.visible)
+        mouseClick(start, start.width / 2, start.height / 2)
+        tryCompare(loader, "item", null)
+        compare(board.fen, base)
+        compare(board.historyIndex, 0)
+        compare(board.topStatusText(), "Viewing starting position")
+        var king = findChild(board, "boardSquare-e8")
+        verify(!king.isCheckSquare)
+        tryVerify(function() { return board.flashSquares.length === 0 })
+        snapshot.initial_in_check = true
+        endpoint.reply(snapshot)
+        compare(board.fen, base)
+        verify(king.isCheckSquare && king.flashRefresh)
+
+        var from = findChild(board, "boardSquare-b8")
+        var to = findChild(board, "boardSquare-c6")
+        var origin = from.mapToItem(board, from.width / 2, from.height / 2)
+        var target = to.mapToItem(board, to.width / 2, to.height / 2)
+        mouseDrag(board, origin.x, origin.y, target.x - origin.x, target.y - origin.y)
+        compare(board.selectedSquare, "")
+        compare(board.fen, base)
+
+        mouseClick(open, open.width / 2, open.height / 2)
+        verify(waitForRendering(loader.item))
+        verify(findChild(loader.item, "historyStartingPositionButton").highlighted)
+        var goLive = findChild(loader.item, "historyReturnToLiveButton")
+        mouseClick(goLive, goLive.width / 2, goLive.height / 2)
+        tryCompare(loader, "item", null)
+        compare(board.fen, live)
+        compare(board.historyIndex, 2)
+        verify(!king.isCheckSquare && king.flashRefresh)
+        compare(endpoint.sentMessages.length, requests)
     }
 
     function test_liveHistoryClearUsesTheVisiblePiecesAndMoveMarks_data() {
