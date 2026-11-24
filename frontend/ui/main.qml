@@ -372,6 +372,7 @@ Rectangle {
                 home.handleMessage(msg)
             } else if (msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
+                       msg.type === "ChallengeCreateFailed" ||
                        msg.type === "GameStarted" || msg.type === "ComputerGameCreated" ||
                        msg.type === "ChallengeResolved" || msg.type === "ChallengeAccepted" ||
                        msg.type === "ChallengeDeclined" || msg.type === "ChallengeActionFailed" ||

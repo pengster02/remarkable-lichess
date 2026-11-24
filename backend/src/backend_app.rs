@@ -70,6 +70,34 @@ struct GameRequest {
     task: tokio::task::JoinHandle<()>,
 }
 
+enum MatchOpponent {
+    Random,
+    User(String),
+}
+
+// Setup and response share a connection. Two tasks leave setup uncancellable,
+// while independent seek and challenge slots could keep both searches alive.
+struct MatchRequest {
+    opponent: MatchOpponent,
+    minutes: u32,
+    increment: u32,
+    rated: bool,
+    color: String,
+    request_id: Option<u32>,
+}
+
+impl MatchRequest {
+    fn failure(&self, message: String) -> BackendMessage {
+        match (self.request_id, &self.opponent) {
+            (Some(request_id), MatchOpponent::Random) => BackendMessage::SeekFailed { request_id, message },
+            (Some(request_id), MatchOpponent::User(_)) => {
+                BackendMessage::ChallengeCreateFailed { request_id, message }
+            }
+            (None, _) => BackendMessage::ErrorMsg { message },
+        }
+    }
+}
+
 struct CloudEvaluationRequest {
     requested_fen: String,
     request_id: Option<u32>,
@@ -158,7 +186,7 @@ pub struct LichessBackend {
     session: Arc<Mutex<Option<GameSession>>>,
     // Lichess keeps the seek or direct challenge alive while this task holds
     // its response open. Closing the response cancels the outstanding request.
-    pending_seek: Option<tokio::task::JoinHandle<()>>,
+    pending_seek: Option<GameRequest>,
     account_stream: Option<AccountStream>,
     home_refresh: Option<tokio::task::JoinHandle<()>>,
     history_load: Option<GameRequest>,
@@ -649,55 +677,21 @@ impl LichessBackend {
         }
     }
 
-    async fn handle_create_seek(
+    async fn start_match_request(
         &mut self,
         replier: &BackendReplier<Self>,
-        minutes: u32,
-        increment: u32,
-        rated: bool,
-        color: String,
-        request_id: Option<u32>,
+        request: MatchRequest,
     ) {
-        let result = match &self.client {
-            Some(client) => client.create_seek(minutes, increment, rated, &color).await,
-            None => Err(anyhow::anyhow!("Sign in to Lichess to find an opponent.")),
+        let Some(client) = self.client.clone() else {
+            self.send(replier, &request.failure("Sign in to Lichess to find an opponent.".into()));
+            return;
         };
-        match result {
-            Ok(lines) => {
-                self.send(replier, &BackendMessage::SeekCreated { request_id });
-                self.replace_pending_seek(spawn_seek_response(
-                    lines, request_id, replier.clone(), self.write_lock.clone(),
-                ));
-            }
-            Err(error) => {
-                let message = error.to_string();
-                let failure = match request_id {
-                    Some(request_id) => BackendMessage::SeekFailed { request_id, message },
-                    None => BackendMessage::ErrorMsg { message },
-                };
-                self.send(replier, &failure);
-            }
-        }
-    }
-
-    fn handle_cancel_seek(&mut self) {
-        if let Some(handle) = self.pending_seek.take() {
-            handle.abort();
-        }
-    }
-
-    /// Aborts whatever hold-open task `pending_seek` already held (a seek or
-    /// a user challenge -- both use this same field/hold-open mechanism)
-    /// before storing the new one. A plain `self.pending_seek = Some(...)`
-    /// just drops the old `JoinHandle`, which detaches rather than cancels
-    /// the task -- the previous seek/challenge kept running and staying live
-    /// on Lichess indefinitely, and `CancelSeek` could then only ever reach
-    /// whichever one was newest.
-    fn replace_pending_seek(&mut self, handle: tokio::task::JoinHandle<()>) {
-        if let Some(old) = self.pending_seek.take() {
-            old.abort();
-        }
-        self.pending_seek = Some(handle);
+        stop_game_request(&mut self.pending_seek).await;
+        let request_id = request.request_id;
+        let task = tokio::spawn(run_match_request(
+            client, replier.clone(), self.write_lock.clone(), request,
+        ));
+        self.pending_seek = Some(GameRequest { request_id, task });
     }
 
     fn handle_request_settings(&self, replier: &BackendReplier<Self>) {
@@ -832,7 +826,7 @@ impl LichessBackend {
         stop_game_request(&mut self.history_load).await;
         stop_game_request(&mut self.review_export).await;
         self.stop_cloud_evaluations().await;
-        stop_task(&mut self.pending_seek).await;
+        stop_game_request(&mut self.pending_seek).await;
         if let Some(account) = self.account_stream.as_mut() {
             abort_task(&mut account.task).await;
             self.account_stream = None;
@@ -1215,39 +1209,50 @@ async fn next_stream_line(
     tokio::time::timeout(idle_timeout, lines.next()).await
 }
 
-fn spawn_seek_response(
-    mut lines: LineStream,
-    request_id: Option<u32>,
+async fn run_match_request(
+    client: LichessClient,
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Ok(Some(_)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {}
-        drop(lines);
-        send_locked(&replier, &write_lock, &BackendMessage::SeekEnded { request_id });
-    })
+    request: MatchRequest,
+) {
+    let MatchRequest { minutes, increment, rated, ref color, request_id, .. } = request;
+    let reply = match &request.opponent {
+        MatchOpponent::Random => match client.create_seek(minutes, increment, rated, color).await {
+            Ok(mut lines) => {
+                send_locked(&replier, &write_lock, &BackendMessage::SeekCreated { request_id });
+                while let Ok(Some(_)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {}
+                BackendMessage::SeekEnded { request_id }
+            }
+            Err(error) => request.failure(error.to_string()),
+        },
+        MatchOpponent::User(username) => match client.create_challenge(
+            username, minutes, increment, rated, color,
+        ).await {
+            Ok((game_id, lines)) => {
+                send_locked(&replier, &write_lock, &BackendMessage::ChallengeCreated {
+                    game_id: game_id.clone(), request_id,
+                });
+                BackendMessage::ChallengeResolved {
+                    game_id, request_id, error: read_challenge_result(lines).await,
+                }
+            }
+            Err(error) => request.failure(error.to_string()),
+        },
+    };
+    send_locked(&replier, &write_lock, &reply);
 }
 
-fn spawn_challenge_response(
-    mut lines: LineStream,
-    game_id: String,
-    replier: BackendReplier<LichessBackend>,
-    write_lock: Arc<std::sync::Mutex<()>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut error = Some("Lost the challenge connection. Check Home if the game started.".into());
-        while let Ok(Some(line)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {
-            if let Some(result) = parse_ndjson_line::<ChallengeResult>(&line) {
-                error = match result.done {
-                    ChallengeResolution::Accepted => None,
-                    ChallengeResolution::Declined => Some("Challenge declined.".into()),
-                    ChallengeResolution::Canceled => Some("Challenge canceled.".into()),
-                };
-                break;
-            }
+async fn read_challenge_result(mut lines: LineStream) -> Option<String> {
+    while let Ok(Some(line)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {
+        if let Some(result) = parse_ndjson_line::<ChallengeResult>(&line) {
+            return match result.done {
+                ChallengeResolution::Accepted => None,
+                ChallengeResolution::Declined => Some("Challenge declined.".into()),
+                ChallengeResolution::Canceled => Some("Challenge canceled.".into()),
+            };
         }
-        send_locked(&replier, &write_lock, &BackendMessage::ChallengeResolved { game_id, error });
-    })
+    }
+    Some("Lost the challenge connection. Check Home if the game started.".into())
 }
 
 async fn refresh_player_statuses(
@@ -1547,6 +1552,7 @@ impl AppLoadBackend for LichessBackend {
             stop_game_request(&mut self.history_load).await;
             stop_game_request(&mut self.review_export).await;
             self.stop_cloud_evaluations().await;
+            stop_game_request(&mut self.pending_seek).await;
             if self.client.is_none() {
                 self.check_saved_sign_in(replier).await;
             } else if let Some(username) = self.username.clone() {
@@ -1587,19 +1593,14 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::RequestHome { request_id } => self.start_home_refresh(replier, request_id).await,
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
             FrontendMessage::CreateSeek { minutes, increment, rated, color, request_id } => {
-                self.handle_create_seek(replier, minutes, increment, rated, color, request_id).await
+                self.start_match_request(replier, MatchRequest {
+                    opponent: MatchOpponent::Random, minutes, increment, rated, color, request_id,
+                }).await;
             }
-            FrontendMessage::CreateChallenge { username, minutes, increment, rated, color } => {
-                let Some(client) = &self.client else { return };
-                match client.create_challenge(&username, minutes, increment, rated, &color).await {
-                    Ok((game_id, lines)) => {
-                        self.send(replier, &BackendMessage::ChallengeCreated { game_id: game_id.clone() });
-                        self.replace_pending_seek(spawn_challenge_response(
-                            lines, game_id, replier.clone(), self.write_lock.clone(),
-                        ));
-                    }
-                    Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
-                }
+            FrontendMessage::CreateChallenge { username, minutes, increment, rated, color, request_id } => {
+                self.start_match_request(replier, MatchRequest {
+                    opponent: MatchOpponent::User(username), minutes, increment, rated, color, request_id,
+                }).await;
             }
             FrontendMessage::ChallengeAi { level, minutes, increment } => {
                 let Some(client) = &self.client else { return };
@@ -1608,7 +1609,12 @@ impl AppLoadBackend for LichessBackend {
                     Err(e) => self.send(replier, &BackendMessage::ErrorMsg { message: e.to_string() }),
                 }
             }
-            FrontendMessage::CancelSeek => self.handle_cancel_seek(),
+            FrontendMessage::CancelSeek { request_id: Some(request_id) } => {
+                cancel_game_request(&mut self.pending_seek, request_id).await;
+            }
+            FrontendMessage::CancelSeek { request_id: None } => {
+                stop_game_request(&mut self.pending_seek).await;
+            }
             FrontendMessage::MakeMove { from, to, promotion } => {
                 self.handle_make_move(replier, expected_game_id, from, to, promotion).await
             }
@@ -1855,42 +1861,30 @@ mod connectivity_tests {
 
 #[cfg(test)]
 mod pending_seek_tests {
-    use super::LichessBackend;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use super::{cancel_game_request, GameRequest};
     use std::sync::Arc;
-    use std::time::Duration;
+    use tokio::sync::oneshot;
 
     #[tokio::test]
-    async fn replace_pending_seek_aborts_the_previous_handle_instead_of_leaking_it() {
-        let mut backend = LichessBackend::new(std::env::temp_dir().join("remarkable-lichess-test-token"));
-        let tick_count = Arc::new(AtomicU32::new(0));
-        let counting_task = {
-            let tick_count = tick_count.clone();
-            tokio::spawn(async move {
-                loop {
-                    tick_count.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-        };
-        // Store it as the *current* pending seek first -- this is what a
-        // real first CreateSeek does; without this step the test would just
-        // be replacing `None` and could never have caught the leak.
-        backend.replace_pending_seek(counting_task);
-        // Confirm it's actually running before replacing it -- otherwise a
-        // tick count that stays at zero would trivially (and wrongly) pass.
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(tick_count.load(Ordering::SeqCst) > 0);
-
-        backend.replace_pending_seek(tokio::spawn(futures_util::future::pending()));
-
-        // Give the aborted task a moment to actually stop, then confirm its
-        // tick count is no longer advancing -- a plain `self.pending_seek =
-        // Some(new)` (the bug this guards) would leave it running forever.
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        let count_after_replace = tick_count.load(Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        assert_eq!(tick_count.load(Ordering::SeqCst), count_after_replace);
+    async fn cancellation_releases_only_the_matching_seek() {
+        let owner = Arc::new(());
+        let task_owner = owner.clone();
+        let (started, ready) = oneshot::channel();
+        let mut pending = Some(GameRequest {
+            request_id: Some(7),
+            task: tokio::spawn(async move {
+                let _keep_alive = task_owner;
+                started.send(()).unwrap();
+                futures_util::future::pending::<()>().await;
+            }),
+        });
+        ready.await.unwrap();
+        cancel_game_request(&mut pending, 6).await;
+        assert!(pending.is_some());
+        assert_eq!(Arc::strong_count(&owner), 2);
+        cancel_game_request(&mut pending, 7).await;
+        assert!(pending.is_none());
+        assert_eq!(Arc::strong_count(&owner), 1);
     }
 }
 
