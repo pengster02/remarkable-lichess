@@ -45,7 +45,7 @@ pub enum FrontendMessage {
     // Still reachable behind "Enter a token instead" on the sign-in screen, for
     // networks where the phone can't reach this tablet (see LoginScreen.qml).
     SaveToken { token: String, request_id: Option<u32> },
-    RequestHome { request_id: Option<u32> },
+    RequestHome { request_id: Option<u32>, #[serde(default)] games_only: bool },
     // Attaches this specific game's stream if it isn't already being tracked --
     // replaces the old behavior of RequestHome always auto-attaching whichever
     // game happened to be `now_playing.first()`, which only worked because Home
@@ -384,6 +384,8 @@ pub enum BackendMessage {
         request_id: Option<u32>,
         message: String,
         wifi_connected: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
     },
     ChallengesLoadFailed { message: String },
     SeekCreated {
@@ -427,6 +429,8 @@ pub enum BackendMessage {
     // An account event cannot select a board. Alternatives were one stream per
     // account game, or silently replacing the current stream on every gameStart.
     GameStarted { game_id: String, from_realtime_lobby: bool },
+    GameFinished { game_id: String },
+    AccountEventsResumed,
     BoardState {
         game_id: String,
         game_stream_connected: bool,
@@ -672,6 +676,19 @@ mod tests {
         ).unwrap();
         assert_eq!(request, FrontendMessage::CompleteSignIn { request_id: 31 });
         assert!(serde_json::from_str::<FrontendMessage>(r#"{"type":"CompleteSignIn"}"#).is_err());
+    }
+
+    #[test]
+    fn home_games_can_refresh_without_starting_another_rating_read() {
+        for (json, games_only) in [
+            (r#"{"type":"RequestHome","request_id":3}"#, false),
+            (r#"{"type":"RequestHome","request_id":3,"games_only":true}"#, true),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<FrontendMessage>(json).unwrap(),
+                FrontendMessage::RequestHome { request_id: Some(3), games_only },
+            );
+        }
     }
 
     #[test]

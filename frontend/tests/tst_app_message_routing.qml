@@ -114,6 +114,99 @@ TestCase {
         compare(home.ratings[0].rating, 1500)
     }
 
+    function test_accountStartsRefreshOnlyTheVisibleGamesList() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var first = latestHomeRequest()
+        endpoint.reply({type: "HomeState", request_id: first, ongoing_games: [], wifi_connected: true})
+        var before = endpoint.sentMessages.length
+        endpoint.reply({type: "GameStarted", game_id: "other-client", from_realtime_lobby: false})
+        endpoint.reply({type: "GameStarted", game_id: "also-elsewhere", from_realtime_lobby: true})
+        tryVerify(function() { return latestHomeRequest() > first })
+        var current = latestHomeRequest()
+        compare(endpoint.sentMessages.length, before + 1)
+        compare(endpoint.sentMessages[before], {type: "RequestHome", request_id: current, games_only: true})
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+        verify(home.loadedOnce)
+        verify(app.online)
+        endpoint.reply({type: "HomeRatings", request_id: first,
+                        ratings: [{speed: "rapid", rating: 1600}]})
+        compare(home.ratings[0].rating, 1600)
+        endpoint.reply({type: "HomeRatings", request_id: current,
+                        ratings: [{speed: "rapid", rating: 900}]})
+        compare(home.ratings[0].rating, 1600)
+        endpoint.reply({type: "HomeState", request_id: current,
+                        ongoing_games: [{game_id: "other-client", is_my_turn: true}]})
+        compare(home.ongoingGames[0].game_id, "other-client")
+
+        endpoint.reply({type: "GameStarted", game_id: "other-client", from_realtime_lobby: false})
+        verify(!home.gamesRefreshQueued)
+        var resume = findChild(home, "homeResumeButton")
+        verify(resume !== null)
+        endpoint.reply({type: "AccountEventsResumed"})
+        tryVerify(function() { return latestHomeRequest() > current })
+        endpoint.reply({type: "HomeState", request_id: latestHomeRequest(),
+                        ongoing_games: [{game_id: "other-client", is_my_turn: true}]})
+        compare(findChild(home, "homeResumeButton"), resume)
+        app.navigateTo("SettingsScreen.qml")
+        var away = latestHomeRequest()
+        endpoint.reply({type: "GameStarted", game_id: "away", from_realtime_lobby: false})
+        endpoint.reply({type: "GameFinished", game_id: "other-client"})
+        endpoint.reply({type: "AccountEventsResumed"})
+        compare(latestHomeRequest(), away)
+        verify(String(screen.source).endsWith("SettingsScreen.qml"))
+    }
+
+    function test_gameFinishesCannotBeRestoredByAnOlderGamesSnapshot() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var first = latestHomeRequest()
+        var finished = {game_id: "completed", is_my_turn: true}
+        var active = {game_id: "continues", is_my_turn: false}
+        endpoint.reply({type: "HomeState", request_id: first, ongoing_games: [finished, active], wifi_connected: true})
+        endpoint.reply({type: "AccountEventsResumed"})
+        tryVerify(function() { return latestHomeRequest() > first })
+        var inFlight = latestHomeRequest()
+        endpoint.reply({type: "GameFinished", game_id: "completed"})
+        endpoint.reply({type: "GameFinished", game_id: "completed"})
+        endpoint.reply({type: "GameStarted", game_id: "arriving", from_realtime_lobby: false})
+        verify(home.gamesRefreshQueued)
+        compare(home.ongoingGames, [active])
+        compare(latestHomeRequest(), inFlight)
+
+        endpoint.reply({type: "HomeState", request_id: inFlight, ongoing_games: [finished, active]})
+        compare(home.ongoingGames, [active])
+        tryVerify(function() { return latestHomeRequest() > inFlight })
+        var latest = latestHomeRequest()
+        endpoint.reply({type: "HomeState", request_id: inFlight, ongoing_games: [finished]})
+        compare(home.ongoingGames, [active])
+        var arriving = {game_id: "arriving", is_my_turn: true}
+        endpoint.reply({type: "HomeState", request_id: latest, ongoing_games: [active, arriving]})
+        compare(home.ongoingGames, [active, arriving])
+        compare(home.finishedGameIds.length, 0)
+        verify(!home.gamesRefreshQueued)
+    }
+
+    function test_eventRefreshWaitsForTheGamesRateLimit() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var first = latestHomeRequest()
+        var active = {game_id: "existing", is_my_turn: true}
+        endpoint.reply({type: "HomeState", request_id: first, ongoing_games: [active], wifi_connected: true})
+        endpoint.reply({type: "AccountEventsResumed"})
+        tryVerify(function() { return latestHomeRequest() > first })
+        var limited = latestHomeRequest()
+        endpoint.reply({type: "HomeLoadFailed", request_id: limited,
+                        message: "Lichess is limiting game-list requests.", retry_after_ms: 600})
+        endpoint.reply({type: "GameStarted", game_id: "arriving", from_realtime_lobby: false})
+        compare(home.ongoingGames, [active])
+        verify(app.online)
+        wait(350)
+        compare(latestHomeRequest(), limited)
+        tryVerify(function() { return latestHomeRequest() > limited })
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1].games_only, true)
+    }
+
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length
@@ -797,6 +890,7 @@ TestCase {
         app.navigateTo("HomeScreen.qml")
         compare(screen.item.pendingChallengeId, incoming.id)
         verify(findChild(screen.item, "pendingInvitationStatus").visible)
+        endpoint.reply({type: "HomeState", request_id: latestHomeRequest(), ongoing_games: []})
         endpoint.reply({type: "PendingChallenges", challenges: [incoming]})
         var sent = endpoint.sentMessages.length
         screen.item.submitChallengeAction("decline", incoming.id)
@@ -809,8 +903,9 @@ TestCase {
         verify(String(screen.source).endsWith("HomeScreen.qml"))
         compare(screen.item.pendingChallengeId, "")
         compare(screen.item.pendingChallenges.length, 0)
-        compare(endpoint.sentMessages.length, sent + 1)
+        tryVerify(function() { return endpoint.sentMessages.length === sent + 1 })
         compare(endpoint.sentMessages[sent].type, "RequestHome")
+        verify(endpoint.sentMessages[sent].games_only)
         endpoint.reply({type: "HomeState", request_id: endpoint.sentMessages[sent].request_id,
                         ongoing_games: [{game_id: incoming.id, is_my_turn: true}]})
         compare(screen.item.ongoingGames[0].game_id, incoming.id)

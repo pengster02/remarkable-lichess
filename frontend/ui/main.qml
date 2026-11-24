@@ -125,7 +125,7 @@ Rectangle {
         home.handleMessage(msg)
         if (accepted) {
             if (request.openOnSuccess) root.openGame(id)
-            else home.refreshGames()
+            else home.queueGamesRefresh()
         }
     }
 
@@ -398,7 +398,7 @@ Rectangle {
                        msg.type === "HomeRatings") {
                 var home = screenLoader.item
                 if (!root.hasToken || !home || !home.acceptsHomeReply || !home.acceptsHomeReply(msg)) return
-                if (msg.type !== "HomeRatings") {
+                if (msg.type !== "HomeRatings" && !msg.retry_after_ms) {
                     root.applyConnectivity({type: "ConnectivityState", online: msg.type === "HomeState",
                                             wifi_connected: msg.wifi_connected, message: msg.message})
                 }
@@ -406,6 +406,11 @@ Rectangle {
             } else if (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined" ||
                        msg.type === "ChallengeActionFailed") {
                 root.handleChallengeResponse(msg)
+            } else if (msg.type === "GameFinished" || msg.type === "AccountEventsResumed") {
+                var homeForEvent = screenLoader.item
+                if (root.hasToken && homeForEvent && homeForEvent.acceptsHomeReply) {
+                    homeForEvent.handleMessage(msg)
+                }
             } else if (msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "ChallengeCreateFailed" ||
@@ -416,6 +421,7 @@ Rectangle {
                        msg.type === "PendingChallenges" ||
                        msg.type === "ChallengesLoadFailed" ||
                        msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
+                if (msg.type === "GameStarted" && !root.hasToken) return
                 if (root.hasToken && msg.type === "PendingChallenges" && root.resolvedChallengeIds.length > 0) {
                     var pending = msg.challenges || []
                     var ids = pending.map(function(challenge) { return challenge.id })

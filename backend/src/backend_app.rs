@@ -27,7 +27,7 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MOVE_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(2);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const CLOUD_QUEUE_CAPACITY: usize = 4;
-const CLOUD_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
+const LICHESS_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. Try again shortly.";
 
 struct StreamReconnectDelay {
@@ -306,7 +306,9 @@ pub struct LichessBackend {
     pending_match: Option<GameRequest>,
     account_stream: Option<AccountStream>,
     pending_challenge_action: Option<GameRequest>,
-    home_refresh: Option<tokio::task::JoinHandle<()>>,
+    home_games: Option<tokio::task::JoinHandle<()>>,
+    home_ratings: Option<tokio::task::JoinHandle<()>>,
+    home_games_retry_after: Arc<Mutex<Option<Instant>>>,
     history_load: Option<GameRequest>,
     review_export: Option<GameRequest>,
     cloud_evaluations: Option<CloudEvaluationQueue>,
@@ -339,7 +341,9 @@ impl LichessBackend {
             pending_match: None,
             account_stream: None,
             pending_challenge_action: None,
-            home_refresh: None,
+            home_games: None,
+            home_ratings: None,
+            home_games_retry_after: Arc::new(Mutex::new(None)),
             history_load: None,
             review_export: None,
             cloud_evaluations: None,
@@ -562,17 +566,28 @@ impl LichessBackend {
         }
     }
 
-    async fn start_home_refresh(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>) {
+    async fn start_home_refresh(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>, games_only: bool) {
         let Some(client) = self.client.clone() else {
             self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
             return;
         };
-        // A single owned task keeps dispatch free for ResumeGame and cancels
-        // both requests on refresh. Detached requests could outlive logout.
-        stop_task(&mut self.home_refresh).await;
-        self.home_refresh = Some(tokio::spawn(refresh_home(
-            client, replier.clone(), self.write_lock.clone(), request_id,
+        // A game event replaces just the game-list read. Joining it with ratings
+        // can abandon an unrelated read, and fetching ratings again wastes a request.
+        stop_task(&mut self.home_games).await;
+        self.home_games = Some(tokio::spawn(refresh_home_games(
+            client.clone(), replier.clone(), self.write_lock.clone(), self.home_games_retry_after.clone(), request_id,
         )));
+        if !games_only {
+            stop_task(&mut self.home_ratings).await;
+            let replier = replier.clone();
+            let write_lock = self.write_lock.clone();
+            self.home_ratings = Some(tokio::spawn(async move {
+                if let Ok(account) = client.get_account().await {
+                    let ratings = ratings_from_perfs(account.perfs);
+                    send_locked(&replier, &write_lock, &BackendMessage::HomeRatings { request_id, ratings });
+                }
+            }));
+        }
     }
 
     async fn handle_resume_game(&mut self, replier: &BackendReplier<Self>, game_id: String) {
@@ -809,7 +824,7 @@ impl LichessBackend {
             Ok(None) => BackendMessage::CloudEvaluationUnavailable { request_id, requested_fen },
             Err(e) => {
                 let message = if is_rate_limited(&e) {
-                    *retry_after.lock().await = Some(Instant::now() + CLOUD_RATE_LIMIT_DELAY);
+                    *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
                     CLOUD_RATE_LIMIT_MESSAGE.into()
                 } else {
                     e.to_string()
@@ -987,7 +1002,8 @@ impl LichessBackend {
     }
 
     async fn stop_authenticated_activity(&mut self) {
-        stop_task(&mut self.home_refresh).await;
+        stop_task(&mut self.home_games).await;
+        stop_task(&mut self.home_ratings).await;
         stop_game_request(&mut self.history_load).await;
         stop_game_request(&mut self.review_export).await;
         self.stop_cloud_evaluations().await;
@@ -1234,12 +1250,17 @@ async fn read_account_events(
     // Reconnect replays ongoing games. A per-connection set repeats old
     // starts, and remembering every finished game grows without bound.
     let mut announced_games = HashSet::new();
+    let mut reconnecting = false;
     loop {
         let mut received_for = Duration::ZERO;
         if let Ok(mut lines) = client.stream_lines("/api/stream/event").await {
             let connected_at = Instant::now();
             while let Ok(Some(line)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {
                 received_for = connected_at.elapsed();
+                if reconnecting {
+                    reconnecting = false;
+                    send_locked(replier, write_lock, &BackendMessage::AccountEventsResumed);
+                }
                 match parse_ndjson_line::<EventStreamMessage>(&line) {
                     Some(EventStreamMessage::GameStart { game }) => {
                         if !announced_games.insert(game.id.clone()) {
@@ -1263,6 +1284,9 @@ async fn read_account_events(
                     }
                     Some(EventStreamMessage::GameFinish { game }) => {
                         announced_games.remove(&game.id);
+                        send_locked(replier, write_lock, &BackendMessage::GameFinished {
+                            game_id: game.id.clone(),
+                        });
                         if let Some(rating_diff) = game.rating_diff {
                             send_locked(replier, write_lock, &BackendMessage::RatingDiff {
                                 game_id: game.id,
@@ -1274,6 +1298,7 @@ async fn read_account_events(
                 }
             }
         }
+        reconnecting = true;
         let delay = reconnect.after_attempt(received_for);
         log::warn!("account event stream ended; retrying in {delay:?}");
         tokio::time::sleep(delay).await;
@@ -1319,52 +1344,61 @@ async fn send_pending_challenges(
     send_locked(replier, write_lock, &msg);
 }
 
-async fn refresh_home(
+async fn refresh_home_games(
     client: LichessClient,
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
+    retry_after: Arc<Mutex<Option<Instant>>>,
     request_id: Option<u32>,
 ) {
-    let games = async {
-        let playing = client.get_playing().await;
-        let wifi_connected = wifi_link_state();
-        let reply = match playing {
-            Ok(games) => BackendMessage::HomeState {
-                request_id,
-                wifi_connected,
-                ongoing_games: games.into_iter().map(|g| OngoingGameSummary {
-                    game_id: g.game_id,
-                    // The built-in AI omits the username.
-                    opponent_name: g.opponent.as_ref().and_then(|o| {
-                        o.username.clone().or_else(|| o.ai.map(|level| format!("Stockfish level {level}")))
-                    }),
-                    opponent_rating: g.opponent.as_ref().and_then(|o| o.rating),
-                    is_my_turn: g.is_my_turn,
-                }).collect(),
-            },
-            Err(error) => {
-                log::warn!("couldn't load Home: {error}");
-                let message = if wifi_connected == Some(false) {
-                    "Wi-Fi is disconnected"
-                } else {
-                    "Can't reach Lichess"
-                };
-                BackendMessage::HomeLoadFailed {
-                    request_id,
-                    message: format!("{message}. Check your connection and retry."),
-                    wifi_connected,
-                }
-            }
-        };
-        send_locked(&replier, &write_lock, &reply);
+    let limited_reply = |remaining: Duration| BackendMessage::HomeLoadFailed {
+        request_id,
+        message: "Lichess is limiting game-list requests. Trying again shortly.".into(),
+        wifi_connected: None,
+        retry_after_ms: Some(remaining.as_millis().max(1) as u32),
     };
-    let ratings = async {
-        if let Ok(account) = client.get_account().await {
-            let ratings = ratings_from_perfs(account.perfs);
-            send_locked(&replier, &write_lock, &BackendMessage::HomeRatings { request_id, ratings });
+    let remaining = retry_after.lock().await
+        .and_then(|until| until.checked_duration_since(Instant::now()));
+    if let Some(remaining) = remaining {
+        send_locked(&replier, &write_lock, &limited_reply(remaining));
+        return;
+    }
+    let playing = client.get_playing().await;
+    let wifi_connected = wifi_link_state();
+    let reply = match playing {
+        Ok(games) => BackendMessage::HomeState {
+            request_id,
+            wifi_connected,
+            ongoing_games: games.into_iter().map(|g| OngoingGameSummary {
+                game_id: g.game_id,
+                // The built-in AI omits the username.
+                opponent_name: g.opponent.as_ref().and_then(|o| {
+                    o.username.clone().or_else(|| o.ai.map(|level| format!("Stockfish level {level}")))
+                }),
+                opponent_rating: g.opponent.as_ref().and_then(|o| o.rating),
+                is_my_turn: g.is_my_turn,
+            }).collect(),
+        },
+        Err(error) if is_rate_limited(&error) => {
+            *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+            limited_reply(LICHESS_RATE_LIMIT_DELAY)
+        }
+        Err(error) => {
+            log::warn!("couldn't load Home: {error}");
+            let message = if wifi_connected == Some(false) {
+                "Wi-Fi is disconnected"
+            } else {
+                "Can't reach Lichess"
+            };
+            BackendMessage::HomeLoadFailed {
+                request_id,
+                message: format!("{message}. Check your connection and retry."),
+                wifi_connected,
+                retry_after_ms: None,
+            }
         }
     };
-    tokio::join!(games, ratings);
+    send_locked(&replier, &write_lock, &reply);
 }
 
 async fn submit_move(
@@ -1817,7 +1851,8 @@ impl AppLoadBackend for LichessBackend {
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             // The new frontend starts its request sequence over.
             self.stop_sign_in(None).await;
-            stop_task(&mut self.home_refresh).await;
+            stop_task(&mut self.home_games).await;
+            stop_task(&mut self.home_ratings).await;
             stop_game_request(&mut self.history_load).await;
             stop_game_request(&mut self.review_export).await;
             self.stop_cloud_evaluations().await;
@@ -1866,7 +1901,9 @@ impl AppLoadBackend for LichessBackend {
                 }
             }
             FrontendMessage::SaveToken { token, request_id } => self.start_token_sign_in(replier, token, request_id).await,
-            FrontendMessage::RequestHome { request_id } => self.start_home_refresh(replier, request_id).await,
+            FrontendMessage::RequestHome { request_id, games_only } => {
+                self.start_home_refresh(replier, request_id, games_only).await;
+            }
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
             FrontendMessage::CreateSeek { minutes, increment, rated, color, request_id } => {
                 self.start_match_request(replier, MatchRequest {
