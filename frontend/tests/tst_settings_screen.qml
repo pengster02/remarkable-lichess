@@ -67,10 +67,23 @@ TestCase {
     }
 
     function test_saveFailureCanBeDismissed() {
-        settings.saveError = "Storage unavailable"
-        verify(findChild(settings, "settingsSaveErrorCard").visible)
+        var pager = findChild(settings, "settingsFlickable")
+        var gameplay = findChild(settings, "gameplaySection")
+        var card = findChild(settings, "settingsSaveErrorCard")
+        var back = findChild(settings, "settingsBackButton")
+        pager.moveTo(gameplay.y)
+        var position = pager.contentY
+
+        settings.saveError = "failed to save settings: Storage unavailable"
+        verify(card.visible)
+        compare(findChild(card, "settingsSaveErrorMessage").text, "Storage unavailable")
+        compare(pager.contentY, position)
+        verify(card.y >= pager.y + pager.height)
+        verify(card.y + card.height <= back.y)
         findChild(settings, "dismissSettingsSaveErrorButton").clicked()
         compare(settings.saveError, "")
+        verify(!card.visible)
+        compare(pager.contentY, position)
         compare(sentMessages.length, 0)
     }
 
@@ -126,5 +139,15 @@ TestCase {
         fuzzyCompare(pager.contentY, pager.maximumContentY, 0.01)
         verify(!next.enabled)
         verify(!findChild(pager, "pageNumber").truncated)
+
+        compact.children[0].saveError = "Storage unavailable while writing the new preferences. " +
+            "The previous settings are still saved. Try changing the setting again when storage is available."
+        var card = findChild(compact, "settingsSaveErrorCard")
+        var message = findChild(card, "settingsSaveErrorMessage")
+        var dismiss = findChild(card, "dismissSettingsSaveErrorButton")
+        verify(card.visible && card.y >= pager.y + pager.height)
+        verify(message.lineCount > 1 && message.lineCount <= 3)
+        verify(dismiss.height >= theme.touchTarget && !dismiss.contentItem.truncated)
+        verify(pager.pageHeight >= theme.touchTarget)
     }
 }
