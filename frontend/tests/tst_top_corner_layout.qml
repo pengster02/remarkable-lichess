@@ -31,19 +31,15 @@ TestCase {
 
     function init() {
         boardMessages = []
-        board.statusMessage = ""
+        board.boardNotice = null
         board.streamReconnecting = false
         board.gameOver = false
         board.showGameOverDialog = false
-        board.firstMoveTimeMs = null
         board.initialClockMs = null
-        board.lastClockSyncMs = 0
+        board.liveClock = {whiteMs: 0, blackMs: 0, firstMoveMs: null, receivedAt: 0}
+        board.previewClock = null
         board.turn = "white"
         board.yourColor = "white"
-        board.whiteTimeMs = 0
-        board.blackTimeMs = 0
-        board.liveWhiteTimeMs = 0
-        board.liveBlackTimeMs = 0
         board.gameId = ""
         board.fen = ""
         board.liveFen = ""
@@ -207,14 +203,14 @@ TestCase {
     }
 
     function test_liveStatusUsesTopPlayerBar() {
-        board.statusMessage = ""
+        board.boardNotice = null
         board.gameOver = false
         board.yourColor = "white"
         board.turn = "white"
         compare(board.topStatusText(), "Your move")
         board.turn = "black"
         compare(board.topStatusText(), "Waiting for opponent")
-        board.statusMessage = "Reconnecting..."
+        board.streamReconnecting = true
         compare(board.topStatusText(), "Reconnecting...")
     }
 
@@ -229,25 +225,21 @@ TestCase {
         tryCompare(backButton, "enabled", true)
     }
 
-    function test_clockRefreshCadence() {
-        board.lastClockSyncMs = 0
-        board.firstMoveTimeMs = null
+    function test_clockRefreshCadence_data() {
+        return [
+            {tag: "two minutes", clockMs: 120000, firstMoveMs: null, interval: 10000},
+            {tag: "above one minute", clockMs: 65000, firstMoveMs: null, interval: 10000},
+            {tag: "one minute", clockMs: 60000, firstMoveMs: null, interval: 5000},
+            {tag: "fifteen seconds", clockMs: 15000, firstMoveMs: null, interval: 1000},
+            {tag: "first move in thirty seconds", clockMs: 120000, firstMoveMs: 30000, interval: 5000},
+            {tag: "first move in ten seconds", clockMs: 120000, firstMoveMs: 10000, interval: 1000}
+        ]
+    }
+
+    function test_clockRefreshCadence(row) {
         board.initialClockMs = 600000
-        board.turn = "white"
-        board.whiteTimeMs = 120000
-        compare(board.clockRefreshIntervalMs(), 10000)
-        board.whiteTimeMs = 65000
-        compare(board.clockRefreshIntervalMs(), 10000)
-        board.whiteTimeMs = 60000
-        compare(board.clockRefreshIntervalMs(), 5000)
-        board.whiteTimeMs = 15000
-        compare(board.clockRefreshIntervalMs(), 1000)
-        board.whiteTimeMs = 120000
-        board.initialClockMs = null
-        board.firstMoveTimeMs = 30000
-        compare(board.clockRefreshIntervalMs(), 5000)
-        board.firstMoveTimeMs = 10000
-        compare(board.clockRefreshIntervalMs(), 1000)
+        board.liveClock = {whiteMs: row.clockMs, blackMs: 600000, firstMoveMs: row.firstMoveMs, receivedAt: 0}
+        compare(board.clockRefreshIntervalMs(), row.interval)
     }
 
     function test_metadataOnlyUpdateDoesNotWakeBoardCollections() {

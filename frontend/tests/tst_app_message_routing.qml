@@ -454,6 +454,109 @@ TestCase {
         compare(screen.item.statusText, "Draw · Agreement")
     }
 
+    function test_timeGiftConfirmationSurvivesClockAndOfferUpdates() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        snapshot.can_give_time = true
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply({type: "GameActionCompleted", game_id: "active", action: "AddTime",
+                        request_id: request.request_id, seconds: 15})
+        snapshot.black_time_ms += 15000
+        snapshot.draw_offered_by_opponent = true
+        endpoint.reply(snapshot)
+        compare(board.blackTimeMs, 615000)
+        compare(board.topStatusText(), "15 seconds added to opponent")
+        compare(board.gameActionsLabel(), "Draw offer")
+
+        snapshot.fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        snapshot.turn = "black"
+        snapshot.position_history = [startFen, snapshot.fen]
+        snapshot.move_history = ["e4"]
+        endpoint.reply(snapshot)
+        compare(board.topStatusText(), "Waiting for opponent")
+
+        endpoint.reply({type: "ErrorMsg", message: "Temporary board error"})
+        compare(board.topStatusText(), "Temporary board error")
+        endpoint.reply(snapshot)
+        compare(board.topStatusText(), "Waiting for opponent")
+    }
+
+    function showPendingMovePreview() {
+        verify(screen.item.submitMove("e2", "e4", null))
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        var preview = {
+            type: "MovePreview", game_id: "active", request_id: request.request_id,
+            fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            turn: "black", last_move: ["e2", "e4"], white_time_ms: 597000, black_time_ms: 600000
+        }
+        endpoint.reply(preview)
+        return preview
+    }
+
+    function test_previewAndRollbackEachUseTheirOwnClockAge() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        snapshot.first_move_time_ms = 14000
+        snapshot.initial_clock_ms = 600000
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var preview = showPendingMovePreview()
+        var previewAt = board.previewClock.receivedAt
+        compare(board.displayFirstMoveTimeMs(), null)
+
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "active"})
+        snapshot.white_time_ms = 599000
+        snapshot.first_move_time_ms = 13000
+        snapshot.game_stream_connected = true
+        endpoint.reply(snapshot)
+        var liveAt = board.liveClock.receivedAt
+        board.clockNowMs = Math.max(previewAt, liveAt) + 2000
+        compare(board.fen, preview.fen)
+        compare(board.whiteTimeMs, 597000)
+        compare(board.displayClockFor("black"), 600000 - Math.floor((board.clockNowMs - previewAt) / 1000) * 1000)
+        compare(board.displayFirstMoveTimeMs(), null)
+        compare(board.topStatusText(), "Submitting e2–e4")
+
+        endpoint.reply({type: "MoveRejected", game_id: "active", request_id: preview.request_id,
+                        reason: "try again"})
+        compare(board.fen, startFen)
+        compare(board.whiteTimeMs, 599000)
+        compare(board.displayClockFor("white"), 597000)
+        compare(board.displayFirstMoveTimeMs(), 11000)
+        endpoint.reply(snapshot)
+        compare(board.topStatusText(), "Move rejected: try again")
+    }
+
+    function test_authoritativeBoardAndOutcomeReplaceThePreviewClocks() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        endpoint.reply(snapshot)
+        var preview = showPendingMovePreview()
+        snapshot.fen = preview.fen
+        snapshot.turn = preview.turn
+        snapshot.position_history = [startFen, snapshot.fen]
+        snapshot.move_history = ["e4"]
+        snapshot.white_time_ms = 598000
+        snapshot.black_time_ms = 596000
+        snapshot.resolved_move_request_id = preview.request_id
+        endpoint.reply(snapshot)
+        var board = screen.item
+        compare(board.previewFen, "")
+        compare(board.whiteTimeMs, 598000)
+        compare(board.blackTimeMs, 596000)
+
+        snapshot.outcome = {result: "draw", reason: "Agreement"}
+        snapshot.black_time_ms = 591000
+        endpoint.reply(snapshot)
+        board.clockNowMs += 2000
+        verify(board.gameOver)
+        compare(board.displayClockFor("black"), 591000)
+        compare(board.statusText, "Draw · Agreement")
+    }
+
     function test_moveRepliesCannotAffectANewerSameGameSubmission() {
         app.openGame("active")
         endpoint.reply(boardState("active"))
