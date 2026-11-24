@@ -1551,11 +1551,22 @@ Rectangle {
         active: boardScreen.showMoves
         sourceComponent: Component {
             AppDialog {
+                id: moveHistoryDialog
                 anchors.fill: parent
                 darkMode: boardScreen.darkMode
                 title: "Moves"
                 pageByRow: true
                 onDismissed: boardScreen.showMoves = false
+
+                function focusDisplayedMove() {
+                    var index = boardScreen.historyIndex
+                    if (index <= 0) return
+                    var rowIndex = chessDisplay.moveRowIndex(index, boardScreen.positionHistory[0])
+                    moveHistoryDialog.showPageContaining(historyRows.itemAt(rowIndex))
+                }
+
+                // Focus once after layout. A live binding would interrupt paging, and a saved page can miss the displayed move on reopen.
+                Component.onCompleted: Qt.callLater(focusDisplayedMove)
 
                 Text {
                     width: parent.width
@@ -1577,6 +1588,7 @@ Rectangle {
                     }
                 }
                 Repeater {
+                    id: historyRows
                     model: boardScreen.moveRows()
 
                     MoveListRow {

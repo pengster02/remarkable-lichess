@@ -12,6 +12,13 @@ Item {
     default property alias content: dialogContent.data
     signal dismissed()
 
+    function showPageContaining(item) {
+        if (!item) return
+        dialogContent.forceLayout()
+        dialogFlickable.updatePageStops()
+        dialogFlickable.showPageContaining(item.y, item.height)
+    }
+
     Theme { id: theme; darkMode: dialog.darkMode }
     z: 100
 

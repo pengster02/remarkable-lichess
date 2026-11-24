@@ -312,9 +312,13 @@ TestCase {
         }
         collectRows(pager)
         compare(rows.length, 32)
+        var previous = findChild(pager, "pageUpButton")
         var next = findChild(pager, "pageDownButton")
+        tryCompare(pager, "currentPage", pager.pageCount)
+        var lastY = rows[31].mapToItem(pager, 0, 0).y
+        verify(lastY >= 0 && lastY + rows[31].height <= pager.pageHeight)
         var seen = {}
-        for (var page = 1; page <= pager.pageCount; page++) {
+        for (var page = pager.pageCount; page >= 1; page--) {
             compare(pager.currentPage, page)
             compare(close.mapToItem(dialog, 0, 0).y, closeY)
             for (var row = 0; row < rows.length; row++) {
@@ -322,9 +326,16 @@ TestCase {
                 if (y >= -0.5 && y + rows[row].height <= pager.pageHeight + 0.5)
                     seen[row] = true
             }
-            if (page < pager.pageCount) mouseClick(next, next.width / 2, next.height / 2)
+            if (page > 1) mouseClick(previous, previous.width / 2, previous.height / 2)
         }
         compare(Object.keys(seen).length, 32)
+        var start = findChild(dialog, "historyStartingPositionButton")
+        var startY = start.mapToItem(pager, 0, 0).y
+        verify(startY >= 0 && startY + start.height <= pager.pageHeight)
+        for (page = 1; page < pager.pageCount; page++) {
+            mouseClick(next, next.width / 2, next.height / 2)
+            compare(pager.currentPage, page + 1)
+        }
         var lastWhite = findChild(rows[31], "whiteMoveCell")
         verify(findChild(rows[31], "blackMoveCell").isCurrent)
         mouseClick(lastWhite, lastWhite.width / 2, lastWhite.height / 2)
@@ -337,13 +348,15 @@ TestCase {
         pager = findChild(dialog, "dialogPager")
         goLive = findChild(dialog, "historyReturnToLiveButton")
         verify(goLive.visible && !goLive.contentItem.truncated)
-        next = findChild(pager, "pageDownButton")
-        tryVerify(function() { return next.visible && next.enabled })
-        mouseClick(next, next.width / 2, next.height / 2)
-        compare(pager.currentPage, 2)
+        previous = findChild(pager, "pageUpButton")
+        tryVerify(function() { return previous.visible && previous.enabled })
+        tryCompare(pager, "currentPage", pager.pageCount)
+        mouseClick(previous, previous.width / 2, previous.height / 2)
+        var manuallySelectedPage = pager.currentPage
         snapshot.white_time_ms -= 500
         endpoint.reply(snapshot)
         compare(loader.item, dialog)
+        compare(pager.currentPage, manuallySelectedPage)
         compare(board.fen, snapshot.position_history[63])
         mouseClick(goLive, goLive.width / 2, goLive.height / 2)
         tryCompare(loader, "item", null)
@@ -351,10 +364,29 @@ TestCase {
         compare(board.fen, snapshot.fen)
 
         mouseClick(open, open.width / 2, open.height / 2)
-        close = findChild(loader.item, "historyCloseButton")
+        dialog = loader.item
+        pager = findChild(dialog, "dialogPager")
+        tryVerify(function() { return pager.pageCount > 1 })
+        tryCompare(pager, "currentPage", pager.pageCount)
+        previous = findChild(pager, "pageUpButton")
+        mouseClick(previous, previous.width / 2, previous.height / 2)
+        var manualOffset = pager.contentY
+        var nextFen = boards[0] + "65 33"
+        endpoint.reply(Object.assign({}, snapshot, {
+            fen: nextFen, turn: "black", last_move: ["g1", "f3"],
+            move_history: null, position_history: null, appended_move: "Nf3"
+        }))
+        tryVerify(function() {
+            rows = []
+            collectRows(pager)
+            return rows.length === 33
+        })
+        compare(board.fen, nextFen)
+        compare(pager.contentY, manualOffset)
+        close = findChild(dialog, "historyCloseButton")
         mouseClick(close, close.width / 2, close.height / 2)
         tryCompare(loader, "item", null)
-        compare(board.fen, snapshot.fen)
+        compare(board.fen, nextFen)
     }
 
     function test_liveMovesEmptyOrShortHistoryFitsWithoutPaging_data() {
