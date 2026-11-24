@@ -136,9 +136,7 @@ Rectangle {
     property var moveHistory: []
     property var positionHistory: []
     property int historyIndex: -1
-    property bool viewingHistory: boardScreen.positionHistory.length > 0 &&
-        boardScreen.historyIndex >= 0 &&
-        boardScreen.historyIndex < boardScreen.positionHistory.length - 1
+    property bool viewingHistory: boardScreen.isViewingHistory()
     property var capturedByWhite: []
     property var capturedByBlack: []
     // Fixed for the game's lifetime (see game::session::GameSession) -- an AI
@@ -270,11 +268,9 @@ Rectangle {
         return true
     }
 
-    function rollbackMovePreview() {
+    function rollbackMovePreview(deferRefresh) {
         if (boardScreen.previewFen.length === 0) return
-        boardScreen.flashSquares = boardScreen.changedSquaresBetweenFens(
-            boardScreen.previewFen, boardScreen.liveFen)
-        boardFlashTimer.restart()
+        var previous = deferRefresh ? null : boardScreen.captureBoardAppearance()
         boardScreen.previewFen = ""
         boardScreen.fen = boardScreen.liveFen
         boardScreen.turn = boardScreen.liveTurn
@@ -282,6 +278,7 @@ Rectangle {
         boardScreen.clockPulse += 1
         boardScreen.lastMove = boardScreen.liveLastMove
         boardScreen.inCheck = boardScreen.liveInCheck
+        if (previous) boardScreen.refreshBoard(previous)
     }
 
     function toggleAnnotation(from, to) {
@@ -353,16 +350,18 @@ Rectangle {
 
     function showHistoryPosition(index) {
         if (boardScreen.positionHistory.length === 0) return
+        var previous = boardScreen.captureBoardAppearance()
         var latest = boardScreen.positionHistory.length - 1
         var bounded = Math.max(0, Math.min(index, latest))
         // Clear only the displayed preview when going back. Keeping it could
         // let a rejection replace a historical frame, while canceling the move
         // gate would let a second request overtake an in-flight POST.
-        if (bounded < latest) boardScreen.rollbackMovePreview()
+        if (bounded < latest) boardScreen.rollbackMovePreview(true)
         boardScreen.historyIndex = bounded
         boardScreen.fen = boardScreen.previewFen || boardScreen.positionHistory[bounded]
         boardScreen.clearMovePrompts()
         boardScreen.clearAnnotations()
+        boardScreen.refreshBoard(previous)
     }
 
     function returnToLive() {
@@ -414,7 +413,7 @@ Rectangle {
     }
 
     function checkedKingSquare() {
-        if (boardScreen.viewingHistory) return ""
+        if (boardScreen.isViewingHistory()) return ""
         return boardScreen.checkedKingSquareFor(boardScreen.fen, boardScreen.turn, boardScreen.inCheck)
     }
 
@@ -616,9 +615,7 @@ Rectangle {
     // whole placement field on every single call -- checkedKingSquare() alone
     // was already calling it 64 times by itself).
     property var pieceMap: boardScreen.buildPieceMap(boardScreen.fen)
-    property var historicalLastMoveSquares: boardScreen.changedSquaresForHistory()
-    property var historicalLastMoveLookup: boardScreen.squareLookup(
-        boardScreen.historicalLastMoveSquares)
+    property var lastMoveSquareLookup: boardScreen.squareLookup(boardScreen.displayedLastMoveSquares())
     property var flashSquareLookup: boardScreen.squareLookup(boardScreen.flashSquares)
     property int materialBalance: boardScreen.calculateMaterialBalance(boardScreen.pieceMap)
 
@@ -649,8 +646,15 @@ Rectangle {
         return map
     }
 
-    function changedSquaresForHistory() {
-        if (!boardScreen.viewingHistory || boardScreen.historyIndex <= 0) return []
+    function isViewingHistory() {
+        return boardScreen.historyIndex >= 0 &&
+            boardScreen.historyIndex < boardScreen.positionHistory.length - 1
+    }
+
+    function displayedLastMoveSquares() {
+        if (!boardScreen.highlightLastMove) return []
+        if (!boardScreen.isViewingHistory()) return boardScreen.lastMove || []
+        if (boardScreen.historyIndex === 0) return []
         return boardScreen.changedSquaresBetweenFens(
             boardScreen.positionHistory[boardScreen.historyIndex - 1],
             boardScreen.fen
@@ -674,6 +678,37 @@ Rectangle {
 
     function addRefreshSquare(squares, squareName) {
         if (squareName && squares.indexOf(squareName) === -1) squares.push(squareName)
+    }
+
+    // Compare the displayed positions. Diffing live FENs misses history jumps,
+    // and reading derived bindings inside a transition can use the old marks.
+    function captureBoardAppearance() {
+        return {fen: boardScreen.fen, lastMove: boardScreen.displayedLastMoveSquares(),
+                checkedKing: boardScreen.checkedKingSquare()}
+    }
+
+    function refreshBoard(previous) {
+        var current = boardScreen.captureBoardAppearance()
+        if (!previous.fen || !current.fen) return
+        var dirty = previous.fen === current.fen ? [] :
+            boardScreen.changedSquaresBetweenFens(previous.fen, current.fen)
+        for (var i = 0; i < previous.lastMove.length; i++) {
+            if (current.lastMove.indexOf(previous.lastMove[i]) === -1)
+                boardScreen.addRefreshSquare(dirty, previous.lastMove[i])
+        }
+        for (var j = 0; j < current.lastMove.length; j++) {
+            if (previous.lastMove.indexOf(current.lastMove[j]) === -1)
+                boardScreen.addRefreshSquare(dirty, current.lastMove[j])
+        }
+        if (previous.checkedKing !== current.checkedKing) {
+            boardScreen.addRefreshSquare(dirty, previous.checkedKing)
+            boardScreen.addRefreshSquare(dirty, current.checkedKing)
+        }
+        if (dirty.length === 0) return
+        for (var k = 0; k < boardScreen.flashSquares.length; k++)
+            boardScreen.addRefreshSquare(dirty, boardScreen.flashSquares[k])
+        boardScreen.flashSquares = dirty
+        boardFlashTimer.restart()
     }
 
     // Deliberately keyed by the square name's own characters against
@@ -1048,12 +1083,7 @@ Rectangle {
                             isSelected: boardScreen.selectedSquare === squareName
                             isLegalDestination: !boardScreen.minimalHighlights &&
                                 isDestination
-                            isLastMove: boardScreen.highlightLastMove &&
-                                (boardScreen.viewingHistory
-                                    ? boardScreen.historicalLastMoveLookup[squareName] === true
-                                    : boardScreen.lastMove !== null &&
-                                        (squareName === boardScreen.lastMove[0] ||
-                                         squareName === boardScreen.lastMove[1]))
+                            isLastMove: boardScreen.lastMoveSquareLookup[squareName] === true
                             isCheckSquare: squareName === boardScreen.checkedSquare
                             isPremoveSource: boardScreen.pendingPremove !== null &&
                                 boardScreen.pendingPremove.from === squareName
@@ -1825,27 +1855,6 @@ Rectangle {
             var promptScopeChanged = boardChanged ||
                 (typeof boardScreen.livePositionId === "number" && typeof msg.position_id === "number" &&
                  boardScreen.livePositionId !== msg.position_id)
-            var previewConfirmed = boardScreen.previewFen.length > 0 &&
-                boardScreen.previewFen === msg.fen &&
-                boardScreen.gameId === nextGameId
-            if (boardScreen.liveFen !== "" && boardChanged && !previewConfirmed) {
-                var refreshSquares = boardScreen.changedSquaresBetweenFens(boardScreen.liveFen, msg.fen)
-                if (boardScreen.lastMove !== null) {
-                    boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[0])
-                    boardScreen.addRefreshSquare(refreshSquares, boardScreen.lastMove[1])
-                }
-                if (nextLastMove !== null) {
-                    boardScreen.addRefreshSquare(refreshSquares, nextLastMove[0])
-                    boardScreen.addRefreshSquare(refreshSquares, nextLastMove[1])
-                }
-                boardScreen.addRefreshSquare(refreshSquares, boardScreen.checkedSquare)
-                boardScreen.addRefreshSquare(
-                    refreshSquares,
-                    boardScreen.checkedKingSquareFor(msg.fen, msg.turn, msg.in_check || false)
-                )
-                boardScreen.flashSquares = refreshSquares
-                boardFlashTimer.restart()
-            }
             if (gameChanged) {
                 boardScreen.resetPlayerStatuses()
                 if (boardScreen.gameRatingChange !== null &&
@@ -1870,6 +1879,7 @@ Rectangle {
                 }
             }
             if (boardChanged) {
+                var previous = boardScreen.captureBoardAppearance()
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
                 boardScreen.previewFen = ""
@@ -1899,6 +1909,7 @@ Rectangle {
                 boardScreen.liveInCheck = msg.in_check || false
                 boardScreen.capturedByWhite = msg.captured_by_white || []
                 boardScreen.capturedByBlack = msg.captured_by_black || []
+                boardScreen.refreshBoard(previous)
             }
             boardScreen.liveClock = {
                 whiteMs: msg.white_time_ms,
@@ -1980,19 +1991,7 @@ Rectangle {
             if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0 ||
                     boardScreen.viewingHistory || boardScreen.gameOver || boardScreen.streamError.length > 0) return
             if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
-            var previewLastMove = msg.last_move || null
-            var previewRefreshSquares = boardScreen.changedSquaresBetweenFens(
-                boardScreen.liveFen, msg.fen)
-            if (boardScreen.liveLastMove !== null) {
-                boardScreen.addRefreshSquare(previewRefreshSquares, boardScreen.liveLastMove[0])
-                boardScreen.addRefreshSquare(previewRefreshSquares, boardScreen.liveLastMove[1])
-            }
-            if (previewLastMove !== null) {
-                boardScreen.addRefreshSquare(previewRefreshSquares, previewLastMove[0])
-                boardScreen.addRefreshSquare(previewRefreshSquares, previewLastMove[1])
-            }
-            boardScreen.flashSquares = previewRefreshSquares
-            boardFlashTimer.restart()
+            var previousPreview = boardScreen.captureBoardAppearance()
             boardScreen.previewFen = msg.fen
             boardScreen.fen = msg.fen
             boardScreen.turn = msg.turn
@@ -2003,8 +2002,9 @@ Rectangle {
                 receivedAt: Date.now()
             }
             boardScreen.clockPulse += 1
-            boardScreen.lastMove = previewLastMove
+            boardScreen.lastMove = msg.last_move || null
             boardScreen.inCheck = msg.in_check || false
+            boardScreen.refreshBoard(previousPreview)
         } else if (msg.type === "MoveRejected") {
             if (boardScreen.gameOver || (msg.game_id && msg.game_id !== boardScreen.gameId)) return
             if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
