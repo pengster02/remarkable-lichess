@@ -18,6 +18,10 @@ Rectangle {
     property string authenticationState: "checking"
     property string username: ""
     property bool settingsReceived: false
+    property int pendingSettingsSaveId: 0
+    property bool settingsSavesScoped: false
+    property int legacySettingsReplies: 0
+    property string settingsSaveError: ""
     property bool darkMode: false
     // Persisted server-side (see backend/src/settings.rs) -- pushed into any
     // loaded screen that declares it, same pattern as darkMode below.
@@ -184,8 +188,11 @@ Rectangle {
     }
 
     function persistSettings() {
+        root.pendingSettingsSaveId = root.nextRequestId()
+        if (!root.settingsSavesScoped) root.legacySettingsReplies += 1
         root.sendToBackend({
             type: "SaveSettings",
+            request_id: root.pendingSettingsSaveId,
             dark_mode: root.darkMode,
             auto_queen_promotion: root.autoQueenPromotion,
             move_confirmation: root.moveConfirmation,
@@ -199,6 +206,42 @@ Rectangle {
             highlight_last_move: root.highlightLastMove,
             confirm_resign: root.confirmResign
         })
+    }
+
+    function requestSettings() {
+        if (!root.settingsSavesScoped) root.legacySettingsReplies += 1
+        root.sendToBackend({type: "RequestSettings"})
+    }
+
+    function acceptSettingsReply(msg) {
+        if (typeof msg.request_id === "number") {
+            root.settingsSavesScoped = true
+            root.legacySettingsReplies = 0
+            if (msg.request_id !== root.pendingSettingsSaveId) return false
+        } else {
+            // Older backends reply to settings writes and reads in order. Applying every reply reverts edits, while dropping all untagged replies loses the final state.
+            if (root.legacySettingsReplies > 0) root.legacySettingsReplies -= 1
+            if (root.pendingSettingsSaveId !== 0 &&
+                    (root.settingsSavesScoped || root.legacySettingsReplies > 0)) return false
+        }
+        root.pendingSettingsSaveId = 0
+        return true
+    }
+
+    function applySettings(msg) {
+        root.settingsReceived = true
+        if (typeof msg.dark_mode === "boolean") root.darkMode = msg.dark_mode
+        root.autoQueenPromotion = msg.auto_queen_promotion || false
+        root.moveConfirmation = msg.move_confirmation || false
+        root.minimalHighlights = msg.minimal_highlights !== undefined ? msg.minimal_highlights : true
+        root.premovesEnabled = msg.premoves_enabled || false
+        root.liveClockEnabled = msg.live_clock_enabled !== undefined ? msg.live_clock_enabled : true
+        root.boardTheme = msg.board_theme || "brown"
+        root.pieceSet = msg.piece_set || "cburnett"
+        root.showCoordinates = msg.show_coordinates !== undefined ? msg.show_coordinates : true
+        root.showCapturedPieces = msg.show_captured_pieces !== undefined ? msg.show_captured_pieces : true
+        root.highlightLastMove = msg.highlight_last_move !== undefined ? msg.highlight_last_move : true
+        root.confirmResign = msg.confirm_resign || false
     }
 
     function setAutoQueenPromotion(value) {
@@ -364,7 +407,7 @@ Rectangle {
                 root.authenticationState = "authenticated"
                 root.username = msg.username || ""
                 // Older backends don't send the startup snapshot. Always requesting duplicates it, while relying on it alone loses legacy settings.
-                if (!root.settingsReceived) root.sendToBackend({type: "RequestSettings"})
+                if (!root.settingsReceived) root.requestSettings()
                 screenLoader.source = "HomeScreen.qml"
             } else if (msg.type === "AuthenticationRequired") {
                 root.requireAuthentication()
@@ -372,25 +415,12 @@ Rectangle {
                 if (root.authenticationState === "checking" && screenLoader.item) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "SettingsState") {
-                root.settingsReceived = true
-                if (typeof msg.dark_mode === "boolean") root.darkMode = msg.dark_mode
-                root.autoQueenPromotion = msg.auto_queen_promotion || false
-                root.moveConfirmation = msg.move_confirmation || false
-                root.minimalHighlights = msg.minimal_highlights !== undefined
-                    ? msg.minimal_highlights
-                    : true
-                root.premovesEnabled = msg.premoves_enabled || false
-                root.liveClockEnabled = msg.live_clock_enabled !== undefined ? msg.live_clock_enabled : true
-                root.boardTheme = msg.board_theme || "brown"
-                root.pieceSet = msg.piece_set || "cburnett"
-                root.showCoordinates = msg.show_coordinates !== undefined ? msg.show_coordinates : true
-                root.showCapturedPieces = msg.show_captured_pieces !== undefined ? msg.show_captured_pieces : true
-                root.highlightLastMove = msg.highlight_last_move !== undefined ? msg.highlight_last_move : true
-                root.confirmResign = msg.confirm_resign || false
-                if (screenLoader.item && screenLoader.item.handleMessage) {
-                    screenLoader.item.handleMessage(msg)
-                }
+            } else if (msg.type === "SettingsState" || msg.type === "SettingsSaveFailed") {
+                var saving = root.pendingSettingsSaveId !== 0
+                if (!root.acceptSettingsReply(msg)) return
+                root.applySettings(msg)
+                if (msg.type === "SettingsSaveFailed") root.settingsSaveError = msg.message
+                else if (saving) root.settingsSaveError = ""
             } else if (msg.type === "TokenInvalid") {
                 root.requireAuthentication()
                 if (screenLoader.item && screenLoader.item.handleMessage) {
@@ -504,6 +534,14 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "ErrorMsg") {
+                if (!root.settingsSavesScoped && root.pendingSettingsSaveId !== 0 &&
+                        typeof msg.message === "string" && msg.message.indexOf("failed to save settings:") === 0) {
+                    if (root.acceptSettingsReply(msg)) {
+                        root.settingsSaveError = msg.message
+                        root.requestSettings()
+                    }
+                    return
+                }
                 console.warn("Backend error: " + msg.message)
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
@@ -554,6 +592,10 @@ Rectangle {
             }
             if (item.hasOwnProperty("toggleDarkMode")) {
                 item.toggleDarkMode = root.toggleDarkMode
+            }
+            if (item.hasOwnProperty("saveError")) {
+                item.saveError = Qt.binding(function() { return root.settingsSaveError })
+                item.dismissSaveError = function() { root.settingsSaveError = "" }
             }
             if (item.hasOwnProperty("autoQueenPromotion")) {
                 item.autoQueenPromotion = root.autoQueenPromotion
