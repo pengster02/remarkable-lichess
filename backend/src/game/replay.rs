@@ -2,6 +2,24 @@ use super::rules::{starting_position, supports_variant};
 use anyhow::{Context, Result};
 use shakmaty::{fen::Fen, san::SanPlus, Chess, EnPassantMode, Position};
 
+#[derive(Debug)]
+pub struct ExportReplay {
+    pub fens: Vec<String>,
+    pub initial_in_check: bool,
+}
+
+pub fn fens_for_moves(moves: &[String]) -> Result<Vec<String>> {
+    fens_for_export(None, None, moves)
+}
+
+pub fn fens_for_export(
+    variant: Option<&str>,
+    initial_fen: Option<&str>,
+    moves: &[String],
+) -> Result<Vec<String>> {
+    replay_export(variant, initial_fen, moves).map(|replay| replay.fens)
+}
+
 /// Pure, stateless replay of a *finished* game's SAN move list -- deliberately
 /// separate from `game::session::GameSession`, which models live, mutable
 /// game state (position/legal-moves cache that changes as new moves arrive
@@ -20,28 +38,28 @@ use shakmaty::{fen::Fen, san::SanPlus, Chess, EnPassantMode, Position};
 /// review screen index directly into this array for Prev/Next/jump-to-move,
 /// no re-simulation per step.
 ///
-pub fn fens_for_moves(moves: &[String]) -> Result<Vec<String>> {
-    fens_from_position(Chess::default(), moves)
-}
-
-pub fn fens_for_export(
+pub fn replay_export(
     variant: Option<&str>,
     initial_fen: Option<&str>,
     moves: &[String],
-) -> Result<Vec<String>> {
+) -> Result<ExportReplay> {
     if let Some(variant) = variant {
         anyhow::ensure!(supports_variant(variant), "Review is unavailable for {variant} games");
     }
     // Trust the export's initial position. The normal opening can render a legal
     // but wrong line, and parsing a separate PGN duplicates the JSON export.
-    match initial_fen {
-        Some(fen) => fens_from_position(starting_position(fen)?, moves),
+    let initial = match initial_fen {
+        Some(fen) => starting_position(fen)?,
         None if variant == Some("fromPosition") => anyhow::bail!("The game export is missing its starting position"),
-        None => fens_for_moves(moves),
-    }
+        None => Chess::default(),
+    };
+    replay_from_position(initial, moves)
 }
 
-fn fens_from_position(mut pos: Chess, moves: &[String]) -> Result<Vec<String>> {
+fn replay_from_position(mut pos: Chess, moves: &[String]) -> Result<ExportReplay> {
+    // Capture this while the starting position is parsed. SAN has no preceding
+    // move here, and reparsing the first FEN would duplicate validation.
+    let initial_in_check = pos.is_check();
     let mut fens = Vec::with_capacity(moves.len() + 1);
     fens.push(fen_string(&pos));
     for san_str in moves {
@@ -54,7 +72,7 @@ fn fens_from_position(mut pos: Chess, moves: &[String]) -> Result<Vec<String>> {
         pos.play_unchecked(m);
         fens.push(fen_string(&pos));
     }
-    Ok(fens)
+    Ok(ExportReplay { fens, initial_in_check })
 }
 
 fn fen_string(pos: &Chess) -> String {
@@ -113,10 +131,24 @@ mod tests {
     fn replay_uses_the_exported_black_to_move_position() {
         let initial = "4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17";
         let moves = vec!["e5".into(), "a4".into()];
-        let fens = fens_for_export(Some("fromPosition"), Some(initial), &moves).unwrap();
+        let replay = replay_export(Some("fromPosition"), Some(initial), &moves).unwrap();
+        assert!(!replay.initial_in_check);
+        let fens = replay.fens;
         assert_eq!(fens[0], initial);
         assert_eq!(fens[1], "4k3/8/8/4p3/8/8/P7/4K3 w - - 0 18");
         assert_eq!(fens[2], "4k3/8/8/4p3/P7/8/8/4K3 b - - 0 18");
+    }
+
+    #[test]
+    fn checked_custom_start_is_reported_before_its_first_reply() {
+        let initial = "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2";
+        let replay = replay_export(Some("fromPosition"), Some(initial), &["g6".into()]).unwrap();
+        assert!(replay.initial_in_check);
+        assert_eq!(replay.fens, [
+            initial,
+            "rnbqkbnr/ppppp2p/5pp1/7Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3",
+        ]);
+        assert!(!replay_export(Some("standard"), None, &[]).unwrap().initial_in_check);
     }
 
     #[test]

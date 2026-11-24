@@ -402,7 +402,7 @@ pub struct MoveJudgment {
 // game-export-gameId.yaml's own query params. That endpoint returns dozens of
 // fields (players, opening, clock, division, ...); only the ones game review
 // actually uses are modeled: `moves` to replay (see
-// game::replay::fens_for_moves, confirmed space-separated SAN e.g. "d4 d5 c4
+// game::replay::replay_export, confirmed space-separated SAN e.g. "d4 d5 c4
 // c6 Nc3 ...", not UCI, unlike the live board stream's GameState.moves),
 // `clocks` (remaining time in centiseconds after each ply) and `analysis`
 // (per-ply eval/judgment) -- both included by default (`clocks`/`evals` query

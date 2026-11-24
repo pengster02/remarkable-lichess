@@ -546,6 +546,48 @@ TestCase {
         verify(!findChild(review, "boardSquare-e8").isCheckSquare)
     }
 
+    function test_customArchiveStartsInCheckAndKeepsItScopedToThePosition() {
+        var checked = "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2"
+        var after = "rnbqkbnr/ppppp2p/5pp1/7Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3"
+        var requestId = choose("checked-custom-start")
+        var reply = {type: "GameMoves", request_id: requestId, moves: ["g6"],
+                     fens: [checked, after], initial_in_check: true}
+        endpoint.reply(reply)
+        var review = screen.item
+        var king = findChild(review, "boardSquare-e8")
+        compare(review.currentIndex, 0)
+        verify(king.isCheckSquare && !king.flashRefresh)
+        review.goNext()
+        verify(!king.isCheckSquare && king.flashRefresh)
+        tryVerify(function() { return review.flashSquares.length === 0 })
+        review.goFirst()
+        verify(king.isCheckSquare && king.flashRefresh)
+        tryVerify(function() { return review.flashSquares.length === 0 })
+
+        review.beginExploration()
+        verify(king.isCheckSquare && !king.flashRefresh)
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: checked, fen: checked, in_check: true, status: "check",
+                        legal_moves: [{from: "g7", to: "g6"}]})
+        verify(king.isCheckSquare && !king.flashRefresh)
+        verify(review.requestExplorationMove("g7", "g6"))
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: checked, fen: after, san: "g6", in_check: false})
+        verify(!king.isCheckSquare && king.flashRefresh)
+        review.undoExplorationMove()
+        verify(king.isCheckSquare)
+        review.stopExploration()
+        verify(king.isCheckSquare)
+
+        review.returnToGameHistory()
+        var oldBackend = choose("older-review-payload")
+        endpoint.reply(reply)
+        verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
+        endpoint.reply({type: "GameMoves", request_id: oldBackend, moves: [], fens: [startFen]})
+        compare(screen.item.currentFen(), startFen)
+        verify(!findChild(screen.item, "boardSquare-e8").isCheckSquare)
+    }
+
     function test_livePreviewConfirmationOnlyClearsAChangedBoard() {
         app.openGame("preview-refresh")
         var snapshot = boardState("preview-refresh")
