@@ -105,7 +105,8 @@ network analysis runs on request.
 **Cloud evaluation** pulls Lichess's cached analysis for the current position —
 score, depth, node count, and the best line in SAN. **Explore** lets you push
 candidate moves onto the position by tap or drag, with Undo and Reset, without
-touching the real game.
+touching the real game. The move list shows the numbered candidate line and
+keeps the archived moves available for choosing a new starting position.
 
 ### Settings
 

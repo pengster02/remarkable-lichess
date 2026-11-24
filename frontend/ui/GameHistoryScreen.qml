@@ -77,25 +77,7 @@ Rectangle {
     }
 
     function updateHistoryPageStops() {
-        if (!historyRows || !historyColumn) return
-        var pageHeight = historyList.pageHeight
-        var lastOrigin = Math.max(0, historyColumn.height - pageHeight)
-        var stops = []
-        var origin = 0
-        if (pageHeight >= 1) {
-            for (var index = 0; index < historyRows.count && origin < lastOrigin; index++) {
-                var row = historyRows.itemAt(index)
-                if (!row || row.y + row.height <= origin + pageHeight) continue
-                var nextOrigin = Math.min(row.y, lastOrigin)
-                if (nextOrigin > origin) {
-                    origin = nextOrigin
-                    stops.push(origin)
-                }
-            }
-        }
-        // Start at the first card that needs more room. Fixed strides can split
-        // a card on both pages, and a fixed card count ignores wrapped details.
-        historyList.pageStops = stops
+        if (historyColumn) historyList.pageStops = historyList.rowPageStops(historyColumn.children)
     }
 
     function requestFiltered() {
