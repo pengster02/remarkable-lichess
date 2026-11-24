@@ -465,6 +465,92 @@ TestCase {
         ]
     }
 
+    function test_liveHistoryCaptureTraysFollowAppendsAndTakebacks() {
+        var fens = [
+            "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2",
+            "rnbqkbnr/ppppp2p/5pp1/7Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3",
+            "rnbqkbnr/ppppp2p/5pQ1/8/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 0 3",
+            "rnbqkbnr/ppppp3/5pp1/8/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 4"
+        ]
+        app.openGame("capture-history")
+        var snapshot = boardState("capture-history")
+        snapshot.fen = fens[1]
+        snapshot.position_history = fens.slice(0, 2)
+        snapshot.move_history = ["g6"]
+        snapshot.capture_history = []
+        endpoint.reply(snapshot)
+
+        var append = boardState("capture-history")
+        append.position_history = null
+        append.move_history = null
+        append.fen = fens[2]
+        append.turn = "black"
+        append.in_check = true
+        append.appended_move = "Qxg6+"
+        append.appended_capture = "bP"
+        append.captured_by_white = ["bP"]
+        endpoint.reply(append)
+        endpoint.reply(Object.assign({}, append, {
+            fen: fens[3], turn: "white", in_check: false, appended_move: "hxg6",
+            appended_capture: "wQ", captured_by_black: ["wQ"]
+        }))
+        var board = screen.item
+        var top = findChild(board, "topPlayerBar")
+        var bottom = findChild(board, "bottomPlayerBar")
+        compare(bottom.capturedPieces, ["bP"])
+        compare(top.capturedPieces, ["wQ"])
+        board.showHistoryPosition(2)
+        compare(bottom.capturedPieces, ["bP"])
+        compare(top.capturedPieces, [])
+        board.manualFlip = true
+        compare(top.capturedPieces, ["bP"])
+        compare(bottom.capturedPieces, [])
+        endpoint.reply({type: "SettingsState", show_captured_pieces: false})
+        compare(top.capturedPieces, [])
+        endpoint.reply({type: "SettingsState", show_captured_pieces: true})
+        compare(top.capturedPieces, ["bP"])
+
+        board.showHistoryPosition(0)
+        compare(top.capturedPieces, [])
+        compare(bottom.capturedPieces, [])
+        board.returnToLive()
+        compare(top.capturedPieces, ["bP"])
+        compare(bottom.capturedPieces, ["wQ"])
+        snapshot.fen = fens[2]
+        snapshot.turn = "black"
+        snapshot.position_history = fens.slice(0, 3)
+        snapshot.move_history = ["g6", "Qxg6+"]
+        snapshot.capture_history = [{ply: 2, piece: "bP"}]
+        snapshot.captured_by_white = ["bP"]
+        endpoint.reply(snapshot)
+        compare(board.historyIndex, 2)
+        compare(top.capturedPieces, ["bP"])
+        compare(bottom.capturedPieces, [])
+        board.showHistoryPosition(1)
+        compare(top.capturedPieces, [])
+    }
+
+    function test_legacyHistoryLeavesUndatedCaptureTraysEmpty() {
+        app.openGame("legacy-captures")
+        var snapshot = boardState("legacy-captures")
+        snapshot.fen = "rnbqkbnr/ppp1pppp/8/3P4/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 2"
+        snapshot.turn = "black"
+        snapshot.position_history = [
+            "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+            snapshot.fen
+        ]
+        snapshot.move_history = ["exd5"]
+        snapshot.captured_by_white = ["bP"]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var bottom = findChild(board, "bottomPlayerBar")
+        compare(bottom.capturedPieces, ["bP"])
+        board.showHistoryPosition(0)
+        compare(bottom.capturedPieces, [])
+        board.returnToLive()
+        compare(bottom.capturedPieces, ["bP"])
+    }
+
     function test_liveHistoryClearUsesTheVisiblePiecesAndMoveMarks(data) {
         var fens = [
             startFen,

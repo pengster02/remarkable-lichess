@@ -135,6 +135,7 @@ Rectangle {
     // actually changes, same as everything else here.
     property var moveHistory: []
     property var positionHistory: []
+    property var captureHistory: null
     property bool initialInCheck: false
     property int historyIndex: -1
     property bool viewingHistory: boardScreen.isViewingHistory()
@@ -737,7 +738,17 @@ Rectangle {
     }
 
     function capturedPiecesFor(color) {
-        return color === "white" ? boardScreen.capturedByWhite : boardScreen.capturedByBlack
+        if (!boardScreen.viewingHistory)
+            return color === "white" ? boardScreen.capturedByWhite : boardScreen.capturedByBlack
+        var pieces = []
+        if (boardScreen.captureHistory === null) return pieces
+        var capturedColor = color === "white" ? "b" : "w"
+        for (var i = 0; i < boardScreen.captureHistory.length; i++) {
+            var capture = boardScreen.captureHistory[i]
+            if (capture.ply > boardScreen.historyIndex) break
+            if (capture.piece.charAt(0) === capturedColor) pieces.push(capture.piece)
+        }
+        return pieces
     }
 
     // FEN piece char -> cburnett filename code (e.g. "K" -> "wK", "q" -> "bQ"),
@@ -1864,6 +1875,7 @@ Rectangle {
                     boardScreen.gameRatingChange = null
                 }
                 boardScreen.pendingActionRequest = null
+                boardScreen.captureHistory = null
             }
             boardScreen.gameId = nextGameId
             boardScreen.livePositionId = msg.position_id
@@ -1884,6 +1896,8 @@ Rectangle {
             if (hasFullHistory) {
                 initialInCheck = typeof msg.initial_in_check === "boolean" ? msg.initial_in_check :
                     fullPositions.length === 1 && msg.in_check === true
+                // A legacy snapshot still supplies live totals, but cannot date those captures.
+                boardScreen.captureHistory = msg.capture_history || null
             }
             var previous = boardChanged || initialInCheck !== boardScreen.initialInCheck
                 ? boardScreen.captureBoardAppearance() : null
@@ -1906,6 +1920,11 @@ Rectangle {
                     if (msg.appended_move !== undefined && msg.appended_move !== null) {
                         boardScreen.moveHistory =
                             boardScreen.moveHistory.concat([msg.appended_move])
+                        if (boardScreen.captureHistory !== null && typeof msg.appended_capture === "string") {
+                            boardScreen.captureHistory = boardScreen.captureHistory.concat([
+                                {ply: boardScreen.moveHistory.length, piece: msg.appended_capture}
+                            ])
+                        }
                     }
                 }
                 boardScreen.historyIndex = boardScreen.positionHistory.length - 1
