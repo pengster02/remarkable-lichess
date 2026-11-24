@@ -25,7 +25,8 @@ TestCase {
         sentMessages = []
         seek.pendingAction = ""
         seek.formError = ""
-        seek.waiting = false
+        seek.clearWaiting()
+        seek.seekEnded = false
         findChild(seek, "minutesField").text = "10"
         findChild(seek, "incrementField").text = "0"
         findChild(seek, "usernameField").text = ""

@@ -9,9 +9,6 @@ Rectangle {
     property var navigateTo
     property var openGame: function() {}
     property bool darkMode: false
-    // Set once SeekCreated/ChallengeCreated confirms the long-poll connection
-    // backing the seek/challenge is actually held open server-side (see
-    // backend_app.rs's pending_seek) -- Cancel only makes sense while it's live.
     property bool waiting: false
     property string waitingLabel: ""
     property bool rated: false
@@ -27,14 +24,21 @@ Rectangle {
     property var nextRequestId
     property string pendingAction: ""
     property string waitingChallengeGameId: ""
-    property int seekRequestId: 0
+    property int matchRequestId: 0
     property string seekMatchBeforeAckId: ""
     property bool seekEnded: false
-    readonly property bool showingSetup: !waiting && !seekEnded
+    readonly property bool connectingMatch: pendingAction === "seek" || pendingAction === "challenge"
+    readonly property bool canCancelMatch: matchRequestId > 0 && (connectingMatch || waiting)
+    readonly property bool showingSetup: !waiting && !connectingMatch && !seekEnded
     property string formError: ""
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
         aiLevelField.activeFocus
+
+    Component.onDestruction: {
+        if (seekScreen.matchRequestId > 0 && seekScreen.backendSender)
+            seekScreen.backendSender({type: "CancelSeek", request_id: seekScreen.matchRequestId})
+    }
 
     Timer {
         id: seekSettlement
@@ -94,12 +98,15 @@ Rectangle {
         // 60s cap hides valid seeks, while separate duplicate forms add drift.
         if (pendingAction.length > 0 || !validateTimeControl(180)) return
         dismissKeyboard()
-        seekRequestId = nextRequestId()
+        matchRequestId = nextRequestId()
         seekMatchBeforeAckId = ""
+        seekEnded = false
+        waitingLabel = "Connecting to matchmaking…"
+        formError = ""
         pendingAction = "seek"
         backendSender({
             type: "CreateSeek",
-            request_id: seekRequestId,
+            request_id: matchRequestId,
             minutes: wholeNumber(minutesField.text),
             increment: wholeNumber(incrementField.text),
             rated: rated,
@@ -111,12 +118,20 @@ Rectangle {
         seekSettlement.stop()
         waiting = false
         waitingChallengeGameId = ""
-        seekRequestId = 0
+        matchRequestId = 0
+        seekMatchBeforeAckId = ""
     }
 
     function cancelWaiting() {
+        var requestId = matchRequestId
+        pendingAction = ""
         clearWaiting()
-        backendSender({type: "CancelSeek"})
+        if (requestId > 0) backendSender({type: "CancelSeek", request_id: requestId})
+    }
+
+    function openMatchedGame(gameId) {
+        cancelWaiting()
+        openGame(gameId)
     }
 
     function submitChallenge() {
@@ -127,9 +142,13 @@ Rectangle {
             return
         }
         dismissKeyboard()
+        matchRequestId = nextRequestId()
+        waitingLabel = "Sending challenge…"
+        formError = ""
         pendingAction = "challenge"
         backendSender({
             type: "CreateChallenge",
+            request_id: matchRequestId,
             username: username,
             minutes: wholeNumber(minutesField.text),
             increment: wholeNumber(incrementField.text),
@@ -175,11 +194,11 @@ Rectangle {
         width: Math.min(parent.width - theme.pageSideMargin * 2,
                         Math.max(theme.textFieldWidthMedium, naturalWidth))
         compact: true
-        enabled: seekScreen.pendingAction.length === 0 || seekScreen.waiting
+        enabled: seekScreen.pendingAction.length === 0 || seekScreen.canCancelMatch
         text: "Back to Home"
         onClicked: {
             seekScreen.dismissKeyboard()
-            if (seekScreen.waiting) seekScreen.cancelWaiting()
+            if (seekScreen.canCancelMatch) seekScreen.cancelWaiting()
             seekScreen.navigateTo("HomeScreen.qml")
         }
     }
@@ -217,7 +236,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             eyebrow: "Play"
             title: "New game"
-            detail: "Set up your next game"
+            detail: seekScreen.showingSetup ? "Set up your next game" : ""
         }
 
         SectionCard {
@@ -342,11 +361,9 @@ Rectangle {
         AppButton {
             width: parent.width
             objectName: "findOpponentButton"
-            text: seekScreen.pendingAction === "seek"
-                ? "Finding an opponent…"
-                : (seekScreen.seekEnded ? "Search again" : "Find an opponent")
+            text: seekScreen.seekEnded ? "Search again" : "Find an opponent"
             highlighted: true
-            visible: !seekScreen.waiting
+            visible: seekScreen.showingSetup || seekScreen.seekEnded
             enabled: seekScreen.pendingAction.length === 0
             onClicked: seekScreen.submitSeek()
         }
@@ -477,15 +494,16 @@ Rectangle {
 
         Text {
             text: seekScreen.waitingLabel
-            visible: seekScreen.waiting
+            visible: seekScreen.connectingMatch || seekScreen.waiting
             font.pixelSize: theme.fontLarge
             color: theme.text
         }
 
         AppButton {
+            objectName: "cancelMatchButton"
             width: parent.width
             text: "Cancel"
-            visible: seekScreen.waiting
+            visible: seekScreen.canCancelMatch
             onClicked: seekScreen.cancelWaiting()
         }
         }
@@ -493,32 +511,38 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "SeekCreated") {
-            if (seekScreen.pendingAction !== "seek" || msg.request_id !== seekScreen.seekRequestId) return
+            if (seekScreen.pendingAction !== "seek" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
             seekScreen.formError = ""
             seekScreen.seekEnded = false
             seekScreen.waiting = true
             seekScreen.waitingLabel = "Waiting for an opponent..."
-            if (seekScreen.seekMatchBeforeAckId) seekScreen.openGame(seekScreen.seekMatchBeforeAckId)
+            if (seekScreen.seekMatchBeforeAckId) seekScreen.openMatchedGame(seekScreen.seekMatchBeforeAckId)
         } else if (msg.type === "SeekFailed") {
-            if (seekScreen.pendingAction !== "seek" || msg.request_id !== seekScreen.seekRequestId) return
+            if (seekScreen.pendingAction !== "seek" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
             seekScreen.seekEnded = false
             seekScreen.formError = msg.message || "Lichess could not find an opponent."
         } else if (msg.type === "SeekEnded") {
-            if (!seekScreen.waiting || msg.request_id !== seekScreen.seekRequestId) return
+            if (!seekScreen.waiting || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.waitingLabel = "Checking for a match..."
             seekSettlement.start()
         } else if (msg.type === "ChallengeCreated") {
-            if (seekScreen.pendingAction !== "challenge") return
+            if (seekScreen.pendingAction !== "challenge" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
             seekScreen.formError = ""
             seekScreen.waiting = true
             seekScreen.waitingChallengeGameId = msg.game_id
             seekScreen.waitingLabel = "Challenge sent, waiting for a reply..."
+        } else if (msg.type === "ChallengeCreateFailed") {
+            if (seekScreen.pendingAction !== "challenge" || msg.request_id !== seekScreen.matchRequestId) return
+            seekScreen.pendingAction = ""
+            seekScreen.clearWaiting()
+            seekScreen.formError = msg.message || "Lichess could not create the challenge."
         } else if (msg.type === "ChallengeResolved") {
-            if (!seekScreen.waiting || msg.game_id !== seekScreen.waitingChallengeGameId) return
+            if (!seekScreen.waiting || msg.game_id !== seekScreen.waitingChallengeGameId ||
+                    msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.clearWaiting()
             if (msg.error) seekScreen.formError = msg.error
             else seekScreen.openGame(msg.game_id)
@@ -533,12 +557,15 @@ Rectangle {
             var lookingForOpponent = seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0
             var matchingLink = seekScreen.pendingAction.length === 0 && !seekScreen.waiting &&
                 seekScreen.openChallengeUrls && msg.game_id === seekScreen.openChallengeUrls.game_id
-            if ((lookingForOpponent && msg.from_realtime_lobby) || matchingLink)
+            if (lookingForOpponent && msg.from_realtime_lobby)
+                seekScreen.openMatchedGame(msg.game_id)
+            else if (matchingLink)
                 seekScreen.openGame(msg.game_id)
             else if (seekScreen.pendingAction === "seek" && msg.from_realtime_lobby &&
                      !seekScreen.seekMatchBeforeAckId)
                 seekScreen.seekMatchBeforeAckId = msg.game_id
         } else if (msg.type === "ErrorMsg") {
+            if (seekScreen.canCancelMatch) return
             seekScreen.pendingAction = ""
             seekScreen.formError = msg.message || "Lichess could not create that game."
         }

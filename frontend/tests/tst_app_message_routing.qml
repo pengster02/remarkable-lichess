@@ -436,7 +436,7 @@ TestCase {
     function test_seekIgnoresAnUnrelatedChallengeAndOpensItsMatch() {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitSeek()
-        endpoint.reply({type: "SeekCreated", request_id: screen.item.seekRequestId})
+        endpoint.reply({type: "SeekCreated", request_id: screen.item.matchRequestId})
         verify(screen.item.waiting)
         endpoint.reply({type: "GameStarted", game_id: "challenge", from_realtime_lobby: false})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
@@ -446,18 +446,61 @@ TestCase {
         verify(String(screen.source).endsWith("BoardScreen.qml"))
     }
 
+    function test_matchmakingCanBeCancelledBeforeAcknowledgement_data() {
+        return [{tag: "seek", direct: false}, {tag: "direct challenge", direct: true}]
+    }
+
+    function test_matchmakingCanBeCancelledBeforeAcknowledgement(data) {
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        var pager = findChild(seek, "seekFlickable")
+        if (data.direct) pager.pageDown()
+        function submit() {
+            if (data.direct) {
+                findChild(seek, "usernameField").text = "opponent"
+                seek.submitChallenge()
+            } else seek.submitSeek()
+            return endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
+        }
+        var first = submit()
+        verify(first > 0)
+        var cancel = findChild(seek, "cancelMatchButton")
+        verify(cancel && cancel.visible && cancel.enabled)
+        verify(!findChild(seek, "findOpponentButton").visible)
+        tryVerify(function() {
+            return cancel.mapToItem(pager, 0, 0).y >= 0 &&
+                cancel.mapToItem(pager, 0, cancel.height).y <= pager.pageHeight
+        })
+        cancel.clicked()
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "CancelSeek", request_id: first})
+        compare(seek.pendingAction, "")
+        verify(seek.showingSetup)
+
+        var second = submit()
+        verify(first !== second)
+        var createdType = data.direct ? "ChallengeCreated" : "SeekCreated"
+        var failedType = data.direct ? "ChallengeCreateFailed" : "SeekFailed"
+        endpoint.reply({type: createdType, game_id: "previous", request_id: first})
+        endpoint.reply({type: failedType, request_id: first, message: "Old failure"})
+        verify(!seek.waiting)
+        compare(seek.formError, "")
+        endpoint.reply({type: createdType, game_id: "current", request_id: second})
+        verify(seek.waiting)
+    }
+
     function test_seekMatchBeforeTheAckWaitsForSuccess() {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitSeek()
         endpoint.reply({type: "GameStarted", game_id: "old-match", from_realtime_lobby: true})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
-        endpoint.reply({type: "SeekFailed", request_id: screen.item.seekRequestId,
+        endpoint.reply({type: "SeekFailed", request_id: screen.item.matchRequestId,
                         message: "Could not create seek"})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
 
         screen.item.submitSeek()
         endpoint.reply({type: "GameStarted", game_id: "new-match", from_realtime_lobby: true})
-        endpoint.reply({type: "SeekCreated", request_id: screen.item.seekRequestId})
+        endpoint.reply({type: "SeekCreated", request_id: screen.item.matchRequestId})
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "new-match"})
     }
@@ -502,18 +545,22 @@ TestCase {
         app.navigateTo("SeekScreen.qml")
         findChild(screen.item, "usernameField").text = "opponent"
         screen.item.submitChallenge()
-        endpoint.reply({type: "ChallengeCreated", game_id: "outgoing"})
+        var first = screen.item.matchRequestId
+        endpoint.reply({type: "ChallengeCreated", game_id: "outgoing", request_id: first})
         endpoint.reply({type: "GameStarted", game_id: "outgoing", from_realtime_lobby: false})
         endpoint.reply({type: "GameStarted", game_id: "unrelated", from_realtime_lobby: true})
-        endpoint.reply({type: "ChallengeResolved", game_id: "previous", error: "Old challenge"})
+        endpoint.reply({type: "ChallengeResolved", game_id: "previous", request_id: first,
+                        error: "Old challenge"})
         verify(screen.item.waiting)
-        endpoint.reply({type: "ChallengeResolved", game_id: "outgoing", error: "Challenge declined."})
+        endpoint.reply({type: "ChallengeResolved", game_id: "outgoing", request_id: first,
+                        error: "Challenge declined."})
         compare(screen.item.formError, "Challenge declined.")
         verify(!screen.item.waiting)
 
         screen.item.submitChallenge()
-        endpoint.reply({type: "ChallengeCreated", game_id: "accepted"})
-        endpoint.reply({type: "ChallengeResolved", game_id: "accepted", error: null})
+        var second = screen.item.matchRequestId
+        endpoint.reply({type: "ChallengeCreated", game_id: "accepted", request_id: second})
+        endpoint.reply({type: "ChallengeResolved", game_id: "accepted", request_id: second, error: null})
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "accepted"})
     }

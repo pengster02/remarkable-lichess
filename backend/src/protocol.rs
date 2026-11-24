@@ -73,9 +73,12 @@ pub enum FrontendMessage {
         color: String,
         request_id: Option<u32>,
     },
-    CreateChallenge { username: String, minutes: u32, increment: u32, rated: bool, color: String },
+    CreateChallenge {
+        username: String, minutes: u32, increment: u32, rated: bool, color: String,
+        request_id: Option<u32>,
+    },
     ChallengeAi { level: u8, minutes: u32, increment: u32 },
-    CancelSeek,
+    CancelSeek { request_id: Option<u32> },
     MakeMove { from: String, to: String, promotion: Option<String> },
     Resign,
     // `accept: true` offers a draw/takeback when none is pending, or accepts the
@@ -376,8 +379,18 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },
-    ChallengeCreated { game_id: String },
-    ChallengeResolved { game_id: String, error: Option<String> },
+    ChallengeCreated {
+        game_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
+    ChallengeCreateFailed { request_id: u32, message: String },
+    ChallengeResolved {
+        game_id: String,
+        error: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<u32>,
+    },
     ChallengeAccepted {
         game_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
