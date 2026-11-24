@@ -480,6 +480,60 @@ TestCase {
         compare(board.topStatusText(), "Waiting for opponent")
     }
 
+    function loadBoardForPreview() {
+        var start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var afterE5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        board.handleMessage({
+            type: "BoardState", game_id: "preview-view", fen: afterE5, turn: "white",
+            white_time_ms: 60000, black_time_ms: 60000, your_color: "white",
+            legal_moves: [{from: "g1", to: "f3", promotion: null}],
+            position_history: [start, afterE4, afterE5], move_history: ["e4", "e5"],
+            last_move: ["e7", "e5"]
+        })
+        return {type: "MovePreview", game_id: "preview-view", turn: "black",
+                fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+                white_time_ms: 59000, black_time_ms: 60000, last_move: ["g1", "f3"]}
+    }
+
+    function test_rejectedPreviewDoesNotMoveTheHistoricalCursor() {
+        var preview = loadBoardForPreview()
+        board.handleMessage(preview)
+        board.returnToLive()
+        compare(board.fen, preview.fen)
+        var initial = board.positionHistory[0]
+        board.showHistoryPosition(0)
+        board.handleMessage({type: "MoveRejected", game_id: "preview-view", reason: "Move not accepted"})
+        compare(board.historyIndex, 0)
+        compare(board.fen, initial)
+        compare(board.previewFen, "")
+    }
+
+    function test_latePreviewLeavesTheHistoricalPositionInPlace() {
+        var preview = loadBoardForPreview()
+        var initial = board.positionHistory[0]
+        board.showHistoryPosition(0)
+        board.handleMessage(preview)
+        compare(board.historyIndex, 0)
+        compare(board.fen, initial)
+        compare(board.previewFen, "")
+        board.returnToLive()
+        compare(board.fen, board.liveFen)
+    }
+
+    function test_terminalNoticeRestoresTheAuthoritativeMoveAndIgnoresLatePreview() {
+        var preview = loadBoardForPreview()
+        board.handleMessage(preview)
+        board.handleMessage({type: "GameOver", game_id: "preview-view", result: "draw", reason: "Agreement"})
+        verify(board.gameOver)
+        compare(board.fen, board.liveFen)
+        compare(board.turn, "white")
+        compare(board.lastMove, ["e7", "e5"])
+        board.handleMessage(preview)
+        compare(board.fen, board.liveFen)
+        compare(board.previewFen, "")
+    }
+
     function test_playerBarsUseBothAvailableRatings() {
         board.yourColor = "white"
         board.username = "fallback"
