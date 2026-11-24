@@ -1,7 +1,7 @@
 use crate::game::outcome::outcome;
 use crate::game::rules::{advance_uci_game, apply_uci_move, legal_moves, replay_uci_game, supports_variant};
 use crate::lichess::models::{GameFull, GameState};
-use crate::protocol::{BackendMessage, LegalMove, PlayerIdentity};
+use crate::protocol::{BackendMessage, LegalMove, PlayerIdentity, PlayerStatusSummary};
 use shakmaty::{Chess, Position};
 use std::time::Instant;
 
@@ -26,6 +26,9 @@ pub struct GameSession {
     // from gameFull, not re-derived on every gameState update.
     pub your_player: PlayerIdentity,
     pub opponent_player: PlayerIdentity,
+    // A session snapshot avoids refetching on resume and keeps status out of
+    // frequent BoardState updates. None means the lookup has yet to succeed.
+    pub player_statuses: Option<Box<[PlayerStatusSummary]>>,
     pub game_description: String,
     pub rated: bool,
     pub is_tournament: bool,
@@ -291,6 +294,7 @@ impl GameSession {
             captured_by_black: replay.captured_by_black,
             your_player: player_identity(local_player),
             opponent_player: player_identity(opp),
+            player_statuses: None,
             game_description: game_description(full),
             rated: full.rated,
             is_tournament: full.tournament_id.is_some(),

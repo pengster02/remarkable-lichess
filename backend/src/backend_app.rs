@@ -397,6 +397,12 @@ impl LichessBackend {
             if let Some(session) = current.as_ref().filter(|session| session.game_id == game_id) {
                 // Keep snapshot publication in session order with the stream task.
                 self.send(replier, &session.board_state());
+                if let Some(players) = &session.player_statuses {
+                    self.send(replier, &BackendMessage::PlayerStatuses {
+                        game_id,
+                        players: players.clone(),
+                    });
+                }
                 return;
             }
         }
@@ -1124,38 +1130,40 @@ fn spawn_challenge_response(
     })
 }
 
-fn spawn_player_status_request(
+async fn refresh_player_statuses(
     client: LichessClient,
     game_id: String,
     user_ids: Vec<String>,
     replier: BackendReplier<LichessBackend>,
+    session_handle: Arc<Mutex<Option<GameSession>>>,
     write_lock: Arc<std::sync::Mutex<()>>,
 ) {
-    tokio::spawn(async move {
-        match client.get_user_statuses(&user_ids).await {
-            Ok(rows) => {
-                let players = rows
-                    .into_iter()
-                    .map(|row| PlayerStatusSummary {
-                        id: row.id,
-                        title: row.title,
-                        online: row.online,
-                        playing: row.playing,
-                        streaming: row.streaming,
-                        patron: row.patron || row.patron_color.is_some(),
-                        flair: row.flair,
-                    })
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice();
-                send_locked(
-                    &replier,
-                    &write_lock,
-                    &BackendMessage::PlayerStatuses { game_id, players },
-                );
-            }
-            Err(error) => log::debug!("optional player status lookup failed: {error}"),
+    let rows = match client.get_user_statuses(&user_ids).await {
+        Ok(rows) => rows,
+        Err(error) => {
+            log::debug!("optional player status lookup failed: {error}");
+            return;
         }
-    });
+    };
+    let players = rows
+        .into_iter()
+        .map(|row| PlayerStatusSummary {
+            id: row.id,
+            title: row.title,
+            online: row.online,
+            playing: row.playing,
+            streaming: row.streaming,
+            patron: row.patron || row.patron_color.is_some(),
+            flair: row.flair,
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let mut guard = session_handle.lock().await;
+    let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) else {
+        return;
+    };
+    session.player_statuses = Some(players.clone());
+    send_locked(&replier, &write_lock, &BackendMessage::PlayerStatuses { game_id, players });
 }
 
 fn spawn_game_stream(
@@ -1169,7 +1177,8 @@ fn spawn_game_stream(
     tokio::spawn(async move {
         let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
         let mut stream_finished = false;
-        let mut player_status_requested = false;
+        // Waiting inline stalls moves. A detached lookup outlives a game switch.
+        let mut player_status_requests = tokio::task::JoinSet::new();
         while !stream_finished {
             let mut received_for = Duration::ZERO;
             let response = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await;
@@ -1200,32 +1209,29 @@ fn spawn_game_stream(
                                 // A finished game can send only one Full snapshot
                                 // before EOF, which would otherwise trigger a retry.
                                 GameStreamMessage::Full(full) => {
-                                    let was_berserked = guard
-                                        .as_ref()
-                                        .is_some_and(|session| {
-                                            session.game_id == full.id && session.berserked
-                                        });
                                     match GameSession::from_game_full(&full, &my_id) {
                                         Ok((mut s, mut board_msg)) => {
                                             resync_deadline = None;
-                                            if was_berserked {
-                                                s.mark_berserked();
-                                                board_msg = s.board_state();
+                                            if let Some(previous) = guard.as_mut().filter(|session| {
+                                                session.game_id == s.game_id
+                                            }) {
+                                                s.player_statuses = previous.player_statuses.take();
+                                                if previous.berserked {
+                                                    s.mark_berserked();
+                                                    board_msg = s.board_state();
+                                                }
                                             }
                                             if full.state.status != "started" {
                                                 stream_finished = true;
                                                 *guard = None;
                                                 Some(board_msg)
                                             } else {
-                                                if !player_status_requested {
-                                                    let ids = [s.your_player.id.clone(), s.opponent_player.id.clone()]
+                                                let _ = player_status_requests.try_join_next();
+                                                if s.player_statuses.is_none() && player_status_requests.is_empty() {
+                                                    status_ids = Some([s.your_player.id.clone(), s.opponent_player.id.clone()]
                                                         .into_iter()
                                                         .flatten()
-                                                        .collect::<Vec<_>>();
-                                                    if !ids.is_empty() {
-                                                        player_status_requested = true;
-                                                        status_ids = Some(ids);
-                                                    }
+                                                        .collect::<Vec<_>>());
                                                 }
                                                 *guard = Some(s);
                                                 Some(board_msg)
@@ -1291,14 +1297,15 @@ fn spawn_game_stream(
                                 send_locked(&replier, &write_lock, &m);
                             }
                             drop(guard);
-                            if let Some(ids) = status_ids {
-                                spawn_player_status_request(
+                            if let Some(ids) = status_ids.filter(|ids| !ids.is_empty()) {
+                                player_status_requests.spawn(refresh_player_statuses(
                                     client.clone(),
                                     game_id.clone(),
                                     ids,
                                     replier.clone(),
+                                    session_handle.clone(),
                                     write_lock.clone(),
-                                );
+                                ));
                             }
                         if stream_finished {
                             break;

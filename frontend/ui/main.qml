@@ -401,7 +401,7 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "BoardState") {
+            } else if (msg.type === "BoardState" || msg.type === "PlayerStatuses") {
                 if (!root.hasToken || !root.selectedGameId || msg.game_id !== root.selectedGameId) return
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
