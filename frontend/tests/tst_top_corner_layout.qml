@@ -24,6 +24,7 @@ TestCase {
     function init() {
         boardMessages = []
         board.statusText = ""
+        board.streamReconnecting = false
         board.gameOver = false
         board.showGameOverDialog = false
         board.firstMoveTimeMs = null
@@ -462,11 +463,21 @@ TestCase {
         compare(board.turn, "black")
         compare(board.whiteTimeMs, 59000)
         compare(board.statusText, "")
-        compare(board.topStatusText(), "Waiting for opponent")
+        compare(board.topStatusText(), "Reconnecting...")
 
-        board.liveFen = ""
-        board.handleMessage({type: "GameStreamReconnecting", game_id: "g1"})
-        compare(board.statusText, "Reconnecting...")
+        var update = {
+            type: "BoardState", game_id: "g1",
+            fen: previewFen, turn: "black", white_time_ms: 59000, black_time_ms: 60000,
+            legal_moves: [], last_move: ["e2", "e4"], appended_move: "e4",
+            game_stream_connected: false
+        }
+        board.handleMessage(update)
+        compare(board.liveFen, previewFen)
+        compare(board.topStatusText(), "Reconnecting...")
+
+        update.game_stream_connected = true
+        board.handleMessage(update)
+        compare(board.topStatusText(), "Waiting for opponent")
     }
 
     function test_playerBarsUseBothAvailableRatings() {

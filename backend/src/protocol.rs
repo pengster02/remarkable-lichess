@@ -372,6 +372,7 @@ pub enum BackendMessage {
     GameStarted { game_id: String, from_realtime_lobby: bool },
     BoardState {
         game_id: String,
+        game_stream_connected: bool,
         fen: String,
         turn: String,
         white_time_ms: u64,
@@ -906,6 +907,7 @@ mod tests {
     fn backend_message_serializes_with_type_tag() {
         let msg = BackendMessage::BoardState {
             game_id: "g1".into(),
+            game_stream_connected: false,
             fen: "startpos".into(),
             turn: "white".into(),
             white_time_ms: 600_000,
@@ -950,6 +952,7 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"BoardState""#));
         assert!(json.contains(r#""game_id":"g1""#));
+        assert!(json.contains(r#""game_stream_connected":false"#));
         assert!(json.contains(r#""captured_by_white":["bP"]"#));
         assert!(json.contains(r#""fen":"startpos""#));
         assert!(json.contains(r#""your_player":{"id":"alice","name":"Alice","title":"IM","rating":1700,"provisional":true}"#));

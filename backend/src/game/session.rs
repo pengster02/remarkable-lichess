@@ -7,6 +7,10 @@ use std::time::Instant;
 
 pub struct GameSession {
     pub game_id: String,
+    // A POST or cached resume can publish a board while its stream is down.
+    // Treating any board as recovery, or sending an independent recovery event,
+    // could leave the UI showing a connection that the snapshot did not have.
+    game_stream_connected: bool,
     pub initial_fen: String,
     pub position: Chess,
     pub legal: Vec<LegalMove>,
@@ -191,6 +195,7 @@ fn to_board_state(
     });
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
+        game_stream_connected: session.game_stream_connected,
         fen: shakmaty::fen::Fen::from_position(&session.position, shakmaty::EnPassantMode::Legal)
             .to_string(),
         turn: turn_name(&session.position),
@@ -272,6 +277,7 @@ impl GameSession {
         let opp = opponent(full, &your_color);
         let session = GameSession {
             game_id: full.id.clone(),
+            game_stream_connected: true,
             initial_fen: full.initial_fen.clone(),
             position,
             legal,
@@ -304,6 +310,10 @@ impl GameSession {
         self.berserked = true;
     }
 
+    pub fn mark_stream_disconnected(&mut self) {
+        self.game_stream_connected = false;
+    }
+
     fn board_state_at(&self, now: Instant) -> BackendMessage {
         // A standalone re-send of the current state (resume, berserk re-derive) --
         // the frontend may be freshly loaded with no history, so sync it in full.
@@ -311,6 +321,10 @@ impl GameSession {
     }
 
     pub fn apply_state_update(&mut self, state: GameState) -> anyhow::Result<BackendMessage> {
+        self.update_state(state, true)
+    }
+
+    fn update_state(&mut self, state: GameState, game_stream_connected: bool) -> anyhow::Result<BackendMessage> {
         enum Change {
             Appended(String),
             Rebuilt,
@@ -349,6 +363,7 @@ impl GameSession {
         }
         self.state = state;
         self.state_received_at = Instant::now();
+        self.game_stream_connected = game_stream_connected;
         let history = match &change {
             Change::Appended(san) => HistoryDelivery::Append(san),
             Change::Rebuilt => HistoryDelivery::Full,
@@ -380,7 +395,7 @@ impl GameSession {
         } else {
             format!("{} {}", expected_moves.trim(), uci)
         };
-        self.apply_state_update(state).map(Some)
+        self.update_state(state, self.game_stream_connected).map(Some)
     }
 
     pub fn preview_move(&self, uci: &str) -> anyhow::Result<BackendMessage> {
@@ -635,6 +650,28 @@ mod tests {
         session.apply_state_update(authoritative).unwrap();
         assert_eq!(session.move_history, ["e4"]);
         assert_eq!(session.position_history.len(), 2);
+    }
+
+    #[test]
+    fn only_an_authoritative_update_recovers_a_disconnected_board() {
+        let full = sample_full("");
+        let (mut session, initial) = GameSession::from_game_full(&full, "my-id").unwrap();
+        assert!(matches!(initial, BackendMessage::BoardState { game_stream_connected: true, .. }));
+
+        session.mark_stream_disconnected();
+        let predicted = session.apply_accepted_move("", "e2e4").unwrap().unwrap();
+        assert!(matches!(predicted, BackendMessage::BoardState { game_stream_connected: false, .. }));
+
+        let mut invalid = session.state.clone();
+        invalid.moves.push_str(" invalid");
+        assert!(session.apply_state_update(invalid).is_err());
+        assert!(matches!(
+            session.board_state(),
+            BackendMessage::BoardState { game_stream_connected: false, .. }
+        ));
+
+        let recovered = session.apply_state_update(session.state.clone()).unwrap();
+        assert!(matches!(recovered, BackendMessage::BoardState { game_stream_connected: true, .. }));
     }
 
     #[test]
