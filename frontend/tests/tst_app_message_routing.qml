@@ -286,10 +286,11 @@ TestCase {
         endpoint.reply({type: "GameStarted", game_id: "background", from_realtime_lobby: true})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
         screen.item.submitComputerGame()
+        var computerRequest = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
         endpoint.reply({type: "GameStarted", game_id: "external-ai", from_realtime_lobby: false})
         endpoint.reply(boardState("external-ai"))
         verify(String(screen.source).endsWith("SeekScreen.qml"))
-        endpoint.reply({type: "ComputerGameCreated", game_id: "requested"})
+        endpoint.reply({type: "ComputerGameCreated", game_id: "requested", request_id: computerRequest})
         verify(String(screen.source).endsWith("BoardScreen.qml"))
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "requested"})
@@ -558,7 +559,7 @@ TestCase {
         })
         cancel.clicked()
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
-                {type: "CancelSeek", request_id: first})
+                {type: "CancelMatch", request_id: first})
         compare(seek.pendingAction, "")
         verify(seek.showingSetup)
 
@@ -653,13 +654,77 @@ TestCase {
     function test_openChallengeMatchesTheShareableLink() {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitOpenChallenge()
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
         endpoint.reply({type: "OpenChallengeCreated", game_id: "link",
+                        request_id: request,
                         url: "https://lichess.org/game/link", url_white: "white", url_black: "black"})
         endpoint.reply({type: "GameStarted", game_id: "other", from_realtime_lobby: false})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
         endpoint.reply({type: "GameStarted", game_id: "link", from_realtime_lobby: false})
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "link"})
+    }
+
+    function test_matchCreationIsScopedAcrossVisits_data() {
+        return [{tag: "computer", action: "computer", success: "ComputerGameCreated",
+                 button: "computerGameButton", busyText: "Starting game…"},
+                {tag: "open challenge", action: "open", success: "OpenChallengeCreated",
+                 button: "openChallengeButton", busyText: "Creating link…"}]
+    }
+
+    function test_matchCreationIsScopedAcrossVisits(data) {
+        function submit() {
+            var seek = screen.item
+            var button = findChild(seek, data.button)
+            button.clicked()
+            verify(!button.enabled)
+            compare(button.text, data.busyText)
+            var sent = endpoint.sentMessages.length
+            seek.submitSeek()
+            seek.submitComputerGame()
+            seek.submitOpenChallenge()
+            compare(endpoint.sentMessages.length, sent)
+            return endpoint.sentMessages[sent - 1].request_id
+        }
+        app.navigateTo("SeekScreen.qml")
+        var first = submit()
+        var back = findChild(screen.item, "matchBackButton")
+        verify(back.visible && back.enabled)
+        verify(back.mapToItem(screen.item, 0, back.height).y <= screen.item.height)
+        verify(!findChild(screen.item, "cancelMatchButton").visible)
+        back.clicked()
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+        verify(endpoint.sentMessages.some(function(message) {
+            return message.type === "CancelMatch" && message.request_id === first
+        }))
+
+        app.navigateTo("SeekScreen.qml")
+        var second = submit()
+        verify(second > first)
+        endpoint.reply({type: data.success, game_id: "stale", request_id: first})
+        endpoint.reply({type: "MatchCreationFailed", request_id: first, message: "old error"})
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+        compare(screen.item.pendingAction, data.action)
+        compare(screen.item.formError, "")
+        endpoint.reply({type: "MatchCreationFailed", request_id: second, message: "Try again"})
+        compare(screen.item.formError, "Try again")
+        compare(screen.item.pendingAction, "")
+        var error = findChild(screen.item, "creationErrorText")
+        verify(error.visible && error.text === "Try again")
+        compare(error.mapToItem(screen.item, 0, error.height).y <
+                findChild(screen.item, "matchBackButton").y, true)
+        var third = submit()
+        verify(third > second)
+        endpoint.reply({type: data.success, game_id: "current", request_id: third,
+                        url: "https://lichess.org/current", url_white: "white", url_black: "black"})
+        if (data.action === "computer") {
+            compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                    {type: "ResumeGame", game_id: "current"})
+        } else {
+            compare(screen.item.openChallengeUrls.game_id, "current")
+            compare(screen.item.formError, "")
+            compare(screen.item.pendingAction, "")
+        }
     }
 
     function test_acceptChallengeWaitsForTheMatchingAcknowledgment() {

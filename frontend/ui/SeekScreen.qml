@@ -15,11 +15,7 @@ Rectangle {
     // "white"/"black"/"random" -- same enum Lichess's own ChallengeColor.yaml
     // uses for both /api/board/seek and /api/challenge/{username}.
     property string selectedColor: "random"
-    // {game_id, url, url_white, url_black} once OpenChallengeCreated arrives, else null.
-    // Unlike waiting/waitingLabel above, an open challenge has no held-open
-    // connection backing it (see backend_app.rs's create_open_challenge) --
-    // the link stays valid on Lichess's side independent of this screen, so
-    // there's deliberately no "Cancel" for it, just Back to Home.
+    // The returned link remains usable after leaving this screen.
     property var openChallengeUrls: null
     property var nextRequestId
     property string pendingAction: ""
@@ -28,16 +24,20 @@ Rectangle {
     property string seekMatchBeforeAckId: ""
     property bool seekEnded: false
     readonly property bool connectingMatch: pendingAction === "seek" || pendingAction === "challenge"
+    readonly property bool creatingMatch: pendingAction === "open" || pendingAction === "computer"
     readonly property bool canCancelMatch: matchRequestId > 0 && (connectingMatch || waiting)
     readonly property bool showingSetup: !waiting && !connectingMatch && !seekEnded
+    readonly property bool canSubmit: !waiting && pendingAction.length === 0
     property string formError: ""
+    property bool creationFailed: false
+    onFormErrorChanged: if (formError.length === 0) creationFailed = false
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
         aiLevelField.activeFocus
 
     Component.onDestruction: {
         if (seekScreen.matchRequestId > 0 && seekScreen.backendSender)
-            seekScreen.backendSender({type: "CancelSeek", request_id: seekScreen.matchRequestId})
+            seekScreen.backendSender({type: "CancelMatch", request_id: seekScreen.matchRequestId})
     }
 
     Timer {
@@ -80,6 +80,7 @@ Rectangle {
     }
 
     function validateTimeControl(maximumIncrement) {
+        creationFailed = false
         formError = timeControlError(maximumIncrement)
         return formError.length === 0
     }
@@ -96,7 +97,7 @@ Rectangle {
     function submitSeek() {
         // Lichess permits 180s on seeks but only 60s on challenges; one global
         // 60s cap hides valid seeks, while separate duplicate forms add drift.
-        if (pendingAction.length > 0 || !validateTimeControl(180)) return
+        if (!canSubmit || !validateTimeControl(180)) return
         dismissKeyboard()
         matchRequestId = nextRequestId()
         seekMatchBeforeAckId = ""
@@ -126,7 +127,7 @@ Rectangle {
         var requestId = matchRequestId
         pendingAction = ""
         clearWaiting()
-        if (requestId > 0) backendSender({type: "CancelSeek", request_id: requestId})
+        if (requestId > 0) backendSender({type: "CancelMatch", request_id: requestId})
     }
 
     function openMatchedGame(gameId) {
@@ -135,7 +136,7 @@ Rectangle {
     }
 
     function submitChallenge() {
-        if (pendingAction.length > 0 || !validateTimeControl(60)) return
+        if (!showingSetup || !canSubmit || !validateTimeControl(60)) return
         var username = usernameField.text.trim()
         if (username.length === 0) {
             formError = "Enter the Lichess username you want to challenge."
@@ -158,11 +159,13 @@ Rectangle {
     }
 
     function submitOpenChallenge() {
-        if (pendingAction.length > 0 || !validateTimeControl(60)) return
+        if (!showingSetup || !canSubmit || openChallengeUrls !== null || !validateTimeControl(60)) return
         dismissKeyboard()
+        matchRequestId = nextRequestId()
         pendingAction = "open"
         backendSender({
             type: "CreateOpenChallenge",
+            request_id: matchRequestId,
             minutes: wholeNumber(minutesField.text),
             increment: wholeNumber(incrementField.text),
             rated: rated
@@ -170,16 +173,18 @@ Rectangle {
     }
 
     function submitComputerGame() {
-        if (pendingAction.length > 0 || !validateTimeControl(60)) return
+        if (!showingSetup || !canSubmit || !validateTimeControl(60)) return
         var level = wholeNumber(aiLevelField.text)
         if (isNaN(level) || level < 1 || level > 8) {
             formError = "Computer level must be a whole number from 1 to 8."
             return
         }
         dismissKeyboard()
+        matchRequestId = nextRequestId()
         pendingAction = "computer"
         backendSender({
             type: "ChallengeAi",
+            request_id: matchRequestId,
             level: level,
             minutes: wholeNumber(minutesField.text),
             increment: wholeNumber(incrementField.text)
@@ -188,19 +193,35 @@ Rectangle {
 
     AppButton {
         id: backButton
+        objectName: "matchBackButton"
         anchors.bottom: parent.bottom
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottomMargin: theme.pageSideMargin
         width: Math.min(parent.width - theme.pageSideMargin * 2,
                         Math.max(theme.textFieldWidthMedium, naturalWidth))
         compact: true
-        enabled: seekScreen.pendingAction.length === 0 || seekScreen.canCancelMatch
         text: "Back to Home"
         onClicked: {
             seekScreen.dismissKeyboard()
-            if (seekScreen.canCancelMatch) seekScreen.cancelWaiting()
+            seekScreen.cancelWaiting()
             seekScreen.navigateTo("HomeScreen.qml")
         }
+    }
+
+    Text {
+        id: creationError
+        objectName: "creationErrorText"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: backButton.top
+        anchors.margins: theme.pageSideMargin
+        anchors.bottomMargin: theme.spacingSmall
+        visible: seekScreen.creationFailed && seekScreen.formError.length > 0
+        text: seekScreen.formError
+        textFormat: Text.PlainText
+        font.pixelSize: theme.fontLabel
+        wrapMode: Text.Wrap
+        color: theme.errorText
     }
 
     EinkPagedFlickable {
@@ -218,7 +239,7 @@ Rectangle {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: backButton.top
+        anchors.bottom: creationError.visible ? creationError.top : backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
@@ -336,7 +357,7 @@ Rectangle {
             darkMode: seekScreen.darkMode
             compact: true
             title: "Check game setup"
-            visible: seekScreen.showingSetup && seekScreen.formError.length > 0
+            visible: seekScreen.showingSetup && !seekScreen.creationFailed && seekScreen.formError.length > 0
 
             Text {
                 objectName: "seekErrorText"
@@ -427,7 +448,7 @@ Rectangle {
             spacing: theme.spacingSmall
 
             Text {
-                text: "Share one of these links — whoever opens it starts the game:"
+                text: "Two players need to join. Use the color links to choose sides. Links expire after 24 hours."
                 font.pixelSize: theme.fontLabel
                 wrapMode: Text.WordWrap
                 width: parent.width
@@ -547,12 +568,22 @@ Rectangle {
             if (msg.error) seekScreen.formError = msg.error
             else seekScreen.openGame(msg.game_id)
         } else if (msg.type === "ComputerGameCreated") {
-            if (seekScreen.pendingAction === "computer") seekScreen.openGame(msg.game_id)
-        } else if (msg.type === "OpenChallengeCreated") {
-            if (seekScreen.pendingAction !== "open") return
+            if (seekScreen.pendingAction !== "computer" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
+            seekScreen.clearWaiting()
+            seekScreen.openGame(msg.game_id)
+        } else if (msg.type === "OpenChallengeCreated") {
+            if (seekScreen.pendingAction !== "open" || msg.request_id !== seekScreen.matchRequestId) return
+            seekScreen.pendingAction = ""
+            seekScreen.clearWaiting()
             seekScreen.formError = ""
             seekScreen.openChallengeUrls = msg
+        } else if (msg.type === "MatchCreationFailed") {
+            if (!seekScreen.creatingMatch || msg.request_id !== seekScreen.matchRequestId) return
+            seekScreen.pendingAction = ""
+            seekScreen.clearWaiting()
+            seekScreen.formError = msg.message || "Lichess could not create that game."
+            seekScreen.creationFailed = true
         } else if (msg.type === "GameStarted") {
             var lookingForOpponent = seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0
             var matchingLink = seekScreen.pendingAction.length === 0 && !seekScreen.waiting &&
@@ -565,8 +596,7 @@ Rectangle {
                      !seekScreen.seekMatchBeforeAckId)
                 seekScreen.seekMatchBeforeAckId = msg.game_id
         } else if (msg.type === "ErrorMsg") {
-            if (seekScreen.canCancelMatch) return
-            seekScreen.pendingAction = ""
+            if (seekScreen.matchRequestId > 0) return
             seekScreen.formError = msg.message || "Lichess could not create that game."
         }
     }

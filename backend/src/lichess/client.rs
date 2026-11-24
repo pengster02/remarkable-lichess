@@ -605,11 +605,9 @@ impl LichessClient {
 
     /// Confirmed against lichess-org/api's ChallengeOpenJson.yaml: unlike
     /// `create_seek`/`create_challenge`, this returns one plain JSON object
-    /// immediately, not a held-open stream -- the challenge itself stays open
-    /// server-side (shareable indefinitely via the returned urls) without this
-    /// client holding any connection for it. Whoever opens `urlWhite`/`urlBlack`
-    /// starts the game, which then arrives the same way any other game does, via
-    /// the account event stream's `gameStart` (already wired in spawn_streams).
+    /// immediately. The links stay valid for 24 hours and two players must
+    /// join. If the authenticated player joins, `gameStart` arrives on the
+    /// account event stream.
     pub async fn create_open_challenge(
         &self,
         minutes: u32,
