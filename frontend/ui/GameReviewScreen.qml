@@ -16,6 +16,10 @@ Rectangle {
     property bool darkMode: false
     property string boardTheme: "brown"
     property string pieceSet: "cburnett"
+    // Visual bindings preserve legal moves and clearing pulses. Alternatives are separate replay settings or filtering board state.
+    property bool showCoordinates: true
+    property bool highlightLastMove: true
+    property bool minimalHighlights: true
 
     BoardStyle {
         id: boardStyle
@@ -703,6 +707,7 @@ Rectangle {
                 width: gameReviewScreen.coordinateGutter
                 anchors.right: boardSurface.left
                 anchors.rightMargin: theme.spacingXs
+                visible: gameReviewScreen.showCoordinates
                 Repeater {
                     model: 8
                     Text {
@@ -755,16 +760,14 @@ Rectangle {
                         inkColor: boardStyle.ink
                         pieceSet: gameReviewScreen.pieceSet
                         pieceCode: gameReviewScreen.pieceCodeFor(gameReviewScreen.pieceAt(gameReviewScreen.currentFen(), squareName))
-                        property bool isDestination:
-                            gameReviewScreen.selectedDestinationLookup[squareName] === true
-                        isHighlighted: gameReviewScreen.exploreMode &&
-                            (gameReviewScreen.selectedSquare === squareName ||
-                             isDestination)
+                        isHighlighted: isSelected || isLegalDestination
                         isSelected: gameReviewScreen.exploreMode &&
                             gameReviewScreen.selectedSquare === squareName
                         isLegalDestination: gameReviewScreen.exploreMode &&
-                            isDestination
-                        isLastMove: gameReviewScreen.lastMoveSquareLookup[squareName] === true
+                            !gameReviewScreen.minimalHighlights &&
+                            gameReviewScreen.selectedDestinationLookup[squareName] === true
+                        isLastMove: gameReviewScreen.highlightLastMove &&
+                            gameReviewScreen.lastMoveSquareLookup[squareName] === true
                         isCheckSquare: squareName === gameReviewScreen.checkedSquare
                         flashRefresh: gameReviewScreen.flashSquareLookup[squareName] === true
                     }
@@ -803,6 +806,7 @@ Rectangle {
             objectName: "boardFileLabels"
             x: boardSurface.x
             width: grid.width
+            visible: gameReviewScreen.showCoordinates
             Repeater {
                 model: 8
                 Text {
