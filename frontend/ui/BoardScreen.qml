@@ -106,6 +106,8 @@ Rectangle {
     property bool canBerserk: false
     property bool canOfferDraw: false
     property bool canOfferTakeback: false
+    readonly property bool offerActionsAvailable: !boardScreen.gameOver &&
+        !boardScreen.streamReconnecting && boardScreen.streamError.length === 0
     property bool canGiveTime: false
     property var opponentDeparture: null
     readonly property bool opponentGone: boardScreen.opponentDeparture !== null &&
@@ -514,11 +516,11 @@ Rectangle {
     function gameActionsLabel() {
         if (boardScreen.pendingGameAction.length > 0) return "Working..."
         if (boardScreen.gameOver) return "Game over"
-        if (boardScreen.drawOfferedByOpponent) return "Draw offer"
-        if (boardScreen.takebackOfferedByOpponent) return "Takeback offer"
+        if (boardScreen.offerActionsAvailable && boardScreen.drawOfferedByOpponent) return "Draw offer"
+        if (boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByOpponent) return "Takeback offer"
         if (boardScreen.opponentGone) return "Opponent left"
-        if (boardScreen.drawOfferedByYou) return "Draw pending"
-        if (boardScreen.takebackOfferedByYou) return "Takeback pending"
+        if (boardScreen.offerActionsAvailable && boardScreen.drawOfferedByYou) return "Draw pending"
+        if (boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByYou) return "Takeback pending"
         return "Actions"
     }
 
@@ -574,6 +576,16 @@ Rectangle {
         boardScreen.boardNotice = null
         boardScreen.backendSender(message)
         boardScreen.showGameActions = false
+    }
+
+    function requestOfferAction(action, intent) {
+        if (!boardScreen.offerActionsAvailable) return
+        boardScreen.requestGameAction({
+            type: action + "Action",
+            accept: intent === "offer" || intent === "accept",
+            offer_intent: intent,
+            expected_position_id: boardScreen.livePositionId
+        }, action)
     }
 
     function resetGameActionControls() {
@@ -1213,8 +1225,8 @@ Rectangle {
             enabled: boardScreen.streamError.length === 0
             highlighted: boardScreen.pendingGameAction.length > 0 ||
                 boardScreen.gameOver ||
-                boardScreen.drawOfferedByOpponent ||
-                boardScreen.takebackOfferedByOpponent ||
+                (boardScreen.offerActionsAvailable &&
+                    (boardScreen.drawOfferedByOpponent || boardScreen.takebackOfferedByOpponent)) ||
                 boardScreen.opponentGone
             onClicked: {
                 if (boardScreen.pendingGameAction.length === 0) {
@@ -1278,6 +1290,7 @@ Rectangle {
 
         ConfirmAction {
             id: acceptDrawAction
+            objectName: "acceptDrawAction"
             width: parent.width
             actionText: "Accept draw"
             confirmText: "Confirm draw"
@@ -1286,68 +1299,68 @@ Rectangle {
             busy: boardScreen.pendingGameAction === "Draw"
             prominent: true
             critical: true
-            visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
-            onConfirmed: boardScreen.requestGameAction(
-                {type: "DrawAction", accept: true}, "Draw")
+            visible: boardScreen.offerActionsAvailable && boardScreen.drawOfferedByOpponent
+            onConfirmed: boardScreen.requestOfferAction("Draw", "accept")
         }
         AppButton {
+            objectName: "declineDrawButton"
             width: parent.width
             text: "Decline draw"
-            visible: !boardScreen.gameOver && boardScreen.drawOfferedByOpponent
-            onClicked: boardScreen.requestGameAction(
-                {type: "DrawAction", accept: false}, "Draw")
+            visible: boardScreen.offerActionsAvailable && boardScreen.drawOfferedByOpponent
+            onClicked: boardScreen.requestOfferAction("Draw", "decline")
         }
         ConfirmAction {
             id: drawOfferAction
+            objectName: "drawOfferAction"
             width: parent.width
             actionText: "Offer draw"
             confirmText: "Confirm draw offer"
             cancelText: "Cancel draw confirmation"
             busyText: "Sending draw offer"
             busy: boardScreen.pendingGameAction === "Draw"
-            visible: !boardScreen.gameOver && boardScreen.canOfferDraw &&
+            visible: boardScreen.offerActionsAvailable && boardScreen.canOfferDraw &&
                 !boardScreen.drawOfferedByOpponent
-            onConfirmed: boardScreen.requestGameAction(
-                {type: "DrawAction", accept: true}, "Draw")
+            onConfirmed: boardScreen.requestOfferAction("Draw", "offer")
         }
         Text {
             width: parent.width
             text: "Draw offer sent"
-            visible: !boardScreen.gameOver && boardScreen.drawOfferedByYou
+            visible: boardScreen.offerActionsAvailable && boardScreen.drawOfferedByYou
             font.pixelSize: theme.fontBody
             horizontalAlignment: Text.AlignHCenter
             color: theme.text
         }
 
         AppButton {
+            objectName: "acceptTakebackButton"
             width: parent.width
             text: "Accept takeback"
             highlighted: true
-            visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
-            onClicked: boardScreen.requestGameAction(
-                {type: "TakebackAction", accept: true}, "Takeback")
+            visible: boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByOpponent
+            onClicked: boardScreen.requestOfferAction("Takeback", "accept")
         }
         AppButton {
+            objectName: "declineTakebackButton"
             width: parent.width
             text: "Decline takeback"
-            visible: !boardScreen.gameOver && boardScreen.takebackOfferedByOpponent
-            onClicked: boardScreen.requestGameAction(
-                {type: "TakebackAction", accept: false}, "Takeback")
+            visible: boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByOpponent &&
+                !boardScreen.takebackOfferedByYou
+            onClicked: boardScreen.requestOfferAction("Takeback", "decline")
         }
         AppButton {
+            objectName: "offerTakebackButton"
             width: parent.width
             text: "Offer takeback"
-            visible: !boardScreen.gameOver && boardScreen.canOfferTakeback &&
+            visible: boardScreen.offerActionsAvailable && boardScreen.canOfferTakeback &&
                 !boardScreen.takebackOfferedByOpponent
-            onClicked: boardScreen.requestGameAction(
-                {type: "TakebackAction", accept: true}, "Takeback")
+            onClicked: boardScreen.requestOfferAction("Takeback", "offer")
         }
         AppButton {
+            objectName: "cancelTakebackButton"
             width: parent.width
             text: "Cancel takeback offer"
-            visible: !boardScreen.gameOver && boardScreen.takebackOfferedByYou
-            onClicked: boardScreen.requestGameAction(
-                {type: "TakebackAction", accept: false}, "Takeback")
+            visible: boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByYou
+            onClicked: boardScreen.requestOfferAction("Takeback", "cancel")
         }
 
         ConfirmAction {

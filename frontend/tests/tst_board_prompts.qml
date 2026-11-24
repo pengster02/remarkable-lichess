@@ -94,6 +94,77 @@ TestCase {
         compare(control.armLevel, 0)
     }
 
+    function test_offerButtonsSendTheDisplayedIntent_data() {
+        return [
+            {tag: "offer draw", action: "Draw", intent: "offer", flag: "can_offer_draw",
+                control: "drawOfferAction", confirm: true, accept: true},
+            {tag: "accept draw", action: "Draw", intent: "accept", flag: "draw_offered_by_opponent",
+                control: "acceptDrawAction", confirm: true, accept: true},
+            {tag: "decline draw", action: "Draw", intent: "decline", flag: "draw_offered_by_opponent",
+                control: "declineDrawButton", confirm: false, accept: false},
+            {tag: "offer takeback", action: "Takeback", intent: "offer", flag: "can_offer_takeback",
+                control: "offerTakebackButton", confirm: false, accept: true},
+            {tag: "accept takeback", action: "Takeback", intent: "accept", flag: "takeback_offered_by_opponent",
+                control: "acceptTakebackButton", confirm: false, accept: true},
+            {tag: "decline takeback", action: "Takeback", intent: "decline", flag: "takeback_offered_by_opponent",
+                control: "declineTakebackButton", confirm: false, accept: false},
+            {tag: "cancel own takeback", action: "Takeback", intent: "cancel", flag: "takeback_offered_by_you",
+                control: "cancelTakebackButton", confirm: false, accept: false}
+        ]
+    }
+
+    function test_offerButtonsSendTheDisplayedIntent(row) {
+        var snapshot = state([start, afterE4, afterE5], ["e4", "e5"], "white")
+        snapshot.position_id = 42
+        snapshot[row.flag] = true
+        endpoint.reply(snapshot)
+        board.showGameActions = true
+        var control = findChild(board, row.control)
+        verify(control && control.visible)
+        var button = row.confirm ? findChild(control, "confirmActionPrimary") : control
+        var count = endpoint.sentMessages.length
+        button.clicked()
+        if (row.confirm) {
+            compare(endpoint.sentMessages.length, count)
+            button.clicked()
+        }
+        compare(endpoint.sentMessages.length, count + 1)
+        var request = endpoint.sentMessages[count]
+        compare(request.type, row.action + "Action")
+        compare(request.expected_game_id, "selected")
+        compare(request.expected_position_id, 42)
+        compare(request.offer_intent, row.intent)
+        compare(request.accept, row.accept)
+        endpoint.reply({type: "GameActionFailed", game_id: "selected", action: row.action,
+                        request_id: request.request_id, message: "Offer changed."})
+        compare(board.pendingGameAction, "")
+        compare(board.topStatusText(), "Offer changed.")
+    }
+
+    function test_reconnectDisarmsAnOldDrawConfirmation() {
+        var snapshot = state([start, afterE4, afterE5], ["e4", "e5"], "white")
+        snapshot.position_id = 42
+        snapshot.draw_offered_by_opponent = true
+        endpoint.reply(snapshot)
+        board.showGameActions = true
+        var control = findChild(board, "acceptDrawAction")
+        var button = findChild(control, "confirmActionPrimary")
+        button.clicked()
+        compare(button.text, "Confirm draw")
+
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "selected"})
+        verify(!control.visible)
+        compare(control.armLevel, 0)
+        var count = endpoint.sentMessages.length
+        board.requestOfferAction("Draw", "accept")
+        compare(endpoint.sentMessages.length, count)
+
+        snapshot.game_stream_connected = true
+        endpoint.reply(snapshot)
+        verify(control.visible)
+        compare(button.text, "Accept draw")
+    }
+
     function test_newPositionIdForTheSameLineClosesAnOldDraft() {
         var snapshot = state([start], [], "white")
         snapshot.position_id = 4294967293

@@ -37,6 +37,25 @@ pub struct MoveRequest {
     pub expected_position_id: Option<PositionId>,
 }
 
+// These intents keep the user's operation explicit. A bare boolean can change
+// meaning in flight, and separate command types would duplicate the reply gate.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OfferIntent {
+    Offer,
+    Accept,
+    Decline,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+pub struct OfferRequest {
+    pub accept: bool,
+    pub request_id: Option<u32>,
+    pub offer_intent: Option<OfferIntent>,
+    pub expected_position_id: Option<PositionId>,
+}
+
 // One envelope carries the board identity without duplicating a field across
 // commands. Inferring it from the active session can target a different game.
 #[cfg(any(feature = "transport", test))]
@@ -86,12 +105,8 @@ pub enum FrontendMessage {
     CancelMatch { request_id: Option<u32> },
     MakeMove { #[serde(flatten)] request: MoveRequest },
     Resign { request_id: Option<u32> },
-    // `accept: true` offers a draw/takeback when none is pending, or accepts the
-    // opponent's pending offer; `accept: false` declines it -- same split Lichess's
-    // own `/draw/{accept}` and `/takeback/{accept}` endpoints use, so the frontend
-    // doesn't need to track "did I just offer or am I responding" separately.
-    DrawAction { accept: bool, request_id: Option<u32> },
-    TakebackAction { accept: bool, request_id: Option<u32> },
+    DrawAction { #[serde(flatten)] request: OfferRequest },
+    TakebackAction { #[serde(flatten)] request: OfferRequest },
     Abort { request_id: Option<u32> },
     Berserk { request_id: Option<u32> },
     AddTime { seconds: u32, request_id: Option<u32> },
@@ -791,11 +806,15 @@ mod tests {
     fn new_game_action_frontend_messages_parse() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"DrawAction","accept":true}"#).unwrap(),
-            FrontendMessage::DrawAction { accept: true, request_id: None }
+            FrontendMessage::DrawAction { request: OfferRequest {
+                accept: true, request_id: None, offer_intent: None, expected_position_id: None,
+            }}
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"TakebackAction","accept":false}"#).unwrap(),
-            FrontendMessage::TakebackAction { accept: false, request_id: None }
+            FrontendMessage::TakebackAction { request: OfferRequest {
+                accept: false, request_id: None, offer_intent: None, expected_position_id: None,
+            }}
         );
         assert_eq!(serde_json::from_str::<FrontendMessage>(r#"{"type":"Abort"}"#).unwrap(), FrontendMessage::Abort { request_id: None });
         assert_eq!(
@@ -840,6 +859,15 @@ mod tests {
                 expected_position_id: Some(PositionId(4_294_967_294)), request_id: Some(9), ..
             }}));
         assert_eq!(bound_move.expected_game_id.as_deref(), Some("g1"));
+
+        let offer: FrontendRequest = serde_json::from_str(
+            r#"{"type":"TakebackAction","accept":false,"offer_intent":"cancel","expected_game_id":"g1","expected_position_id":17,"request_id":10}"#,
+        ).unwrap();
+        assert_eq!(offer.expected_game_id.as_deref(), Some("g1"));
+        assert_eq!(offer.message, FrontendMessage::TakebackAction { request: OfferRequest {
+            accept: false, request_id: Some(10), offer_intent: Some(OfferIntent::Cancel),
+            expected_position_id: Some(PositionId(17)),
+        }});
     }
 
     #[test]
