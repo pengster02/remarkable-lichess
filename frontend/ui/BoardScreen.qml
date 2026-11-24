@@ -62,14 +62,16 @@ Rectangle {
     // The two streams can finish in either order. Appending text repeats
     // duplicate events, and a bare delta can leak across game selections.
     property var gameRatingChange: null
+    readonly property var resultRatingDiff: boardScreen.gameRatingChange !== null &&
+        boardScreen.gameRatingChange.gameId === boardScreen.gameId
+        ? boardScreen.gameRatingChange.diff : null
     readonly property string statusText: {
         if (boardScreen.statusMessage.length > 0) return boardScreen.statusMessage
         if (!boardScreen.gameOver) return ""
-        var rating = boardScreen.gameRatingChange
-        if (rating === null || rating.gameId !== boardScreen.gameId)
-            return boardScreen.gameOutcomeText
+        var diff = boardScreen.resultRatingDiff
+        if (diff === null) return boardScreen.gameOutcomeText
         return boardScreen.gameOutcomeText + " · " +
-            (rating.diff > 0 ? "+" : "") + rating.diff + " rating"
+            (diff > 0 ? "+" : "") + diff + " rating"
     }
     property var flashSquares: []
     Timer {
@@ -1247,14 +1249,7 @@ Rectangle {
             enabled: !boardScreen.openingReview
             highlighted: true
             visible: boardScreen.gameOver && boardScreen.gameId.length > 0
-            onClicked: boardScreen.openGameReview(boardScreen.gameId, {
-                game_id: boardScreen.gameId,
-                opponent_name: boardScreen.opponentName,
-                opponent_rating: boardScreen.opponentRating,
-                result: boardScreen.gameResult,
-                termination: boardScreen.gameReason,
-                your_color: boardScreen.yourColor
-            })
+            onClicked: boardScreen.openFinishedGameReview()
         }
         AppButton {
             width: parent.width
@@ -1638,20 +1633,11 @@ Rectangle {
                 }
                 AppButton {
                     width: parent.width
+                    objectName: "reviewFinishedGameButton"
                     text: boardScreen.openingReview ? "Opening game…" : "Review game"
                     enabled: !boardScreen.openingReview
                     visible: boardScreen.gameId.length > 0
-                    onClicked: {
-                        boardScreen.showGameOverDialog = false
-                        boardScreen.openGameReview(boardScreen.gameId, {
-                            game_id: boardScreen.gameId,
-                            opponent_name: boardScreen.opponentName,
-                            opponent_rating: boardScreen.opponentRating,
-                            result: boardScreen.gameResult,
-                            termination: boardScreen.gameReason,
-                            your_color: boardScreen.yourColor
-                        })
-                    }
+                    onClicked: boardScreen.openFinishedGameReview()
                 }
                 AppButton {
                     width: parent.width
@@ -1738,11 +1724,27 @@ Rectangle {
         boardScreen.showGameOverDialog = true
     }
 
+    function openFinishedGameReview() {
+        boardScreen.showGameOverDialog = false
+        boardScreen.openGameReview(boardScreen.gameId, {
+            game_id: boardScreen.gameId,
+            opponent_name: boardScreen.opponentName,
+            opponent_rating: boardScreen.opponentRating,
+            result: boardScreen.gameResult,
+            termination: boardScreen.gameReason,
+            your_color: boardScreen.yourColor,
+            rating_diff: boardScreen.resultRatingDiff
+        })
+    }
+
     function handleMessage(msg) {
         if (msg.type === "BoardState") {
             var nextLastMove = msg.last_move || null
             var nextGameId = msg.game_id || ""
             var gameChanged = boardScreen.gameId !== nextGameId
+            if (msg.outcome && typeof msg.outcome.rating_diff === "number") {
+                boardScreen.gameRatingChange = {gameId: nextGameId, diff: msg.outcome.rating_diff}
+            }
             if (!gameChanged && boardScreen.gameOver) return
             boardScreen.streamError = ""
             if (typeof msg.game_stream_connected === "boolean")

@@ -9,6 +9,7 @@ pub(crate) fn outcome(status: &str, winner: Option<&str>) -> GameOutcome {
     GameOutcome {
         result: result.to_owned(),
         reason: termination_label(Some(status)),
+        rating_diff: None,
     }
 }
 
@@ -85,6 +86,7 @@ mod game_over_result_tests {
             GameOutcome {
                 result: "black".to_string(),
                 reason: "Time forfeit".to_string(),
+                rating_diff: None,
             }
         );
     }

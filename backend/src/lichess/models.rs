@@ -140,6 +140,8 @@ pub struct Player {
     pub id: Option<String>,
     pub name: Option<String>,
     pub rating: Option<u32>,
+    #[serde(rename = "ratingDiff")]
+    pub rating_diff: Option<i32>,
     #[serde(rename = "aiLevel")]
     pub ai_level: Option<u8>,
     pub title: Option<String>,

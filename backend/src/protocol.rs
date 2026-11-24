@@ -308,6 +308,10 @@ pub struct MoveAnalysis {
 pub struct GameOutcome {
     pub result: String,
     pub reason: String,
+    // A finished snapshot can recover a missed account event. Replaying an
+    // event requires a cache, and a separate lookup adds a request on reopen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_diff: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

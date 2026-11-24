@@ -605,6 +605,38 @@ TestCase {
         compare(screen.item.statusText, "Draw")
     }
 
+    function test_finishedSnapshotSuppliesRatingWhenTheAccountEventWasMissed() {
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply({type: "RatingDiff", game_id: "finished", rating_diff: -7})
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.your_color = "black"
+        snapshot.outcome = {result: "white", reason: "Resignation", rating_diff: -7}
+        endpoint.reply(snapshot)
+        compare(screen.item.statusText, "You lost · Resignation · -7 rating")
+        endpoint.reply({type: "RatingDiff", game_id: "finished", rating_diff: -7})
+        compare(screen.item.statusText, "You lost · Resignation · -7 rating")
+        findChild(screen.item, "reviewFinishedGameButton").clicked()
+        var review = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(review.type, "RequestGameMoves")
+        endpoint.reply({type: "GameMoves", request_id: review.request_id, moves: [],
+                        fens: [startFen]})
+        verify(String(screen.source).endsWith("GameReviewScreen.qml"))
+        compare(screen.item.game.rating_diff, -7)
+    }
+
+    function test_terminalSnapshotCanFillInAZeroRatingChange() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(snapshot)
+        compare(screen.item.statusText, "Draw")
+        snapshot.outcome.rating_diff = 0
+        endpoint.reply(snapshot)
+        compare(screen.item.statusText, "Draw · 0 rating")
+    }
+
     function test_playerStatusesReachOnlyTheSelectedBoardAndSurviveAnUpdate() {
         app.navigateTo("HomeScreen.qml")
         app.openGame("selected")

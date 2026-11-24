@@ -27,6 +27,7 @@ pub struct GameSession {
     // from gameFull, not re-derived on every gameState update.
     pub your_player: PlayerIdentity,
     pub opponent_player: PlayerIdentity,
+    your_rating_diff: Option<i32>,
     // A session snapshot avoids refetching on resume and keeps status out of
     // frequent BoardState updates. None means the lookup has yet to succeed.
     pub player_statuses: Option<Box<[PlayerStatusSummary]>>,
@@ -241,7 +242,11 @@ fn to_board_state(
         game_description: session.game_description.clone().into_boxed_str(),
         first_move_time_ms: first_move_time_ms.map(Box::new),
         initial_clock_ms: session.initial_clock_ms.map(Box::new),
-        outcome: (!active).then(|| Box::new(outcome(&state.status, state.winner.as_deref()))),
+        outcome: (!active).then(|| {
+            let mut result = outcome(&state.status, state.winner.as_deref());
+            result.rating_diff = session.your_rating_diff;
+            Box::new(result)
+        }),
     }
 }
 
@@ -297,6 +302,7 @@ impl GameSession {
             captured_by_black: replay.captured_by_black,
             your_player: player_identity(local_player),
             opponent_player: player_identity(opp),
+            your_rating_diff: local_player.rating_diff.filter(|_| local_player.id.as_deref() == Some(my_id)),
             player_statuses: None,
             game_description: game_description(full),
             rated: full.rated,
@@ -574,6 +580,23 @@ mod tests {
         assert!(!can_offer_draw);
         assert!(!can_offer_takeback);
         assert_eq!(outcome.unwrap().reason, "Resignation");
+    }
+
+    #[test]
+    fn finished_board_contains_only_the_signed_in_players_rating_change() {
+        let mut full = sample_full("e2e4 e7e5");
+        full.rated = true;
+        full.white.rating_diff = Some(0);
+        full.black.rating_diff = Some(-7);
+        full.state.status = "resign".into();
+        full.state.winner = Some("white".into());
+        for (id, expected) in [("my-id", Some(0)), ("opponent-id", Some(-7)), ("unknown", None)] {
+            let (_, message) = GameSession::from_game_full(&full, id).unwrap();
+            let BackendMessage::BoardState { outcome: Some(result), .. } = message else {
+                panic!("expected a finished board update");
+            };
+            assert_eq!(result.rating_diff, expected);
+        }
     }
 
     #[test]
