@@ -43,6 +43,10 @@ fi
 
 echo "Building local-pc image (first run is slow)..."
 docker build -t "${IMAGE}" "${ROOT}/docker/local-pc"
+# Image index IDs can change when BuildKit writes attestations for identical layers.
+IMAGE_INFO="$(docker image inspect --format '{{.Architecture}} {{json .RootFS.Layers}}' "${IMAGE}")"
+CACHE_PREFIX="${NAME}-${IMAGE_INFO%% *}"
+BUILD_KEY="$(printf '%s\n' "${ROOT}" "${APPLOAD_HOST}" "${XOVI_HOST}" "${IMAGE_INFO}" | cksum | cut -d ' ' -f 1)"
 
 docker rm -f "${NAME}" >/dev/null 2>&1 || true
 
@@ -52,6 +56,11 @@ RUN_ARGS=(
   -v "${ROOT}:/workspace/remarkable-lichess"
   -v "${APPLOAD_HOST}:/workspace/rm-appload"
   -v "${XOVI_HOST}:/workspace/xovi"
+  # Key compiled output by checkout and image. Host targets mix platforms, and
+  # a shared build directory can reuse artifacts from the wrong checkout.
+  -v "${CACHE_PREFIX}-${BUILD_KEY}-build:/tmp/remarkable-lichess-build"
+  -v "${CACHE_PREFIX}-cargo-registry:/usr/local/cargo/registry"
+  -v "${CACHE_PREFIX}-cargo-git:/usr/local/cargo/git"
   -e APP_SRC=/workspace/remarkable-lichess
   -e APPLOAD_SRC=/workspace/rm-appload
   -e XOVI_SRC=/workspace/xovi
