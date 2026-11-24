@@ -14,6 +14,7 @@ TestCase {
     property string startFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
     function init() {
+        width = 954
         var component = Qt.createComponent("../ui/main.qml")
         compare(component.status, Component.Ready, component.errorString())
         app = createTemporaryObject(component, this)
@@ -223,6 +224,154 @@ TestCase {
         verify(String(screen.source).endsWith("GameReviewScreen.qml"))
         compare(screen.item.game.game_id, "second")
         compare(screen.item.moves, ["e4"])
+    }
+
+    function applyHistoryFilters(speed) {
+        screen.item.openFilters()
+        screen.item.draftRated = "rated"
+        screen.item.draftSpeed = speed
+        screen.item.draftColor = "black"
+        screen.item.applyFilters()
+        return screen.item.pendingHistoryRequest
+    }
+
+    function historyRequests() {
+        return endpoint.sentMessages.filter(function(message) {
+            return message.type === "RequestGameHistory"
+        })
+    }
+
+    function archiveRows(history) {
+        var firstRow = findChild(history, "historyGameRow")
+        return Array.prototype.filter.call(firstRow.parent.children, function(child) {
+            return child.objectName === "historyGameRow"
+        })
+    }
+
+    function openReviewFromPagedArchive(lastPage) {
+        var requestId = applyHistoryFilters("rapid")
+        var games = []
+        for (var i = 0; i < 30; i++) {
+            games.push({game_id: "archive-" + i, opponent_name: "WWWWWWWWWWWWWWWWWWWW",
+                        opponent_rating: 1800, rating_diff: 0, result: "noStart", speed: "rapid",
+                        termination: "Time forfeit", rated: true})
+        }
+        endpoint.reply({type: "GameHistory", request_id: requestId, games: games})
+        var history = screen.item
+        var pager = findChild(history, "historyList")
+        var next = findChild(pager, "pageDownButton")
+        tryVerify(function() { return next.visible && next.enabled })
+        next.clicked()
+        if (lastPage) {
+            for (var page = 1; page < pager.pageCount && next.enabled; page++) next.clicked()
+            verify(!next.enabled)
+        }
+        var row = archiveRows(history).find(function(card) {
+            return card.y >= pager.contentY
+        })
+        verify(row && waitForRendering(row))
+        mouseClick(row, row.width / 2, row.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "RequestGameMoves")
+        compare(request.game_id, row.modelData.game_id)
+        return request.request_id
+    }
+
+    function test_backFromArchiveReviewRestoresTheLoadedPage_data() {
+        return [{tag: "same tablet size", width: 954, lastPage: false},
+                {tag: "narrower on return", width: 620, lastPage: false},
+                {tag: "same tablet size on the last page", width: 954, lastPage: true}]
+    }
+
+    function test_backFromArchiveReviewRestoresTheLoadedPage(data) {
+        var request = openReviewFromPagedArchive(data.lastPage)
+        var archive = screen.item
+        var pager = findChild(archive, "historyList")
+        var before = pager.contentY
+        var anchorIndex = archiveRows(archive).findIndex(function(row) {
+            return row.y + row.height > before
+        })
+        verify(anchorIndex > 0)
+        var inset = before - archiveRows(archive)[anchorIndex].y
+        var requestsBefore = historyRequests().length
+        replyWithMoves(request, "e4")
+        width = data.width
+        findChild(screen.item, "reviewBackButton").clicked()
+
+        var returned = screen.item
+        compare(returned.filterSummary(), "Rated · Rapid · Played Black")
+        compare(returned.games.length, 30)
+        compare(returned.games[anchorIndex].game_id, "archive-" + anchorIndex)
+        verify(!returned.loading)
+        compare(historyRequests().length, requestsBefore)
+        var restoredPager = findChild(returned, "historyList")
+        tryVerify(function() { return restoredPager.contentY > 0 })
+        var expected = archiveRows(returned)[anchorIndex].y + inset
+        fuzzyCompare(restoredPager.contentY, expected, 0.01)
+        if (data.width === 954) fuzzyCompare(restoredPager.contentY, before, 0.01)
+        else verify(Math.abs(restoredPager.contentY - before) > 0.01)
+
+        var previous = findChild(restoredPager, "pageUpButton")
+        verify(previous.enabled)
+        previous.clicked()
+        verify(restoredPager.contentY < expected)
+    }
+
+    function test_backFromReviewRestartsOnlyAnUnfinishedHistoryRead() {
+        var review = openReviewFromPagedArchive()
+        var interrupted = applyHistoryFilters("blitz")
+        var count = historyRequests().length
+        replyWithMoves(review, "e4")
+        tryVerify(function() {
+            return endpoint.sentMessages.some(function(message) {
+                return message.type === "CancelGameHistory" && message.request_id === interrupted
+            })
+        })
+        findChild(screen.item, "reviewBackButton").clicked()
+
+        var returned = screen.item
+        var requests = historyRequests()
+        compare(requests.length, count + 1)
+        var resumed = requests[count]
+        verify(resumed.request_id > interrupted)
+        compare(resumed, {type: "RequestGameHistory", request_id: resumed.request_id,
+                          rated: true, speed: "blitz", color: "black"})
+        endpoint.reply({type: "GameHistory", request_id: interrupted, games: [{game_id: "stale"}]})
+        verify(returned.loading)
+        compare(returned.games.length, 0)
+        endpoint.reply({type: "GameHistory", request_id: resumed.request_id, games: [{game_id: "current"}]})
+        compare(returned.games[0].game_id, "current")
+    }
+
+    function test_backFromFinishedBoardReviewStartsAFreshArchive_data() {
+        return [{tag: "same account", signOut: false}, {tag: "new account", signOut: true}]
+    }
+
+    function test_backFromFinishedBoardReviewStartsAFreshArchive(data) {
+        replyWithMoves(openReviewFromPagedArchive(), "e4")
+        if (data.signOut) {
+            endpoint.reply({type: "AuthenticationRequired"})
+            verify(String(screen.source).endsWith("LoginScreen.qml"))
+            endpoint.reply({type: "TokenVerified", username: "other-account"})
+        } else {
+            app.navigateTo("HomeScreen.qml")
+        }
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(snapshot)
+        findChild(screen.item, "reviewFinishedGameButton").clicked()
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "RequestGameMoves")
+        replyWithMoves(request.request_id, "e4")
+
+        var count = historyRequests().length
+        findChild(screen.item, "reviewBackButton").clicked()
+        compare(historyRequests().length, count + 1)
+        compare(screen.item.filterSummary(), "All games · All speeds · Both sides")
+        compare(screen.item.games.length, 0)
+        verify(screen.item.loading)
+        compare(findChild(screen.item, "historyList").contentY, 0)
     }
 
     function test_leavingHistoryCancelsThePendingFilter() {
