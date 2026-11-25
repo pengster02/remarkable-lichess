@@ -38,6 +38,11 @@ Rectangle {
     property string draftColor: "all"
     property var restoredPosition: null
 
+    // Indices preserve existing cards on append and keep nested analysis in games.
+    // An array model rebuilds cards, while a full ListModel mirrors game data.
+    ListModel { id: historyCardIndices }
+
+    onGamesChanged: syncHistoryCardIndices()
     onBackendSenderChanged: if (loading) requestFiltered()
     onNextRequestIdChanged: if (loading) requestFiltered()
     Component.onDestruction: {
@@ -128,6 +133,20 @@ Rectangle {
         if (!added.length) return
         restoredPosition = captureHistoryPosition()
         games = games.concat(added)
+    }
+
+    function syncHistoryCardIndices() {
+        var previousCount = historyCardIndices.count
+        var currentCount = games.length
+        if (currentCount < previousCount) {
+            historyCardIndices.remove(currentCount, previousCount - currentCount)
+        } else if (currentCount > previousCount) {
+            var addedIndices = []
+            for (var index = previousCount; index < currentCount; index++) {
+                addedIndices.push({gameIndex: index})
+            }
+            historyCardIndices.append(addedIndices)
+        }
     }
 
     function capitalized(value) {
@@ -262,12 +281,13 @@ Rectangle {
 
             Repeater {
                 id: historyRows
-                model: gameHistoryScreen.games
+                model: historyCardIndices
 
                 Rectangle {
                 id: gameCard
                 objectName: "historyGameRow"
-                required property var modelData
+                required property int gameIndex
+                readonly property var modelData: gameHistoryScreen.games[gameIndex] || ({})
                 readonly property var analysis: modelData.your_analysis || null
                 readonly property bool canReview: modelData.review_supported !== false
                 readonly property string variantLabel: chessDisplay.variantLabel(modelData.variant)
