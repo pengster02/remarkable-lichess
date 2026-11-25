@@ -313,7 +313,9 @@ the copy under `/home/root/xovi/exthome/appload-backups`. It installs the bundle
 and keeps the previously installed version there for rollback.
 
 The build uses a local Qt resource compiler when available. Set `RCC_BIN` to
-select a particular `rcc` executable.
+select a particular `rcc` executable. With no host compiler, Docker builds a
+small Ubuntu Qt compiler image on first use. Later builds reuse the cached image
+and compile the resource bundle with networking disabled.
 
 A new backend binary needs a full AppLoad relaunch, not just a file copy.
 

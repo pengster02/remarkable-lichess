@@ -26,12 +26,7 @@ cross build --locked --release --target aarch64-unknown-linux-gnu --features tra
 
 mkdir -p "${ROOT}/dist"
 STAGE="$(mktemp -d "${ROOT}/dist/.remarkable-lichess.build.XXXXXXXX")"
-STUB_DIR=""
-cleanup() {
-  rm -rf -- "${STAGE}"
-  if [ -n "${STUB_DIR}" ]; then rm -rf -- "${STUB_DIR}"; fi
-}
-trap cleanup EXIT
+trap 'rm -rf -- "${STAGE}"' EXIT
 
 mkdir "${STAGE}/backend"
 cp target/aarch64-unknown-linux-gnu/release/backend "${STAGE}/backend/entry"
@@ -39,8 +34,7 @@ cp target/aarch64-unknown-linux-gnu/release/backend "${STAGE}/backend/entry"
 cd "${ROOT}/frontend"
 cp manifest.json "${STAGE}/manifest.json"
 
-# A local rcc can emit the same resource format as the wheel. Using it avoids
-# pulling a compiler image for a stub or installing Qt packages in a container.
+# A local rcc avoids preparing the Docker compiler image.
 if [ -z "${RCC_BIN:-}" ] && command -v rcc >/dev/null && rcc --version >/dev/null 2>&1; then
   RCC_BIN="$(command -v rcc)"
 fi
@@ -53,53 +47,20 @@ if [ -n "${RCC_BIN:-}" ]; then
   echo "Using Qt resource compiler ${RCC_BIN}"
   "${RCC_BIN}" --binary -o "${STAGE}/resources.rcc" application.qrc
 else
-
-# AppLoad loads QML from a compiled Qt resource bundle (resources.rcc), not
-# loose .qml files on disk -- confirmed on-device (Task 14): it requests
-# qrc:/<app-namespace>/ui/main.qml, which only resolves if a real .rcc exists.
-# When a local Qt compiler is unavailable, compile via containers without
-# apt-installing qt6-base-dev in an Ubuntu container
-# (the original approach here): some build environments can reach PyPI,
-# crates.io, and Docker Hub just fine but not Debian/Ubuntu's own package
-# mirrors at all (confirmed live in one such environment: every apt mirror,
-# http and https, timed out on every retry, while pip/cargo/docker pull all
-# worked immediately) -- and qt6-base-dev alone pulls in ~30 packages
-# (vulkan, wayland, gtk theme, translations, ...), multiplying the exposure
-# to that kind of flaky/blocked package-mirror access for zero benefit, since
-# only the `rcc` binary itself is ever used.
-#
-# Instead: PySide6's own PyPI wheel bundles the real Qt6 `rcc` binary (same
-# binary format Qt itself ships, since PySide6 is built from the same Qt6
-# source) plus almost all of its shared-library dependencies -- except
-# libglib-2.0.so.0, needed only by libQt6Core.so.6's optional GLib
-# event-loop integration, which a plain file-to-file `rcc` invocation never
-# actually drives. glib_stub.c supplies just the ~15 symbols that
-# integration needs to *load* (confirmed via `nm -D` against the real
-# libQt6Core.so.6), compiled fresh each run using the same aarch64 cross
-# toolchain the backend build above already pulled -- no extra image, no
-# extra network dependency, and no risk of a stale prebuilt binary drifting
-# from its own source.
-  CROSS_IMAGE="ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
-  # The amd64 cross image emits the arm64 stub for the PySide container.
-  STUB_DIR="$(mktemp -d)"
-  cp ../scripts/glib_stub.c "$STUB_DIR/"
-  docker run --rm --platform linux/amd64 -v "$STUB_DIR:/stub" "$CROSS_IMAGE" \
-    aarch64-linux-gnu-gcc-13 -shared -fPIC -Wl,-soname,libglib-2.0.so.0 -o /stub/libglib-2.0.so.0 /stub/glib_stub.c
-
-# Do NOT inherit DOCKER_DEFAULT_PLATFORM=linux/amd64 here: PySide6's rcc must
-# run as the host's native arch (arm64 on Apple Silicon) so the aarch64 glib
-# stub above can load. Force clearing the platform for this one container.
-  docker run --rm --platform linux/arm64 \
-    -v "$(pwd):/frontend:ro" \
-    -v "$STUB_DIR:/stublib:ro" \
-    -v "${STAGE}:/bundle" \
-    python:3-slim bash -c '
-      set -e
-      pip install --no-cache-dir --quiet pyside6-essentials
-      PYSIDE_DIR="$(python3 -c "import PySide6, os; print(os.path.dirname(PySide6.__file__))")"
-      cp /stublib/libglib-2.0.so.0 "$PYSIDE_DIR/Qt/lib/libglib-2.0.so.0"
-      cd /frontend && "$PYSIDE_DIR/Qt/libexec/rcc" --binary -o /bundle/resources.rcc application.qrc
-    '
+  (
+    unset DOCKER_DEFAULT_PLATFORM
+    RCC_CONTEXT="${ROOT}/docker/tablet-rcc"
+    # Recipe tags allow offline reuse. A fixed tag can hide Dockerfile edits,
+    # and always building can require a registry lookup for the base image.
+    RCC_IMAGE="remarkable-lichess-tablet-rcc:$(cksum < "${RCC_CONTEXT}/Dockerfile" | awk '{print $1 "-" $2}')"
+    if ! docker image inspect "${RCC_IMAGE}" >/dev/null 2>&1; then
+      docker build -t "${RCC_IMAGE}" "${RCC_CONTEXT}"
+    fi
+    echo "Using Docker Qt resource compiler ${RCC_IMAGE}"
+    docker run --rm --network none --user "$(id -u):$(id -g)" \
+      -v "$PWD:/frontend:ro" -v "${STAGE}:/bundle" -w /frontend \
+      "${RCC_IMAGE}" --binary -o /bundle/resources.rcc application.qrc
+  )
 fi
 
 python3 "${ROOT}/scripts/tablet-package.py" publish "${STAGE}"
