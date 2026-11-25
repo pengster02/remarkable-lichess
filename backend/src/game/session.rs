@@ -41,7 +41,7 @@ pub struct GameSession {
     pub position: Chess,
     pub legal: Vec<LegalMove>,
     pub last_move: Option<(String, String)>,
-    pub your_color: String,
+    pub your_color: &'static str,
     // SAN per move (e.g. "Nf3", "O-O", "Qxh4#"), in play order.
     pub move_history: Vec<String>,
     pub position_history: Vec<String>,
@@ -71,6 +71,7 @@ pub struct GameSession {
     // 10s-left-out-of-30s one. None for the rare case a game has no clock at
     // all (correspondence/untimed) rather than assumed.
     pub initial_clock_ms: Option<u64>,
+    has_correspondence_clock: bool,
     state_received_at: Instant,
 }
 
@@ -96,11 +97,11 @@ fn turn_name(pos: &Chess) -> String {
 /// positively matches the black player's id -- a deliberate fallback (rather than
 /// erroring out) so a modeling gap or an unexpected payload shape degrades to the
 /// old always-white-orientation behavior instead of breaking the game entirely.
-fn resolve_your_color(full: &GameFull, my_id: &str) -> String {
+fn resolve_your_color(full: &GameFull, my_id: &str) -> &'static str {
     if full.black.id.as_deref() == Some(my_id) {
-        "black".to_string()
+        "black"
     } else {
-        "white".to_string()
+        "white"
     }
 }
 
@@ -239,6 +240,11 @@ fn to_board_state(
         .map(|expiration| expiration.millis_to_move
             .saturating_sub(expiration.idle_millis)
             .saturating_sub(elapsed_ms));
+    let correspondence_time_ms =
+        (active && session.has_correspondence_clock && session.prior_moves_before_prediction.is_none()).then(|| {
+            let remaining = session.position.turn().fold_wb(state.wtime, state.btime);
+            Box::new(remaining.saturating_sub(elapsed_ms))
+        });
     BackendMessage::BoardState {
         game_id: session.game_id.clone(),
         position_id: session.position_id,
@@ -255,7 +261,7 @@ fn to_board_state(
         black_time_ms,
         legal_moves: if active { session.legal.clone().into_boxed_slice() } else { Box::default() },
         last_move: session.last_move.clone().map(Box::new),
-        your_color: session.your_color.clone(),
+        your_color: session.your_color,
         in_check: session.position.is_check(),
         draw_offered_by_opponent: offers.draw.by_opponent,
         takeback_offered_by_opponent: offers.takeback.by_opponent,
@@ -280,6 +286,7 @@ fn to_board_state(
         opponent_player: Box::new(session.opponent_player.clone()),
         game_description: session.game_description.clone().into_boxed_str(),
         first_move_time_ms: first_move_time_ms.map(Box::new),
+        correspondence_time_ms,
         main_clock_paused,
         initial_clock_ms: session.initial_clock_ms.map(Box::new),
         outcome: state.is_terminal().then(|| {
@@ -324,8 +331,8 @@ impl GameSession {
         let legal = legal_moves(&position);
         let last_move = last_move_from_uci_list(&full.state.moves);
         let your_color = resolve_your_color(full, my_id);
-        let local_player = you(full, &your_color);
-        let opp = opponent(full, &your_color);
+        let local_player = you(full, your_color);
+        let opp = opponent(full, your_color);
         let session = GameSession {
             game_id: full.id.clone(),
             position_id: next_position_id(),
@@ -356,6 +363,8 @@ impl GameSession {
             opponent_is_human: opp.ai_level.is_none() && opp.id.is_some(),
             state: full.state.clone(),
             initial_clock_ms: full.clock.as_ref().map(|c| c.initial),
+            has_correspondence_clock: full.clock.is_none()
+                && full.days_per_turn.is_some_and(|days| days > 0),
             state_received_at: Instant::now(),
         };
         let msg = session.board_state();
@@ -1334,6 +1343,30 @@ mod tests {
             }
             _ => panic!("expected BoardState"),
         }
+    }
+
+    #[test]
+    fn correspondence_deadline_ages_only_the_confirmed_turn() {
+        let mut full = sample_full("");
+        full.clock = None;
+        full.days_per_turn = Some(3);
+        full.state.wtime = 90_061_000;
+        full.state.btime = 259_200_000;
+        let (mut session, initial) = GameSession::from_game_full(&full, "my-id").unwrap();
+        assert!(matches!(initial, BackendMessage::BoardState { correspondence_time_ms: Some(time), .. }
+            if *time == 90_061_000));
+        let aged = session.board_state_at(session.state_received_at + std::time::Duration::from_millis(2500));
+        assert!(matches!(aged, BackendMessage::BoardState { correspondence_time_ms: Some(time), .. }
+            if *time == 90_059_000));
+
+        let predicted = session.apply_accepted_move("", "e2e4").unwrap().unwrap();
+        assert!(matches!(predicted, BackendMessage::BoardState { correspondence_time_ms: None, .. }));
+        let mut confirmed = full.state;
+        confirmed.moves = "e2e4".into();
+        confirmed.btime -= 123_000;
+        let board = session.apply_state_update(confirmed).unwrap();
+        assert!(matches!(board, BackendMessage::BoardState { correspondence_time_ms: Some(time), .. }
+            if *time == 259_077_000));
     }
 
     #[test]

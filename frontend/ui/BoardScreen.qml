@@ -62,6 +62,11 @@ Rectangle {
         boardScreen.liveClock.firstMoveMs !== null
     readonly property double whiteTimeMs: boardScreen.displayedClock.whiteMs
     readonly property double blackTimeMs: boardScreen.displayedClock.blackMs
+    readonly property var correspondenceRemainingMs: {
+        var remaining = boardScreen.displayedClock.correspondenceMs
+        if (typeof remaining !== "number") return null
+        return boardScreen.liveClockEnabled ? Math.max(0, remaining - boardScreen.clockElapsedMs()) : remaining
+    }
     // Fixed for the game's lifetime (see game::session::GameSession) -- null
     // for an untimed/correspondence game, same Option-to-null convention as
     // opponentRating. Needed alongside the live whiteTimeMs/blackTimeMs
@@ -229,8 +234,11 @@ Rectangle {
     property bool liveClockEnabled: true
     property int clockPulse: 0
     property double clockNowMs: Date.now() + boardScreen.clockPulse * 0
+    onVisibleChanged: if (boardScreen.visible) boardScreen.clockPulse += 1
+    onLiveClockEnabledChanged: if (boardScreen.liveClockEnabled) boardScreen.clockPulse += 1
     // Binding re-arms on a positive snapshot. Alternatives are polling zero or restarting on every message.
     readonly property double activeCountdownMs: {
+        if (boardScreen.correspondenceRemainingMs !== null) return boardScreen.correspondenceRemainingMs
         var firstMoveMs = boardScreen.displayFirstMoveTimeMs()
         return firstMoveMs === null ? boardScreen.displayClockFor(boardScreen.turn) : firstMoveMs
     }
@@ -244,7 +252,7 @@ Rectangle {
         repeat: true
         running: boardScreen.visible &&
             boardScreen.liveClockEnabled &&
-            (boardScreen.displayedClock.firstMoveMs !== null ||
+            (boardScreen.correspondenceRemainingMs !== null || boardScreen.displayedClock.firstMoveMs !== null ||
                 (boardScreen.initialClockMs !== null && !boardScreen.mainClockPaused)) &&
             boardScreen.activeCountdownMs > 0 &&
             !boardScreen.gameOver &&
@@ -517,8 +525,28 @@ Rectangle {
         return remaining === null ? null : Math.max(0, remaining - boardScreen.clockElapsedMs())
     }
 
+    function correspondenceClockLabel(color) {
+        var remaining = boardScreen.correspondenceRemainingMs
+        if (remaining === null || color !== boardScreen.activeTurnColor) return ""
+        if (remaining === 0) return "0m"
+        var minutes = Math.floor(remaining / 60000)
+        if (minutes === 0) return "<1m"
+        var hours = Math.floor(minutes / 60)
+        if (hours >= 24) return Math.floor(hours / 24) + "d " + hours % 24 + "h"
+        if (hours > 0) return hours + "h " + minutes % 60 + "m"
+        return minutes + "m"
+    }
+
     function clockRefreshIntervalMs() {
         var ms = boardScreen.activeCountdownMs
+        if (boardScreen.correspondenceRemainingMs !== null) {
+            // Wake at the next visible label change. Minute polling drifts,
+            // while a seconds timer wakes continuously for multi-day clocks.
+            var unit = ms >= 86400000 ? 3600000 : 60000
+            var untilChange = ms < 60000 ? Math.ceil(ms / 1000) * 1000
+                : (Math.floor((ms % unit) / 1000) + 1) * 1000
+            return Math.max(1, untilChange - boardScreen.clockAgeMs() % 1000)
+        }
         if (ms <= 15000) return 1000
         var boundary = ms <= 60000 ? 15000 : 60000
         var cadence = ms <= 60000 ? 5000 : 10000
@@ -999,7 +1027,8 @@ Rectangle {
             patron: boardScreen.patronFor(boardScreen.topColor)
             flair: boardScreen.flairFor(boardScreen.topColor)
             clockMs: boardScreen.displayClockFor(boardScreen.topColor)
-            showClock: boardScreen.initialClockMs !== null
+            clockLabel: boardScreen.correspondenceClockLabel(boardScreen.topColor)
+            showClock: boardScreen.initialClockMs !== null || clockLabel.length > 0
             active: boardScreen.activeTurnColor === boardScreen.topColor
             opponent: boardScreen.topColor !== boardScreen.yourColor
             lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
@@ -1262,7 +1291,8 @@ Rectangle {
             patron: boardScreen.patronFor(boardScreen.bottomColor)
             flair: boardScreen.flairFor(boardScreen.bottomColor)
             clockMs: boardScreen.displayClockFor(boardScreen.bottomColor)
-            showClock: boardScreen.initialClockMs !== null
+            clockLabel: boardScreen.correspondenceClockLabel(boardScreen.bottomColor)
+            showClock: boardScreen.initialClockMs !== null || clockLabel.length > 0
             active: boardScreen.activeTurnColor === boardScreen.bottomColor
             opponent: boardScreen.bottomColor !== boardScreen.yourColor
             lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
@@ -2004,6 +2034,7 @@ Rectangle {
                 whiteMs: msg.white_time_ms,
                 blackMs: msg.black_time_ms,
                 firstMoveMs: msg.first_move_time_ms !== undefined ? msg.first_move_time_ms : null,
+                correspondenceMs: msg.correspondence_time_ms,
                 paused: msg.main_clock_paused === true,
                 receivedAt: msg.outcome ? 0 : Date.now()
             }

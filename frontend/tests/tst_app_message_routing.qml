@@ -2930,6 +2930,81 @@ TestCase {
         compare(board.topStatusText(), "Move rejected: try again")
     }
 
+    function test_correspondenceDeadlineTracksTheConfirmedTurn() {
+        app.openGame("corresp1")
+        var snapshot = boardState("corresp1")
+        snapshot.correspondence_time_ms = 90061000
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var top = findChild(findChild(board, "topPlayerBar"), "playerClockText")
+        var bottom = findChild(findChild(board, "bottomPlayerBar"), "playerClockText")
+        verify(!top.visible && bottom.visible)
+        compare(bottom.text, "1d 1h")
+        board.clockNowMs = board.liveClock.receivedAt + 30500
+        compare(board.clockRefreshIntervalMs(), 31500)
+
+        var nextFen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        endpoint.reply({type: "MovePreview", game_id: "corresp1", turn: "black",
+                        fen: nextFen, white_time_ms: 90061000, black_time_ms: 259200000})
+        verify(!top.visible && !bottom.visible)
+        endpoint.reply({type: "MoveRejected", game_id: "corresp1", reason: "Try again"})
+        verify(!top.visible && bottom.visible)
+        compare(bottom.text, "1d 1h")
+
+        snapshot.position_history = [startFen, nextFen]
+        snapshot.move_history = ["e4"]
+        snapshot.fen = nextFen
+        snapshot.turn = "black"
+        snapshot.correspondence_time_ms = 3689000
+        endpoint.reply(snapshot)
+        board.clockNowMs = board.liveClock.receivedAt
+        verify(top.visible && !bottom.visible)
+        compare(top.text, "1h 1m")
+        board.manualFlip = true
+        verify(!top.visible && bottom.visible)
+        compare(bottom.text, "1h 1m")
+        app.setLiveClockEnabled(false)
+        board.clockNowMs = board.liveClock.receivedAt + 3600000
+        compare(bottom.text, "1h 1m")
+
+        delete snapshot.correspondence_time_ms
+        snapshot.outcome = {result: "white", reason: "Time forfeit"}
+        endpoint.reply(snapshot)
+        verify(!top.visible && !bottom.visible)
+        verify(board.gameOver)
+    }
+
+    function test_correspondenceDeadlineTicksThroughZeroWithoutEndingTheGame() {
+        app.openGame("corresp1")
+        var snapshot = boardState("corresp1")
+        snapshot.correspondence_time_ms = 60000
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var clock = findChild(findChild(board, "bottomPlayerBar"), "playerClockText")
+        verify(clock.visible)
+        compare(clock.text, "1m")
+        tryCompare(clock, "text", "<1m", 3500)
+        snapshot.correspondence_time_ms = 1000
+        endpoint.reply(snapshot)
+        tryCompare(clock, "text", "0m", 3500)
+        verify(!board.gameOver)
+
+        snapshot.correspondence_time_ms = 60000
+        endpoint.reply(snapshot)
+        compare(clock.text, "1m")
+        board.visible = false
+        wait(1100)
+        board.visible = true
+        compare(clock.text, "<1m")
+
+        app.openGame("untimed1")
+        snapshot = boardState("untimed1")
+        snapshot.white_time_ms = 2147483647
+        snapshot.black_time_ms = 2147483647
+        endpoint.reply(snapshot)
+        verify(!clock.visible)
+    }
+
     function test_liveClockCadenceAtExactAges_data() {
         return [
             {tag: "main clock at one minute", mainMs: 60400, firstMoveMs: null,

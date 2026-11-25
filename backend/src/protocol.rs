@@ -611,7 +611,9 @@ pub enum BackendMessage {
         // Which color the local account is playing in this game -- needed so the
         // frontend can flip board orientation (every reference client does this;
         // ours didn't parse enough of the Lichess payload to know until now).
-        your_color: String,
+        // Fixed names keep the packet compact. String reserves extra space, and
+        // boxing the name would allocate for each snapshot.
+        your_color: &'static str,
         // Whether the side to move is currently in check. The frontend derives
         // *which* square (scanning the FEN for the king matching `turn`) rather
         // than us sending a square, since it already has that FEN-scanning logic.
@@ -666,6 +668,10 @@ pub enum BackendMessage {
         opponent_player: Box<PlayerIdentity>,
         game_description: Box<str>,
         first_move_time_ms: Option<Box<u64>>,
+        // Only the current turn has a deadline. Both wire clocks would expose
+        // the idle allowance, and parsing the description loses the live time.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        correspondence_time_ms: Option<Box<u64>>,
         #[serde(default)]
         main_clock_paused: bool,
         // Each side's starting clock allotment in ms (see
@@ -1353,7 +1359,7 @@ mod tests {
             black_time_ms: 600_000,
             legal_moves: vec![LegalMove { from: "e2".into(), to: "e4".into(), promotion: None }].into_boxed_slice(),
             last_move: None,
-            your_color: "white".into(),
+            your_color: "white",
             in_check: false,
             draw_offered_by_opponent: false,
             takeback_offered_by_opponent: false,
@@ -1387,6 +1393,7 @@ mod tests {
             }),
             game_description: "Casual Rapid • 10 min + 0 sec/move".into(),
             first_move_time_ms: None,
+            correspondence_time_ms: None,
             main_clock_paused: false,
             initial_clock_ms: Some(Box::new(600_000)),
             outcome: None,

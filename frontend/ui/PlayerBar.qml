@@ -23,7 +23,7 @@ Rectangle {
         ? "+" + playerBar.materialAdvantage : ""
     readonly property string profileText: playerBar.buildProfileText()
     property int clockMs: 0
-    // Untimed/correspondence games have no clock to show at all.
+    property string clockLabel: ""
     property bool showClock: true
     // This side is to move -- marks the rail and inverts the clock chip.
     property bool active: false
@@ -245,7 +245,9 @@ Rectangle {
         anchors.right: parent.right
         anchors.rightMargin: theme.spacingXs
         anchors.verticalCenter: parent.verticalCenter
-        width: theme.clockChipWidth
+        width: playerBar.clockLabel.length > 0
+            ? Math.max(theme.clockChipWidth, clockText.implicitWidth + theme.spacingXs * 2)
+            : theme.clockChipWidth
         height: parent.height - theme.spacingXs * 2
         radius: theme.cardRadius
         color: playerBar.active
@@ -256,7 +258,7 @@ Rectangle {
             id: clockText
             objectName: "playerClockText"
             anchors.centerIn: parent
-            text: playerBar.formatClock(playerBar.clockMs)
+            text: playerBar.clockLabel || playerBar.formatClock(playerBar.clockMs)
             font.pixelSize: theme.fontClock
             font.bold: playerBar.lowTime
             color: playerBar.active
