@@ -12,11 +12,26 @@ Rectangle {
     property var openGame: function() {}
     property var respondToChallenge
     property bool darkMode: false
+    property bool liveClockEnabled: true
     // Every now-playing game, not just one -- replaces the old singular
     // resumableGameId, which silently dropped every game past the first for
     // anyone with more than one correspondence game going (see protocol.rs's
     // HomeState/OngoingGameSummary).
     property var ongoingGames: []
+    // Update deadlines separately from the rows. Recreating buttons interrupts
+    // taps, while one timer per row wakes independently for the same snapshot.
+    property var correspondenceSecondsLeft: ({})
+    property double gamesReceivedAtMs: 0
+    property double correspondenceNowMs: Date.now()
+    readonly property double correspondenceAgeMs: Math.max(0, correspondenceNowMs - gamesReceivedAtMs)
+    readonly property double nextCorrespondenceRefreshMs: {
+        var next = Infinity
+        for (var i = 0; i < homeScreen.ongoingGames.length; ++i) {
+            var remaining = homeScreen.correspondenceTimeLeftMs(homeScreen.ongoingGames[i].game_id)
+            if (remaining > 0) next = Math.min(next, chessDisplay.nextCorrespondenceTickMs(remaining))
+        }
+        return isFinite(next) ? Math.max(1, next - homeScreen.correspondenceAgeMs % 1000) : 0
+    }
     // {speed, rating} pairs for whichever standard speed categories this
     // account has actually played at least one game of (see backend_app.rs's
     // ratings_from_perfs) -- shown so Home isn't just a blank slate between
@@ -52,6 +67,8 @@ Rectangle {
 
     onBackendSenderChanged: homeScreen.refresh()
     onNextRequestIdChanged: homeScreen.refresh()
+    onVisibleChanged: if (homeScreen.visible) homeScreen.correspondenceNowMs = Date.now()
+    onLiveClockEnabledChanged: if (homeScreen.liveClockEnabled) homeScreen.correspondenceNowMs = Date.now()
 
     // Coalesce events while a list is loading. Restarting every read can starve
     // the list, and a queue of every event repeats reads for the same snapshot.
@@ -63,6 +80,19 @@ Rectangle {
     Timer {
         id: gameRetryDelay
         onTriggered: homeScreen.queueGamesRefresh()
+    }
+    Timer {
+        interval: Math.max(1, homeScreen.nextCorrespondenceRefreshMs)
+        running: homeScreen.visible && homeScreen.liveClockEnabled && homeScreen.nextCorrespondenceRefreshMs > 0
+        repeat: true
+        onTriggered: homeScreen.correspondenceNowMs = Date.now()
+    }
+
+    function correspondenceTimeLeftMs(gameId) {
+        var seconds = homeScreen.correspondenceSecondsLeft[gameId]
+        if (typeof seconds !== "number") return null
+        var elapsed = homeScreen.liveClockEnabled ? Math.floor(homeScreen.correspondenceAgeMs / 1000) * 1000 : 0
+        return Math.max(0, seconds * 1000 - elapsed)
     }
 
     function acceptsHomeReply(msg) {
@@ -119,6 +149,7 @@ Rectangle {
     }
 
     EinkPagedFlickable {
+        objectName: "homePager"
         anchors.fill: parent
         anchors.margins: theme.pageSideMargin
         anchors.topMargin: theme.pageTopMargin
@@ -223,16 +254,22 @@ Rectangle {
                     // fit the device's ~400px content width.
                     Column {
                         required property var modelData
+                        readonly property var correspondenceMs: homeScreen.correspondenceTimeLeftMs(modelData.game_id)
                         width: parent.width
                         spacing: theme.spacingXs
 
                         Text {
+                            objectName: "homeGameSummary"
                             text: (modelData.opponent_name || "Opponent") +
                                   (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
-                                  (modelData.is_my_turn ? " — your move" : " — waiting")
+                                  (modelData.is_my_turn ? " — your move" : " — waiting") +
+                                  (parent.correspondenceMs === null ? "" :
+                                      " ·\u00a0" + chessDisplay.formatCorrespondenceClock(parent.correspondenceMs)
+                                          .replace(/ /g, "\u00a0") + "\u00a0left")
                             font.pixelSize: theme.fontLabel
                             font.bold: modelData.is_my_turn
                             wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
                             width: parent.width
                             color: theme.text
                         }
@@ -385,6 +422,16 @@ Rectangle {
             var next = games.filter(function(game) {
                 return homeScreen.finishedGameIds.indexOf(game.game_id) === -1
             })
+            var secondsLeft = {}
+            for (var i = 0; i < next.length; ++i) {
+                var game = next[i]
+                if (game.is_my_turn && typeof game.correspondence_seconds_left === "number") {
+                    secondsLeft[game.game_id] = game.correspondence_seconds_left
+                }
+            }
+            homeScreen.gamesReceivedAtMs = Date.now()
+            homeScreen.correspondenceNowMs = homeScreen.gamesReceivedAtMs
+            homeScreen.correspondenceSecondsLeft = secondsLeft
             var shown = homeScreen.ongoingGames
             // An equal snapshot should keep the Resume delegates and their input state.
             if (next.length !== shown.length || next.some(function(game, index) {

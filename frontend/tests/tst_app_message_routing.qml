@@ -3268,6 +3268,68 @@ TestCase {
         compare(screen.item.topStatusText(), "Submitting g1–f3")
     }
 
+    function test_homeShowsAndUpdatesCorrespondenceTimeWithoutRebuildingTheButton() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var game = {game_id: "corresp1", opponent_name: "Opponent", is_my_turn: true,
+                    correspondence_seconds_left: 90061}
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: [game]})
+        var resume = findChild(home, "homeResumeButton")
+        var summary = findChild(resume.parent, "homeGameSummary")
+        verify(summary && summary.visible)
+        var prefix = "Opponent — your move ·\u00a0"
+        compare(summary.text, prefix + "1d\u00a01h\u00a0left")
+
+        home.refreshGames(true)
+        game.correspondence_seconds_left = 60
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: [game]})
+        compare(findChild(home, "homeResumeButton"), resume)
+        compare(summary.text, prefix + "1m\u00a0left")
+        var sent = endpoint.sentMessages.length
+        tryCompare(summary, "text", prefix + "<1m\u00a0left", 3500)
+        compare(endpoint.sentMessages.length, sent)
+        app.setLiveClockEnabled(false)
+        compare(summary.text, prefix + "1m\u00a0left")
+        app.setLiveClockEnabled(true)
+        compare(summary.text, prefix + "<1m\u00a0left")
+
+        home.refreshGames(true)
+        delete game.correspondence_seconds_left
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: [game]})
+        compare(findChild(home, "homeResumeButton"), resume)
+        compare(summary.text, "Opponent — your move")
+    }
+
+    function test_homeCanResumeTheFiftiethReturnedGame() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var games = []
+        for (var i = 1; i <= 50; ++i) {
+            games.push({game_id: "game" + i, opponent_name: "Opponent " + i, is_my_turn: i === 50,
+                        correspondence_seconds_left: i === 50 ? 0 : undefined})
+        }
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
+        var first = findChild(home, "homeResumeButton")
+        var rows = Array.prototype.filter.call(first.parent.parent.children, function(row) {
+            return row.modelData && row.modelData.game_id
+        })
+        compare(rows.length, 50)
+        compare(findChild(rows[49], "homeGameSummary").text, "Opponent 50 — your move ·\u00a00m\u00a0left")
+        var pager = findChild(home, "homePager")
+        verify(pager && waitForRendering(pager))
+        var last = findChild(rows[49], "homeResumeButton")
+        for (var page = 0; page < pager.pageCount; ++page) {
+            var y = last.mapToItem(pager, 0, last.height / 2).y
+            if (y >= 0 && y < pager.pageHeight) break
+            pager.pageDown()
+        }
+        verify(pager.currentPage > 1)
+        verify(page < pager.pageCount)
+        mouseClick(last, last.width / 2, last.height / 2)
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "game50"})
+    }
+
     function test_backgroundBoardStateDoesNotReplaceTheSelectedBoard() {
         app.navigateTo("HomeScreen.qml")
         app.openGame("active")

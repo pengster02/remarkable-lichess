@@ -237,8 +237,12 @@ impl LichessClient {
     }
 
     pub async fn get_playing(&self) -> Result<Vec<PlayingGame>> {
+        // One maximal read keeps Lichess's urgent order. The default truncates
+        // at nine, and additional reads repeat the list without a cursor.
         let resp = self
-            .send_logged("get_playing", self.bearer(self.http.get(format!("{}/api/account/playing", self.base_url))))
+            .send_logged("get_playing", self.bearer(self.http
+                .get(format!("{}/api/account/playing", self.base_url))
+                .query(&[("nb", 50)])))
             .await?;
         if !resp.status().is_success() {
             return Err(error_from_response("get_playing", resp).await);
@@ -1034,19 +1038,28 @@ mod tests {
 
     #[tokio::test]
     async fn get_playing_parses_now_playing_list() {
+        use wiremock::matchers::query_param;
+
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/account/playing"))
+            .and(query_param("nb", "50"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "nowPlaying": [{"gameId": "g1", "isMyTurn": true}]
+                "nowPlaying": [
+                    {"gameId": "g1", "isMyTurn": true, "speed": "correspondence", "secondsLeft": 90061},
+                    {"gameId": "g2", "isMyTurn": true}
+                ]
             })))
             .mount(&server)
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let games = client.get_playing().await.unwrap();
-        assert_eq!(games.len(), 1);
+        assert_eq!(games.len(), 2);
         assert_eq!(games[0].game_id, "g1");
+        assert_eq!(games[0].speed.as_deref(), Some("correspondence"));
+        assert_eq!(games[0].seconds_left, Some(90061));
+        assert!(games[1].seconds_left.is_none());
     }
 
     #[tokio::test]

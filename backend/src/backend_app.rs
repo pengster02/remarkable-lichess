@@ -1682,6 +1682,9 @@ async fn refresh_home_games(
                 }),
                 opponent_rating: g.opponent.as_ref().and_then(|o| o.rating),
                 is_my_turn: g.is_my_turn,
+                correspondence_seconds_left: g.seconds_left
+                    .filter(|_| g.is_my_turn && g.speed.as_deref() == Some("correspondence"))
+                    .and_then(|seconds| u32::try_from(seconds).ok()),
             }).collect(),
         },
         Err(error) if is_rate_limited(&error) => {
