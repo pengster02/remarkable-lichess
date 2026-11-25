@@ -9,6 +9,7 @@ pub mod qr;
 pub mod lichess;
 pub mod game;
 pub mod settings;
+pub mod variations;
 mod storage;
 
 #[cfg(any(feature = "transport", test))]

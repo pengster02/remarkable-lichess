@@ -102,13 +102,15 @@ network analysis runs on request.
 
 | Cloud evaluation | Explore |
 | --- | --- |
-| <img src="docs/images/cloud-eval.png" width="330" alt="Cached Lichess cloud evaluation with score, depth, nodes, and a SAN best line"> | <img src="docs/images/explore.png" width="330" alt="Explore mode showing a candidate move with undo and reset"> |
+| <img src="docs/images/cloud-eval.png" width="330" alt="Cached Lichess cloud evaluation with score, depth, nodes, and a SAN best line"> | <img src="docs/images/explore.png" width="330" alt="Explore mode showing a candidate move"> |
 
 **Cloud evaluation** pulls Lichess's cached analysis for the current position —
-score, depth, node count, and the best line in SAN. **Explore** lets you push
-candidate moves onto the position by tap or drag, with Undo and Reset, without
-touching the real game. The move list shows the numbered candidate line and
-keeps the archived moves available for choosing a new starting position.
+score, depth, node count, and the best line in SAN. In **Explore**, tap or drag
+to try a move. Use **Previous** to back up and try another move from that
+position. **Lines** opens saved branches and the starting position. The app
+saves branches locally by account, game, and starting position. The score
+sheet keeps the archived moves available for choosing a different starting
+position.
 
 ### Settings
 
@@ -145,7 +147,7 @@ resign/abort guard.
   loaded on demand
 - Replay with tappable notation, first/previous/next/last, board flip
 - On-demand cached Lichess cloud evaluation with a SAN best line
-- Explore mode for linear candidate lines, with Undo and Reset
+- Explore mode with locally saved variation branches
 
 **Built for the device**
 - Dark-first high-contrast palette, e-ink-focused sizing, minimal animation
@@ -394,9 +396,8 @@ The constraints that shaped this app, and that changes should respect:
 | [`docs/DEVELOPER_HANDOFF.md`](docs/DEVELOPER_HANDOFF.md) | The fastest path to running, understanding, and extending the app |
 | [`docs/remarkable-appload-platform-notes.md`](docs/remarkable-appload-platform-notes.md) | AppLoad, XOVI, e-ink refresh, build, and deploy constraints |
 
-Known remaining work: persistent variation branches instead of a single linear
-scratch line, an on-demand opening explorer, PGN export, and a final real-device
-pass for ghosting, latency, and Paper Pro Move orientation.
+Known remaining work includes an on-demand opening explorer, PGN export, and a
+final real-device pass for ghosting, latency, and Paper Pro Move orientation.
 
 ---
 

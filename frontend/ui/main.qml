@@ -499,8 +499,13 @@ Rectangle {
                     screenLoader.setSource("GameReviewScreen.qml", {
                         returnToGameHistory: function() { root.returnToGameHistory(visit) }
                     })
+                    if (msg.variation_storage === true && screenLoader.item) {
+                        screenLoader.item.loadSavedVariations()
+                    }
                 }
             } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" || msg.type === "AnalysisFailed" ||
+                       msg.type === "ReviewVariations" || msg.type === "ReviewVariationsLoadFailed" ||
+                       msg.type === "ReviewVariationsSaved" || msg.type === "ReviewVariationsSaveFailed" ||
                        msg.type === "CloudEvaluation" ||
                        msg.type === "CloudEvaluationUnavailable" ||
                        msg.type === "CloudEvaluationFailed") {

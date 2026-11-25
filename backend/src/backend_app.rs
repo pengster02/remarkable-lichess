@@ -14,6 +14,7 @@ use crate::protocol::{
     MSG_TYPE_BACKEND_TO_FRONTEND,
 };
 use crate::qr::QrMatrix;
+use crate::variations::{self, ReviewVariations};
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -74,6 +75,12 @@ struct GameRequest {
     // An exclusive POST releases its slot before sending the reply. Joining
     // inline blocks the dispatcher, and is_finished can lag the UI reply.
     completion: Option<oneshot::Receiver<()>>,
+}
+
+struct ReviewVariationScope {
+    review_id: u32,
+    game_id: String,
+    loaded: bool,
 }
 
 impl GameRequest {
@@ -317,6 +324,7 @@ pub struct LichessBackend {
     // reentry, while an API-wide gate could interrupt live play.
     history_retry_after: Arc<Mutex<Option<Instant>>>,
     review_export: Option<GameRequest>,
+    review_variation_scope: Option<ReviewVariationScope>,
     cloud_evaluations: Option<CloudEvaluationQueue>,
     cloud_retry_after: Arc<Mutex<Option<Instant>>>,
     pending_sign_in: Option<SignInAttempt>,
@@ -353,6 +361,7 @@ impl LichessBackend {
             history_load: None,
             history_retry_after: Arc::new(Mutex::new(None)),
             review_export: None,
+            review_variation_scope: None,
             cloud_evaluations: None,
             cloud_retry_after: Arc::new(Mutex::new(None)),
             pending_sign_in: None,
@@ -697,6 +706,11 @@ impl LichessBackend {
             return;
         };
         stop_game_request(&mut self.review_export).await;
+        // Scope writes to the backend's reviewed game. A front-end game ID can
+        // outlive an account change, while a token-derived key breaks on re-login.
+        self.review_variation_scope = request_id.map(|review_id| ReviewVariationScope {
+            review_id, game_id: game_id.clone(), loaded: false,
+        });
         let task = tokio::spawn(Self::fetch_game_review(
             client, self.my_id.clone(), replier.clone(), self.write_lock.clone(),
             game_id, request_id,
@@ -760,7 +774,58 @@ impl LichessBackend {
         send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
             request_id, moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
             clock_ms, analysis, rating_diff,
+            variation_storage: request_id.zip(my_id.as_ref()).map(|_| true),
         });
+    }
+
+    fn handle_load_variations(&mut self, replier: &BackendReplier<Self>, review_id: u32) {
+        let config_dir = self.token_path.parent().unwrap_or_else(|| Path::new("."));
+        let (Some(scope), Some(account_id)) = (&mut self.review_variation_scope, &self.my_id) else {
+            return;
+        };
+        if scope.review_id != review_id {
+            return;
+        }
+        let reply = match variations::load(config_dir, account_id, &scope.game_id) {
+            Ok(variations) => {
+                scope.loaded = true;
+                BackendMessage::ReviewVariations { review_id, variations }
+            }
+            Err(error) => {
+                scope.loaded = false;
+                log::warn!("could not read saved review variations: {error}");
+                BackendMessage::ReviewVariationsLoadFailed {
+                    review_id, message: "Could not load saved variations.".into(),
+                }
+            }
+        };
+        self.send(replier, &reply);
+    }
+
+    fn handle_save_variations(
+        &self, replier: &BackendReplier<Self>, review_id: u32, request_id: u32,
+        variations: ReviewVariations,
+    ) {
+        let config_dir = self.token_path.parent().unwrap_or_else(|| Path::new("."));
+        let (Some(scope), Some(account_id)) = (&self.review_variation_scope, &self.my_id) else {
+            return;
+        };
+        if scope.review_id != review_id {
+            return;
+        }
+        let reply = if !scope.loaded {
+            BackendMessage::ReviewVariationsSaveFailed {
+                review_id, request_id, message: "Reload the review before saving variations.".into(),
+            }
+        } else if let Err(error) = variations::save(config_dir, account_id, &scope.game_id, &variations) {
+            log::warn!("could not save review variations: {error}");
+            BackendMessage::ReviewVariationsSaveFailed {
+                review_id, request_id, message: "Could not save variations.".into(),
+            }
+        } else {
+            BackendMessage::ReviewVariationsSaved { review_id, request_id }
+        };
+        self.send(replier, &reply);
     }
 
     async fn queue_cloud_evaluation(
@@ -1006,6 +1071,7 @@ impl LichessBackend {
     }
 
     async fn stop_authenticated_activity(&mut self) {
+        self.review_variation_scope = None;
         stop_task(&mut self.home_games).await;
         stop_task(&mut self.home_ratings).await;
         stop_game_request(&mut self.history_load).await;
@@ -1890,6 +1956,7 @@ impl AppLoadBackend for LichessBackend {
         }
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             // The new frontend starts its request sequence over.
+            self.review_variation_scope = None;
             self.stop_sign_in(None).await;
             stop_task(&mut self.home_games).await;
             stop_task(&mut self.home_ratings).await;
@@ -2090,6 +2157,15 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::CancelGameReview { request_id } => {
                 cancel_game_request(&mut self.review_export, request_id).await;
+                if self.review_variation_scope.as_ref().is_some_and(|scope| scope.review_id == request_id) {
+                    self.review_variation_scope = None;
+                }
+            }
+            FrontendMessage::RequestReviewVariations { review_id } => {
+                self.handle_load_variations(replier, review_id);
+            }
+            FrontendMessage::SaveReviewVariations { review_id, request_id, variations } => {
+                self.handle_save_variations(replier, review_id, request_id, variations);
             }
             FrontendMessage::RequestCloudEvaluation { fen, request_id, review_id } => {
                 self.queue_cloud_evaluation(replier, fen, request_id, review_id).await
