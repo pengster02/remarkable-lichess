@@ -8,6 +8,9 @@ APP_DIR="${APPLOAD_SRC}/applications_root/remarkable-lichess"
 BUILD_ROOT="/tmp/remarkable-lichess-build"
 APPLOAD_BUILD_DIR="${BUILD_ROOT}/appload"
 export REMARKABLE_LICHESS_CONFIG_DIR="${REMARKABLE_LICHESS_CONFIG_DIR:-/tmp/remarkable-lichess-config}"
+# Token entry works through noVNC. A direct callback needs another published
+# port, and a hosted callback needs an external service.
+export REMARKABLE_LICHESS_SIGN_IN="${REMARKABLE_LICHESS_SIGN_IN:-token}"
 
 install -d -m 0700 "$REMARKABLE_LICHESS_CONFIG_DIR"
 mkdir -p /tmp/.X11-unix

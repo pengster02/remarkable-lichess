@@ -8,24 +8,26 @@ Rectangle {
     property var backendSender
     property var nextRequestId
     property bool darkMode: false
+    property bool qrSignInAvailable: true
 
-    property string phase: "starting"
+    property string phase: qrSignInAvailable ? "starting" : "idle"
     property int signInRequestId: 0
     property string authorizeUrl: ""
     property var qrRows: []
     property int qrModules: 0
     property string errorMessage: ""
-    property bool manualEntry: false
+    property bool manualEntry: !qrSignInAvailable
 
     // What the screen is showing, named once here instead of repeating the
     // phase comparisons inline on each `visible:` binding. Also the only
     // handle a test has on this: Qt reports every item's effective visibility
     // as false under the offscreen test runner, so asserting on `visible`
     // itself would prove nothing.
-    readonly property bool showingQr: !manualEntry && phase === "ready" && qrModules > 0
-    readonly property bool showingRetry: !manualEntry && (phase === "failed" || phase === "ready")
+    readonly property bool showingQr: qrSignInAvailable && !manualEntry && phase === "ready" && qrModules > 0
+    readonly property bool showingRetry: qrSignInAvailable && !manualEntry && (phase === "failed" || phase === "ready")
     readonly property bool showingUrl: showingQr && authorizeUrl.length > 0
     readonly property bool showingTokenEntry: manualEntry
+    readonly property bool showingScanAlternative: manualEntry && qrSignInAvailable
     readonly property bool keyboardActive: tokenField.activeFocus
     readonly property bool manualPending: manualEntry && (phase === "verifying" || phase === "committing")
 
@@ -203,6 +205,7 @@ Rectangle {
                     objectName: "backToScanButton"
                     width: parent.width
                     text: "Scan a code instead"
+                    visible: loginScreen.showingScanAlternative
                     enabled: loginScreen.phase !== "committing"
                     onClicked: loginScreen.startLogin()
                 }
@@ -218,6 +221,7 @@ Rectangle {
     }
 
     function startLogin() {
+        if (!loginScreen.qrSignInAvailable) return
         if (!loginScreen.backendSender || !loginScreen.nextRequestId || loginScreen.phase === "committing") return
         loginScreen.dismissKeyboard()
         loginScreen.manualEntry = false

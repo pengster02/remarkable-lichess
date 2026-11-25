@@ -3,6 +3,7 @@ import net.asivery.AppLoad 1.0
 
 Rectangle {
     id: root
+    property bool qrSignInAvailable: true
     anchors.fill: parent
     // Dark backgrounds on e-ink are a real ghosting/refresh-cost tradeoff, not a free
     // win like on an OLED phone screen (see docs/remarkable-appload-platform-notes.md).
@@ -400,7 +401,9 @@ Rectangle {
         applicationID: "remarkable-lichess"
         onMessageReceived: (type, contents) => {
             var msg = JSON.parse(contents)
-            if (msg.type === "TokenVerified") {
+            if (msg.type === "SignInOptions") {
+                root.qrSignInAvailable = msg.qr_available !== false
+            } else if (msg.type === "TokenVerified") {
                 var login = screenLoader.item
                 if (typeof msg.request_id === "number" &&
                         (!login || !login.acceptsCommittedSignIn || !login.acceptsCommittedSignIn(msg))) return
@@ -598,6 +601,9 @@ Rectangle {
             }
         }
         onLoaded: {
+            if (item.hasOwnProperty("qrSignInAvailable")) {
+                item.qrSignInAvailable = root.qrSignInAvailable
+            }
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend
             }

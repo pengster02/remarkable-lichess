@@ -3750,6 +3750,33 @@ TestCase {
         compare(app.username, "player")
     }
 
+    function test_tokenOnlyAuthStaysInTokenModeAfterSignOut() {
+        function qrRequests() {
+            return Array.prototype.filter.call(endpoint.sentMessages, function(message) {
+                return message.type === "StartLogin"
+            }).length
+        }
+        endpoint.reply({type: "SignInOptions", qr_available: false})
+        var first = qrRequests()
+        endpoint.reply({type: "AuthenticationRequired"})
+        verify(String(screen.source).endsWith("LoginScreen.qml"))
+        compare(qrRequests(), first)
+        verify(screen.item.showingTokenEntry && !screen.item.showingScanAlternative)
+
+        findChild(screen.item, "tokenField").text = "synthetic-fixture-token"
+        screen.item.saveToken()
+        var request = screen.item.signInRequestId
+        endpoint.reply({type: "SignInReady", request_id: request})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "CompleteSignIn", request_id: request})
+        endpoint.reply({type: "TokenVerified", username: "player", request_id: request})
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+
+        endpoint.reply({type: "AuthenticationRequired"})
+        compare(qrRequests(), first)
+        verify(screen.item.showingTokenEntry && !screen.item.showingScanAlternative)
+    }
+
     function test_logoutDiscardsOldGameRepliesAndClearsAccountData() {
         var abandoned = choose("private-game")
         app.username = "previous-player"

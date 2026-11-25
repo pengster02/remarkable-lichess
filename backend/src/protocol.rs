@@ -479,6 +479,9 @@ impl OpenChallengeQrCodes {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum BackendMessage {
+    // Send the QR capability before authentication replies. Repeating it in
+    // each reply risks drift, and guessing from connection status is unreliable.
+    SignInOptions { qr_available: bool },
     // Makes startup authentication an explicit state instead of using LoginScreen
     // as a placeholder while a saved token is still being checked. Alternatives:
     // infer this from LoginFailed, or let the frontend start OAuth immediately.
@@ -1382,6 +1385,13 @@ mod tests {
         assert_eq!(json, r#"{"type":"AuthenticationRequired"}"#);
         let request = serde_json::from_str::<FrontendMessage>(r#"{"type":"RetryAuthentication"}"#).unwrap();
         assert_eq!(request, FrontendMessage::RetryAuthentication);
+    }
+
+    #[test]
+    fn sign_in_options_describes_the_available_method() {
+        let message = BackendMessage::SignInOptions { qr_available: false };
+        let json = serde_json::to_string(&message).unwrap();
+        assert_eq!(json, r#"{"type":"SignInOptions","qr_available":false}"#);
     }
 
     #[test]
