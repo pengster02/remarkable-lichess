@@ -78,7 +78,9 @@ fn next_position_id() -> PositionId {
     // Keep the sequence across attachments. A per-session counter can be
     // reused on reattach, and a history hash repeats when a takeback restores it.
     static NEXT: AtomicU32 = AtomicU32::new(1);
-    PositionId(NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    // The locked chess dependency already requires Rust 1.95. The older alias
+    // is deprecated, and fetch_add would wrap at the end of the sequence.
+    PositionId(NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .expect("position ID exhausted"))
 }
 
