@@ -82,7 +82,17 @@ emulator. Later runs can use:
 ```
 
 Open `http://localhost:6080/vnc.html`. The default container name is
-`remarkable-lichess-local`.
+`remarkable-lichess-local`. Its persistent volume is
+`remarkable-lichess-local-config`, with app data at
+`/var/lib/remarkable-lichess/config` inside the container. A custom `NAME`
+has a separate config volume. The launcher copies data from the old
+`/tmp/remarkable-lichess-config` before replacing a legacy container.
+A copy failure or conflicting saved configuration keeps the old container
+available for recovery.
+
+The `.lichess-token` file seeds a new configuration. Run
+`./scripts/connect-lichess.sh` or pass `LICHESS_TOKEN` explicitly to the launcher
+to replace the token in an existing configuration. [README instructions](../README.md#run-locally)
 
 For a quick frontend-only redeploy into an already running emulator:
 

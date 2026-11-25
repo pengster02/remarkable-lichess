@@ -123,12 +123,12 @@ its clocks and annotations when available. For variants without replay, tap
 
 The default tablet export directory is
 `/home/root/.config/remarkable-lichess/exports`. Copy the file from the
-tablet over SSH, or from the default emulator before restarting its container.
+tablet over SSH, or from the current default emulator container.
 Replace `GAMEID` with the game ID shown in the filename.
 
 ```sh
 scp root@10.11.99.1:/home/root/.config/remarkable-lichess/exports/GAMEID.pgn .
-docker cp remarkable-lichess-local:/tmp/remarkable-lichess-config/exports/GAMEID.pgn .
+docker cp remarkable-lichess-local:/var/lib/remarkable-lichess/config/exports/GAMEID.pgn .
 ```
 
 ### Settings
@@ -262,8 +262,15 @@ Later runs:
 
 Then open <http://localhost:6080/vnc.html>. The container is named
 `remarkable-lichess-local` and noVNC listens on the host's loopback interface.
-Container replacements reuse Docker caches. Compiled files are scoped to the
+Container replacements keep sign-in status, settings, review branches, and PGN
+exports in the Docker volume `remarkable-lichess-local-config`. The launcher
+copies configuration from an older emulator before replacing its container.
+Each custom `NAME` has its own config volume. Compiled files are scoped to the
 selected checkouts and image.
+
+A repo-local `.lichess-token` seeds the first launch of a new volume. Use
+`./scripts/connect-lichess.sh` again to replace the saved sign-in, or change it
+in the app. Signing out in the app persists across launches.
 
 QR sign-in requires your phone to reach the backend's callback address. For the
 default Docker network, use the token prompt above or the in-app token field.
