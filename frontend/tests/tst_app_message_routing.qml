@@ -3353,7 +3353,7 @@ TestCase {
         compare(summary.text, "Opponent — your move")
     }
 
-    function test_homeCanResumeTheFiftiethReturnedGame() {
+    function openHomeWithFiftyGames() {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
         var games = []
@@ -3362,6 +3362,58 @@ TestCase {
                         correspondence_seconds_left: i === 50 ? 0 : undefined})
         }
         endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
+        return home
+    }
+
+    function test_homeNavigationWorksFromTheLastPage_data() {
+        return [
+            {tag: "new game on Paper Pro Move", width: 954, height: 1696, button: "homeNewGame", screen: "SeekScreen.qml"},
+            {tag: "game history on Paper Pro Move", width: 954, height: 1696, button: "homeGameHistory", screen: "GameHistoryScreen.qml"},
+            {tag: "settings on Paper Pro", width: 1620, height: 2160, button: "homeSettings", screen: "SettingsScreen.qml"}
+        ]
+    }
+
+    function test_homeNavigationWorksFromTheLastPage(data) {
+        width = data.width
+        height = data.height
+        var home = openHomeWithFiftyGames()
+        var pager = findChild(home, "homePager")
+        var button = findChild(home, data.button)
+        verify(pager && button && waitForRendering(pager))
+        var origin = button.mapToItem(home, 0, 0)
+        verify(origin.y + button.height <= pager.y)
+        verify(button.width >= button.height && !button.contentItem.truncated)
+
+        verify(pager.pageCount > 1)
+        for (var page = 1; page < pager.pageCount; ++page) pager.pageDown()
+        compare(pager.currentPage, pager.pageCount)
+        compare(button.mapToItem(home, 0, 0), origin)
+        mouseClick(button, button.width / 2, button.height / 2)
+        verify(String(screen.source).endsWith(data.screen))
+    }
+
+    function test_homeCanRespondToAnInvitationBeforePagingPastFiftyGames() {
+        var home = openHomeWithFiftyGames()
+        endpoint.reply({type: "PendingChallenges", challenges: [
+            {id: "invited", challenger: "CorrespondencePlayer", limit_seconds: 600, increment_seconds: 5}
+        ]})
+        var pager = findChild(home, "homePager")
+        var decline = findChild(home, "homeDeclineChallenge")
+        verify(pager && decline && waitForRendering(pager))
+        compare(pager.currentPage, 1)
+        var top = decline.mapToItem(pager, 0, 0).y
+        verify(top >= 0 && top + decline.height <= pager.pageHeight)
+        mouseClick(decline, decline.width / 2, decline.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "DeclineChallenge")
+        compare(request.id, "invited")
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: "invited", request_id: request.request_id})
+        compare(home.pendingChallenges.length, 0)
+        compare(home.ongoingGames.length, 50)
+    }
+
+    function test_homeCanResumeTheFiftiethReturnedGame() {
+        var home = openHomeWithFiftyGames()
         var first = findChild(home, "homeResumeButton")
         var rows = Array.prototype.filter.call(first.parent.parent.children, function(row) {
             return row.modelData && row.modelData.game_id
@@ -3374,15 +3426,22 @@ TestCase {
         verify(refresh && refresh.visible)
         var refreshBottom = refresh.mapToItem(pager, 0, refresh.height).y
         verify(refreshBottom >= refresh.height && refreshBottom < pager.pageHeight)
-        var last = findChild(rows[49], "homeResumeButton")
-        for (var page = 0; page < pager.pageCount; ++page) {
-            var y = last.mapToItem(pager, 0, last.height / 2).y
-            if (y >= 0 && y < pager.pageHeight) break
-            pager.pageDown()
+        var refreshAll = findChild(home, "homeRefreshButton")
+        verify(!refresh.contentItem.truncated && !refreshAll.contentItem.truncated)
+        compare(refreshAll.mapToItem(pager, 0, refreshAll.height).y, refreshBottom)
+        var resume
+        for (var i = 0; i < rows.length; ++i) {
+            resume = findChild(rows[i], "homeResumeButton")
+            compare(rows[i].modelData.game_id, "game" + (i + 1))
+            var y = resume.mapToItem(pager, 0, resume.height / 2).y
+            while (y >= pager.pageHeight && pager.currentPage < pager.pageCount) {
+                pager.pageDown()
+                y = resume.mapToItem(pager, 0, resume.height / 2).y
+            }
+            verify(y >= 0 && y < pager.pageHeight, "Resume center is outside page for game " + (i + 1))
         }
         verify(pager.currentPage > 1)
-        verify(page < pager.pageCount)
-        mouseClick(last, last.width / 2, last.height / 2)
+        mouseClick(resume, resume.width / 2, resume.height / 2)
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "game50"})
     }
