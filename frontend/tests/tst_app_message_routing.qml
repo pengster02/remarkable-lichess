@@ -1369,6 +1369,51 @@ TestCase {
         compare(home.ratings[0].rating, 1500)
     }
 
+    function test_manualHomeGamesRefreshKeepsOtherHomeData() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var initial = latestHomeRequest()
+        endpoint.reply({type: "HomeState", request_id: initial, ongoing_games: []})
+        endpoint.reply({type: "PendingChallenges", challenges: [{id: "invite", challenger: "Friend"}]})
+        endpoint.reply({type: "ErrorMsg", message: "Challenge expired"})
+        var refresh = findChild(home, "homeGamesRefreshButton")
+        verify(refresh && refresh.visible && refresh.enabled && waitForRendering(refresh))
+        var sent = endpoint.sentMessages.length
+        mouseClick(refresh, refresh.width / 2, refresh.height / 2)
+        verify(!refresh.enabled)
+        tryVerify(function() { return latestHomeRequest() > initial })
+        var first = latestHomeRequest()
+        compare(endpoint.sentMessages.length, sent + 1)
+        compare(endpoint.sentMessages[sent], {type: "RequestHome", request_id: first, games_only: true})
+        compare(refresh.text, "Refreshing games…")
+        verify(home.loadedOnce)
+        compare(home.actionError, "Challenge expired")
+        compare(home.pendingChallenges[0].id, "invite")
+        endpoint.reply({type: "HomeRatings", request_id: initial, ratings: [{speed: "rapid", rating: 1500}]})
+        compare(home.ratings[0].rating, 1500)
+        endpoint.reply({type: "HomeState", request_id: first,
+                        ongoing_games: [{game_id: "corresp1", opponent_name: "Opponent", is_my_turn: false}]})
+        var summary = findChild(home, "homeGameSummary")
+        compare(summary.text, "Opponent — waiting")
+        verify(refresh.enabled && waitForRendering(refresh))
+
+        mouseClick(refresh, refresh.width / 2, refresh.height / 2)
+        tryVerify(function() { return latestHomeRequest() > first })
+        var second = latestHomeRequest()
+        mouseClick(refresh, refresh.width / 2, refresh.height / 2)
+        compare(latestHomeRequest(), second)
+        compare(summary.text, "Opponent — waiting")
+        endpoint.reply({type: "GameStarted", game_id: "other", from_realtime_lobby: false})
+        endpoint.reply({type: "HomeState", request_id: second, ongoing_games: [
+            {game_id: "corresp1", opponent_name: "Opponent", is_my_turn: true, correspondence_seconds_left: 90061}
+        ]})
+        compare(findChild(home, "homeGameSummary").text, "Opponent — your move ·\u00a01d\u00a01h\u00a0left")
+        tryVerify(function() { return latestHomeRequest() > second })
+        compare(endpoint.sentMessages.length, sent + 3)
+        compare(endpoint.sentMessages[sent + 2],
+                {type: "RequestHome", request_id: latestHomeRequest(), games_only: true})
+    }
+
     function test_accountStartsRefreshOnlyTheVisibleGamesList() {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
@@ -1453,6 +1498,11 @@ TestCase {
         var limited = latestHomeRequest()
         endpoint.reply({type: "HomeLoadFailed", request_id: limited,
                         message: "Lichess is limiting game-list requests.", retry_after_ms: 600})
+        var refresh = findChild(home, "homeGamesRefreshButton")
+        var refreshHome = findChild(home, "homeRefreshButton")
+        verify(refresh && refresh.visible && !refresh.enabled)
+        verify(refreshHome && !refreshHome.enabled)
+        mouseClick(refresh, refresh.width / 2, refresh.height / 2)
         endpoint.reply({type: "GameStarted", game_id: "arriving", from_realtime_lobby: false})
         compare(home.ongoingGames, [active])
         verify(app.online)
@@ -1460,6 +1510,9 @@ TestCase {
         compare(latestHomeRequest(), limited)
         tryVerify(function() { return latestHomeRequest() > limited })
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1].games_only, true)
+        endpoint.reply({type: "HomeState", request_id: latestHomeRequest(), ongoing_games: [active]})
+        verify(refresh.enabled && refreshHome.enabled)
+        compare(home.loadError, "")
     }
 
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
@@ -3317,6 +3370,10 @@ TestCase {
         compare(findChild(rows[49], "homeGameSummary").text, "Opponent 50 — your move ·\u00a00m\u00a0left")
         var pager = findChild(home, "homePager")
         verify(pager && waitForRendering(pager))
+        var refresh = findChild(home, "homeGamesRefreshButton")
+        verify(refresh && refresh.visible)
+        var refreshBottom = refresh.mapToItem(pager, 0, refresh.height).y
+        verify(refreshBottom >= refresh.height && refreshBottom < pager.pageHeight)
         var last = findChild(rows[49], "homeResumeButton")
         for (var page = 0; page < pager.pageCount; ++page) {
             var y = last.mapToItem(pager, 0, last.height / 2).y
