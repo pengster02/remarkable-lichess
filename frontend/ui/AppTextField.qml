@@ -37,6 +37,26 @@ T.TextField {
         border.width: control.activeFocus ? 3 : 1
         border.color: control.activeFocus ? theme.accentBackground : theme.buttonBorder
         color: theme.buttonBackground
+
+        // Templates leave the hint to the style. Using a styled control adds
+        // a style dependency, and per-screen hints duplicate editing rules.
+        Text {
+            objectName: "textFieldPlaceholder"
+            x: control.leftPadding
+            y: control.topPadding
+            width: Math.max(0, control.width - control.leftPadding - control.rightPadding)
+            height: Math.max(0, control.height - control.topPadding - control.bottomPadding)
+            text: control.placeholderText
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            font: control.font
+            color: control.placeholderTextColor
+            horizontalAlignment: control.horizontalAlignment
+            verticalAlignment: control.verticalAlignment
+            renderType: control.renderType
+            visible: text.length > 0 && control.length === 0 && !control.preeditText &&
+                (!control.activeFocus || control.horizontalAlignment !== TextInput.AlignHCenter)
+        }
     }
 
     cursorDelegate: Rectangle {

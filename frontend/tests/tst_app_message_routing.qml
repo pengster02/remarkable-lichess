@@ -2798,6 +2798,60 @@ TestCase {
         compare(app.resolvedChallengeIds.length, 0)
     }
 
+    function test_inputFieldPlaceholderTracksEditing_data() {
+        return [
+            {tag: "username light", dark: false, password: false},
+            {tag: "username dark", dark: true, password: false},
+            {tag: "token light", dark: false, password: true},
+            {tag: "token dark", dark: true, password: true}
+        ]
+    }
+
+    function test_inputFieldPlaceholderTracksEditing(data) {
+        app.darkMode = data.dark
+        if (data.password) {
+            endpoint.reply({type: "AuthenticationRequired"})
+            var login = screen.item
+            verify(waitForRendering(login))
+            var manual = findChild(login, "manualEntryButton")
+            mouseClick(manual, manual.width / 2, manual.height / 2)
+        } else {
+            app.navigateTo("SeekScreen.qml")
+            var seek = screen.item
+            verify(waitForRendering(seek))
+            findChild(seek, "seekFlickable").pageDown()
+        }
+        var field = findChild(screen.item, data.password ? "tokenField" : "usernameField")
+        var done = findChild(screen.item, data.password ? "tokenKeyboardDoneButton" : "usernameKeyboardDoneButton")
+        var hint = findChild(field, "textFieldPlaceholder")
+        verify(hint)
+        verify(waitForRendering(field))
+        verify(hint.visible)
+        compare(hint.text, data.password ? "lip_..." : "opponent username")
+        compare(hint.color, field.placeholderTextColor)
+        compare(hint.mapToItem(field, 0, 0), Qt.point(field.leftPadding, field.topPadding))
+        compare(hint.width, field.width - field.leftPadding - field.rightPadding)
+        verify(!hint.truncated)
+
+        mouseClick(field, field.width / 2, field.height / 2)
+        verify(field.activeFocus && hint.visible)
+        keyClick(Qt.Key_A)
+        compare(field.text, "a")
+        verify(!hint.visible)
+        keyClick(Qt.Key_Backspace)
+        compare(field.text, "")
+        verify(hint.visible)
+
+        keyClick(Qt.Key_A)
+        verify(waitForRendering(done))
+        mouseClick(done, done.width / 2, done.height / 2)
+        verify(!field.activeFocus && !hint.visible)
+        compare(field.text, "a")
+        if (data.password) verify(field.displayText !== field.text)
+        field.clear()
+        verify(hint.visible)
+    }
+
     function test_startupRetryKeepsTheSavedSignInFlow() {
         var unverified = createTemporaryObject(Qt.createComponent("../ui/main.qml"), this)
         verify(unverified)
