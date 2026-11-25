@@ -2660,15 +2660,114 @@ TestCase {
         compare(first, {type: "ChallengeAi", request_id: seek.matchRequestId,
                         minutes: 7, increment: 3, level: 6, color: data.color})
         verify(!start.enabled)
+        var pageOffset = pager.contentY
         endpoint.reply({type: "MatchCreationFailed", request_id: first.request_id, message: "Try again"})
         compare(rating.value, "rated")
         compare(start.text, "Start casual computer game")
         verify(start.enabled)
         verify(waitForRendering(start))
+        compare(pager.contentY, pageOffset)
         mouseClick(start, start.width / 2, start.height / 2)
         var retry = endpoint.sentMessages[endpoint.sentMessages.length - 1]
         verify(retry.request_id > first.request_id)
         compare(retry, Object.assign({}, first, {request_id: retry.request_id}))
+    }
+
+    function test_setupErrorKeepsRetryVisible_data() {
+        return [
+            {tag: "computer rejection after a share link", width: 954, height: 1696, share: true,
+             button: "computerGameButton", request: "ChallengeAi", failure: "MatchCreationFailed"},
+            {tag: "computer level validation after a share link", width: 954, height: 1696, share: true,
+             button: "computerGameButton", request: null},
+            {tag: "open challenge rejection", width: 1620, height: 2160,
+             button: "openChallengeButton", request: "CreateOpenChallenge", failure: "MatchCreationFailed"},
+            {tag: "matchmaking rejection", width: 954, height: 1696,
+             button: "findOpponentButton", request: "CreateSeek", failure: "SeekFailed"}
+        ]
+    }
+
+    function test_setupErrorKeepsRetryVisible(data) {
+        width = data.width
+        height = data.height
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        var pager = findChild(seek, "seekFlickable")
+        var action = findChild(seek, data.button)
+        verify(waitForRendering(seek))
+        if (data.share) {
+            var create = findChild(seek, "openChallengeButton")
+            pager.showPageContaining(create.y, create.height)
+            mouseClick(create, create.width / 2, create.height / 2)
+            var share = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+            compare(share.type, "CreateOpenChallenge")
+            var url = "https://lichess.org/open0001"
+            endpoint.reply({type: "OpenChallengeCreated", game_id: "open0001", request_id: share.request_id,
+                            url: url, url_white: url + "?color=white", url_black: url + "?color=black",
+                            qr_codes: {join: {size: 2, rows: ["10", "01"]}}})
+            verify(waitForRendering(action))
+            var next = findChild(pager, "pageDownButton")
+            mouseClick(next, next.width / 2, next.height / 2)
+            verify(waitForRendering(action))
+        }
+        var computerLevel = findChild(seek, "aiLevelField")
+        if (!data.request) computerLevel.text = "0"
+
+        function actionInView() {
+            var y = action.mapToItem(pager, 0, 0).y
+            return action.visible && y >= -0.5 && y + action.height <= pager.pageHeight + 0.5
+        }
+        verify(actionInView())
+        var sent = endpoint.sentMessages.length
+        mouseClick(action, action.width / 2, action.height / 2)
+        var reason = "Lichess could not create the game. The server is temporarily unable to accept " +
+            "this request. Please try again after the service recovers."
+        if (data.request) {
+            var first = endpoint.sentMessages[sent]
+            compare(first.type, data.request)
+            endpoint.reply({type: data.failure, request_id: first.request_id + 100, message: reason})
+            compare(seek.formError, "")
+            endpoint.reply({type: data.failure, request_id: first.request_id, message: reason})
+            sent += 1
+        } else {
+            reason = "Computer level must be a whole number from 1 to 8."
+        }
+        compare(endpoint.sentMessages.length, sent)
+        var error = findChild(seek, "seekErrorText")
+        verify(waitForRendering(error))
+        verify(error.visible)
+        compare(error.text, reason)
+        verify(action.enabled)
+        tryVerify(actionInView)
+        if (!data.request) computerLevel.text = "4"
+        mouseClick(action, action.width / 2, action.height / 2)
+        compare(endpoint.sentMessages[sent].type, data.request || "ChallengeAi")
+    }
+
+    function test_computerFailureRespectsPaging_data() {
+        return [{tag: "during request", beforeReply: true},
+                {tag: "after reply", beforeReply: false}]
+    }
+
+    function test_computerFailureRespectsPaging(data) {
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        var pager = findChild(seek, "seekFlickable")
+        verify(waitForRendering(seek))
+        pager.pageDown()
+        var action = findChild(seek, "computerGameButton")
+        verify(waitForRendering(action))
+        mouseClick(action, action.width / 2, action.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "ChallengeAi")
+        var failure = {type: "MatchCreationFailed", request_id: request.request_id, message: "Please retry"}
+        if (!data.beforeReply) endpoint.reply(failure)
+        for (var page = pager.pageCount; page > 0 && pager.contentY > 0; page--) pager.pageUp()
+        compare(pager.contentY, 0)
+        if (data.beforeReply) endpoint.reply(failure)
+        var error = findChild(seek, "seekErrorText")
+        verify(waitForRendering(error))
+        compare(error.text, "Please retry")
+        compare(pager.contentY, 0)
     }
 
     function test_matchCreationIsScopedAcrossVisits_data() {
