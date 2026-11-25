@@ -262,6 +262,10 @@ Later runs:
 
 Then open <http://localhost:6080/vnc.html>. The container is named
 `remarkable-lichess-local` and noVNC listens on the host's loopback interface.
+The launcher waits up to 180 seconds for the display after starting the
+container. Set `READY_TIMEOUT` in seconds for a slower first build. If startup
+times out, follow the remaining build with `docker logs -f remarkable-lichess-local`.
+
 Container replacements keep sign-in status, settings, review branches, and PGN
 exports in the Docker volume `remarkable-lichess-local-config`. The launcher
 copies configuration from an older emulator before replacing its container.
