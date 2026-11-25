@@ -801,6 +801,8 @@ pub enum BackendMessage {
         request_id: Option<u32>,
         requested_fen: String,
         message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
     },
     OpeningExplorer {
         review_id: u32,

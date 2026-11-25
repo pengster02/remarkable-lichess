@@ -122,7 +122,8 @@ Rectangle {
     readonly property string cloudFen: currentFen()
     readonly property var currentCloudState: cloudEvaluationByFen[cloudFen] || null
     readonly property string cloudEvaluationPhase: currentCloudState ? currentCloudState.phase : ""
-    readonly property bool canRequestCloudEvaluation: cloudFen.length > 0 &&
+    property bool cloudEvaluationCoolingDown: false
+    readonly property bool canRequestCloudEvaluation: !cloudEvaluationCoolingDown && cloudFen.length > 0 &&
         (cloudEvaluationPhase === "" || cloudEvaluationPhase === "failed")
     readonly property var cloudBestMoves: {
         var evaluation = currentCloudEvaluation()
@@ -1044,6 +1045,7 @@ Rectangle {
                     }
                 }
                 AppButton {
+                    objectName: "requestCloudEvaluationButton"
                     width: parent.width
                     text: gameReviewScreen.currentCloudEvaluation() !== null
                         ? "Cloud evaluation loaded"
@@ -1051,7 +1053,8 @@ Rectangle {
                             ? "No cloud evaluation cached"
                             : gameReviewScreen.cloudEvaluationPhase === "pending"
                                 ? "Loading cloud evaluation..."
-                                : "Cloud evaluation"
+                                : gameReviewScreen.cloudEvaluationCoolingDown
+                                    ? "Cloud evaluation paused" : "Cloud evaluation"
                     enabled: gameReviewScreen.canRequestCloudEvaluation
                     onClicked: {
                         gameReviewScreen.requestCloudEvaluation()
