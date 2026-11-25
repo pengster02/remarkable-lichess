@@ -51,6 +51,9 @@ pub struct PlayingGame {
     pub game_id: String,
     #[serde(rename = "isMyTurn")]
     pub is_my_turn: bool,
+    pub speed: Option<String>,
+    #[serde(rename = "secondsLeft")]
+    pub seconds_left: Option<i64>,
     #[serde(default)]
     pub opponent: Option<PlayingOpponent>,
 }

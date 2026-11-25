@@ -527,25 +527,14 @@ Rectangle {
 
     function correspondenceClockLabel(color) {
         var remaining = boardScreen.correspondenceRemainingMs
-        if (remaining === null || color !== boardScreen.activeTurnColor) return ""
-        if (remaining === 0) return "0m"
-        var minutes = Math.floor(remaining / 60000)
-        if (minutes === 0) return "<1m"
-        var hours = Math.floor(minutes / 60)
-        if (hours >= 24) return Math.floor(hours / 24) + "d " + hours % 24 + "h"
-        if (hours > 0) return hours + "h " + minutes % 60 + "m"
-        return minutes + "m"
+        return remaining === null || color !== boardScreen.activeTurnColor
+            ? "" : chessDisplay.formatCorrespondenceClock(remaining)
     }
 
     function clockRefreshIntervalMs() {
         var ms = boardScreen.activeCountdownMs
         if (boardScreen.correspondenceRemainingMs !== null) {
-            // Wake at the next visible label change. Minute polling drifts,
-            // while a seconds timer wakes continuously for multi-day clocks.
-            var unit = ms >= 86400000 ? 3600000 : 60000
-            var untilChange = ms < 60000 ? Math.ceil(ms / 1000) * 1000
-                : (Math.floor((ms % unit) / 1000) + 1) * 1000
-            return Math.max(1, untilChange - boardScreen.clockAgeMs() % 1000)
+            return Math.max(1, chessDisplay.nextCorrespondenceTickMs(ms) - boardScreen.clockAgeMs() % 1000)
         }
         if (ms <= 15000) return 1000
         var boundary = ms <= 60000 ? 15000 : 60000

@@ -283,6 +283,8 @@ pub struct OngoingGameSummary {
     pub opponent_name: Option<String>,
     pub opponent_rating: Option<u32>,
     pub is_my_turn: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correspondence_seconds_left: Option<u32>,
 }
 
 // Boxed inside BoardState so rich identity stays one typed value without making

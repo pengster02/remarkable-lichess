@@ -1,6 +1,24 @@
 import QtQuick 2.5
 
 QtObject {
+    function formatCorrespondenceClock(remainingMs) {
+        if (remainingMs === 0) return "0m"
+        var minutes = Math.floor(remainingMs / 60000)
+        if (minutes === 0) return "<1m"
+        var hours = Math.floor(minutes / 60)
+        if (hours >= 24) return Math.floor(hours / 24) + "d " + hours % 24 + "h"
+        if (hours > 0) return hours + "h " + minutes % 60 + "m"
+        return minutes + "m"
+    }
+
+    function nextCorrespondenceTickMs(remainingMs) {
+        // Wake at the next visible label change. Minute polling drifts,
+        // while a seconds timer wakes continuously for multi-day clocks.
+        var unit = remainingMs >= 86400000 ? 3600000 : 60000
+        return remainingMs < 60000 ? Math.ceil(remainingMs / 1000) * 1000
+            : (Math.floor((remainingMs % unit) / 1000) + 1) * 1000
+    }
+
     function boardLeft(availableWidth, boardWidth, coordinateInset) {
         // Center when the gutter fits. Fixed symmetric gutters shrink narrow boards, and left alignment wastes wide space.
         return Math.max(coordinateInset, (availableWidth - boardWidth) / 2)
