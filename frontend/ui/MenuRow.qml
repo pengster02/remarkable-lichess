@@ -56,6 +56,7 @@ Rectangle {
             visible: menuRow.subtitle.length > 0
             width: parent.width
             text: menuRow.subtitle
+            textFormat: Text.PlainText
             font.pixelSize: theme.fontSmall
             elide: Text.ElideRight
             color: mouseArea.pressed

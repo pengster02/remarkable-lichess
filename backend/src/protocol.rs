@@ -1,5 +1,6 @@
 use crate::qr::QrMatrix;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub const MSG_TYPE_FRONTEND_TO_BACKEND: u32 = 1;
 pub const MSG_TYPE_BACKEND_TO_FRONTEND: u32 = 2;
@@ -180,6 +181,8 @@ pub enum FrontendMessage {
         speed: Option<String>,
         #[serde(default)]
         color: Option<String>,
+        #[serde(default)]
+        cursor: Option<HistoryCursor>,
     },
     CancelGameHistory { request_id: u32 },
     // POST /api/challenge/open -- a shareable link either side can open to start
@@ -319,6 +322,15 @@ pub struct GameAnalysisSummary {
 // lichess-org/api's GameJson.yaml/GamePlayers.yaml/GamePlayerUser.yaml schemas),
 // already reduced to this account's point of view server-side (your_color/result)
 // so the frontend never needs to know its own username to render this list.
+// Lichess can cut between games created in the same millisecond. A bare
+// timestamp drops ties, and a row offset assumes a stable order within ties.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HistoryCursor {
+    pub until_ms: i64,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub seen_at_cutoff: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct HistoryGameSummary {
     pub game_id: String,
@@ -662,6 +674,8 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
         games: Vec<HistoryGameSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<HistoryCursor>,
     },
     GameHistoryFailed { request_id: u32, message: String },
     OpenChallengeCreated {
@@ -1015,7 +1029,9 @@ mod tests {
     fn request_game_history_parses_with_and_without_filters() {
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(r#"{"type":"RequestGameHistory"}"#).unwrap(),
-            FrontendMessage::RequestGameHistory { request_id: None, rated: None, speed: None, color: None }
+            FrontendMessage::RequestGameHistory {
+                request_id: None, rated: None, speed: None, color: None, cursor: None
+            }
         );
         assert_eq!(
             serde_json::from_str::<FrontendMessage>(
@@ -1026,9 +1042,22 @@ mod tests {
                 request_id: Some(8),
                 rated: Some(true),
                 speed: Some("rapid".into()),
-                color: Some("white".into())
+                color: Some("white".into()),
+                cursor: None,
             }
         );
+    }
+
+    #[test]
+    fn request_game_history_accepts_the_returned_cursor() {
+        let cursor = HistoryCursor { until_ms: 1_765_526_400_000, seen_at_cutoff: BTreeSet::from(["arch0001".into()]) };
+        let response = serde_json::to_value(BackendMessage::GameHistory {
+            request_id: Some(1), games: vec![], next_cursor: Some(cursor.clone()),
+        }).unwrap();
+        let request = serde_json::from_value::<FrontendMessage>(serde_json::json!({
+            "type": "RequestGameHistory", "request_id": 2, "cursor": response["next_cursor"],
+        })).unwrap();
+        assert!(matches!(request, FrontendMessage::RequestGameHistory { cursor: Some(value), .. } if value == cursor));
     }
 
     #[test]
