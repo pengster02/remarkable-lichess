@@ -232,6 +232,7 @@ To run the emulator:
 To deploy to hardware:
 
 - A reMarkable with XOVI and AppLoad installed, reachable over SSH
+- Python 3 on the build and deployment host
 - A Rust toolchain with the `aarch64-unknown-linux-gnu` target, plus
   [`cross`](https://github.com/cross-rs/cross) — `build-rm.sh` cross-compiles in
   a Linux container, so Docker is needed here too
@@ -305,9 +306,11 @@ so the QML bundle and backend use the same protocol.
 TABLET_HOST=10.11.99.1 ./scripts/deploy.sh
 ```
 
-`build-rm.sh` produces `dist/remarkable-lichess`. `deploy.sh` stages and
-validates each copy under `/home/root/xovi/exthome/appload-backups`. It then
-installs the bundle and keeps the previously installed version there for rollback.
+`build-rm.sh` publishes `dist/remarkable-lichess` after the backend, manifest,
+and resources are ready. A failed build leaves the previous bundle available.
+`deploy.sh` takes a local snapshot before uploading, then stages and validates
+the copy under `/home/root/xovi/exthome/appload-backups`. It installs the bundle
+and keeps the previously installed version there for rollback.
 
 The build uses a local Qt resource compiler when available. Set `RCC_BIN` to
 select a particular `rcc` executable.
