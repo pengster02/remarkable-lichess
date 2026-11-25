@@ -8,6 +8,7 @@ AppDialog {
     dismissOnBackground: !saving
     property var backendSender
     property var nextRequestId
+    property bool gameExportCoolingDown: false
     property string gameId: ""
     property int pendingRequestId: 0
     readonly property bool saving: pendingRequestId > 0
@@ -15,7 +16,6 @@ AppDialog {
     property string errorMessage: ""
 
     Theme { id: theme; darkMode: dialog.darkMode }
-    Timer { id: retryDelay }
 
     Text {
         objectName: "pgnExportStatus"
@@ -23,6 +23,7 @@ AppDialog {
         text: dialog.saving ? "Saving PGN…"
             : dialog.errorMessage ? dialog.errorMessage
             : dialog.savedPath ? "PGN saved"
+            : dialog.gameExportCoolingDown ? "Lichess limited game export requests."
             : "Save game " + dialog.gameId + " as a PGN file."
         font.pixelSize: theme.fontBody
         color: dialog.errorMessage && !dialog.saving ? theme.errorText : theme.text
@@ -45,9 +46,9 @@ AppDialog {
         objectName: "savePgnButton"
         width: parent.width
         visible: !dialog.saving
-        enabled: !retryDelay.running
+        enabled: !dialog.gameExportCoolingDown
         highlighted: !dialog.savedPath
-        text: retryDelay.running ? "Retry available shortly"
+        text: dialog.gameExportCoolingDown ? "Retry available shortly"
             : dialog.errorMessage ? "Retry"
             : dialog.savedPath ? "Export again" : "Save PGN"
         onClicked: dialog.requestSave()
@@ -76,7 +77,7 @@ AppDialog {
     }
 
     function requestSave() {
-        if (!gameId || saving || retryDelay.running) return
+        if (!gameId || saving || gameExportCoolingDown) return
         pendingRequestId = nextRequestId()
         errorMessage = ""
         backendSender({type: "RequestPgnExport", game_id: gameId, request_id: pendingRequestId})
@@ -104,10 +105,6 @@ AppDialog {
             savedPath = message.path
         } else {
             errorMessage = message.message || "Could not save the PGN file."
-            if (message.retry_after_ms > 0) {
-                retryDelay.interval = message.retry_after_ms
-                retryDelay.restart()
-            }
         }
     }
 }

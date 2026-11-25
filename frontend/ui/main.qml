@@ -71,9 +71,13 @@ Rectangle {
     RequestCooldown { id: cloudCooldown }
     RequestCooldown { id: historyCooldown }
     RequestCooldown { id: openingCooldown }
+    // One timer covers both formats across navigation. Per-dialog timers miss
+    // other entry points, while disabling all lookups would block the archive list.
+    RequestCooldown { id: gameExportCooldown }
     property alias cloudEvaluationRetryAt: cloudCooldown.retryAt
     property alias historyRetryAt: historyCooldown.retryAt
     property alias openingExplorerRetryAt: openingCooldown.retryAt
+    property alias gameExportRetryAt: gameExportCooldown.retryAt
 
     // A shared sequence survives screen changes. Per-screen counters can repeat
     // IDs after navigation, and timestamps can collide across rapid requests.
@@ -114,7 +118,7 @@ Rectangle {
     }
 
     function openGameReview(gameId, game) {
-        if (game && game.review_supported === false) return
+        if (gameExportCooldown.running || (game && game.review_supported === false)) return
         if (root.pendingReview && root.pendingReview.gameId === gameId) return
         root.pendingReview = {id: root.nextRequestId(), gameId: gameId, game: game || null}
         root.sendToBackend({type: "RequestGameMoves", game_id: gameId,
@@ -506,8 +510,10 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "PgnExported" || msg.type === "PgnExportFailed") {
+                if (msg.type === "PgnExportFailed") gameExportCooldown.extend(msg.retry_after_ms)
                 pgnExport.handleMessage(msg)
             } else if (msg.type === "GameMoves" || msg.type === "GameMovesFailed") {
+                if (msg.type === "GameMovesFailed") gameExportCooldown.extend(msg.retry_after_ms)
                 var request = root.pendingReview
                 if (!request || msg.request_id !== request.id) return
                 root.pendingReview = null
@@ -609,6 +615,7 @@ Rectangle {
         id: pgnExport
         anchors.fill: parent
         darkMode: root.darkMode
+        gameExportCoolingDown: gameExportCooldown.running
         backendSender: root.sendToBackend
         nextRequestId: root.nextRequestId
     }
@@ -760,6 +767,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("openingReview")) {
                 item.openingReview = Qt.binding(function() { return root.pendingReview !== null })
+            }
+            if (item.hasOwnProperty("gameExportCoolingDown")) {
+                item.gameExportCoolingDown = Qt.binding(function() { return gameExportCooldown.running })
             }
             if (item.hasOwnProperty("openGame")) {
                 item.openGame = root.openGame

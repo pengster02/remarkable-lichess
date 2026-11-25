@@ -373,19 +373,10 @@ impl LichessClient {
     /// game export) -- sent anyway since every other call in this client
     /// does and an already-authenticated request costs nothing extra here.
     pub async fn export_game(&self, game_id: &str) -> Result<GameExport> {
-        let resp = self
-            .send_logged(
-                "export_game",
-                self.bearer(
-                    self.http
-                        .get(format!("{}/game/export/{}", self.base_url, game_id))
-                        .header("Accept", "application/json"),
-                ),
-            )
+        let resp = self.send_game_export("export_game", self.http
+            .get(format!("{}/game/export/{}", self.base_url, game_id))
+            .header(reqwest::header::ACCEPT, "application/json"))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("export_game", resp).await);
-        }
         Ok(resp.json::<GameExport>().await?)
     }
 
@@ -393,20 +384,30 @@ impl LichessClient {
         // Raw PGN preserves Lichess annotations byte for byte. Rebuilding it
         // loses metadata, and pgnInJson adds bytes to every review load.
         const MEDIA_TYPE: &str = "application/x-chess-pgn";
-        let response = self.send_logged("export PGN", self.bearer(self.http
+        let response = self.send_game_export("export PGN", self.http
             .get(format!("{}/game/export/{}", self.base_url, game_id.as_str()))
             .header(reqwest::header::ACCEPT, MEDIA_TYPE)
-            .query(&[("clocks", "true"), ("evals", "true"), ("opening", "true"), ("literate", "true")])))
+            .query(&[("clocks", "true"), ("evals", "true"), ("opening", "true"), ("literate", "true")]))
             .await?;
-        if !response.status().is_success() {
-            return Err(error_from_response("export PGN", response).await);
-        }
         let media_type = response.headers().get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next());
         anyhow::ensure!(media_type.is_some_and(|value| value.trim().eq_ignore_ascii_case(MEDIA_TYPE)),
             "Lichess did not return PGN");
         PgnExport::from_response(game_id, response.bytes().await?.to_vec())
+    }
+
+    async fn send_game_export(
+        &self, context: &str, builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        let response = self.send_logged(context, self.bearer(builder)).await?;
+        match response.status() {
+            status if status.is_success() => Ok(response),
+            // A slow error body can delay the gate or lose the 429 when the user cancels.
+            status @ reqwest::StatusCode::TOO_MANY_REQUESTS =>
+                Err(http_response_error(context, status, None)),
+            _ => Err(error_from_response(context, response).await),
+        }
     }
 
     pub async fn get_cloud_evaluation(&self, fen: &str) -> Result<Option<CloudEvaluation>> {

@@ -35,6 +35,7 @@ Rectangle {
     property bool loading: true
     readonly property bool loadingOlder: pendingHistoryRequest > 0 && !loading
     property bool openingReview: false
+    property bool gameExportCoolingDown: false
     property bool showFilters: false
     property string draftRated: "all"
     property string draftSpeed: "all"
@@ -206,6 +207,7 @@ Rectangle {
             title: "Game history"
             detail: gameHistoryScreen.openingReview ? "Opening game…"
                 : gameHistoryScreen.loading ? "Loading your games"
+                : gameHistoryScreen.gameExportCoolingDown ? "Game exports available shortly"
                 : gameHistoryScreen.games.length === 1 ? "1 game loaded"
                 : gameHistoryScreen.games.length > 1 ? gameHistoryScreen.games.length + " games loaded" : ""
         }
@@ -322,7 +324,7 @@ Rectangle {
 
                 MouseArea {
                     anchors.fill: parent
-                    enabled: gameCard.canReview || gameCard.canExport
+                    enabled: gameCard.canReview ? !gameHistoryScreen.gameExportCoolingDown : gameCard.canExport
                     onClicked: {
                         gameHistoryScreen.errorMessage = ""
                         if (gameCard.canReview) gameHistoryScreen.selectGameForReview(modelData)

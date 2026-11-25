@@ -1466,6 +1466,95 @@ TestCase {
         return endpoint.sentMessages.filter(function(message) { return message.type === "RequestPgnExport" })
     }
 
+    function gameMoveRequests() {
+        return endpoint.sentMessages.filter(function(message) { return message.type === "RequestGameMoves" })
+    }
+
+    function test_reviewCooldownBlocksTheArchiveAndPgnUntilItExpires() {
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "white", reason: "Checkmate", rating_diff: 5}
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var review = findChild(board, "reviewFinishedGameButton")
+        review.clicked()
+        var request = gameMoveRequests().slice(-1)[0]
+        endpoint.reply({type: "GameMovesFailed", request_id: request.request_id,
+                        message: "Lichess limited game export requests.", retry_after_ms: 60000})
+        verify(!review.enabled)
+        compare(review.text, "Retry available shortly")
+        compare(board.statusText, "You won · Checkmate · +5 rating")
+        var deadline = app.gameExportRetryAt
+
+        app.navigateTo("HomeScreen.qml")
+        app.navigateTo("GameHistoryScreen.qml")
+        var history = screen.item
+        endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest,
+                        games: [{game_id: "normal01"},
+                                {game_id: "var00001", variant: "crazyhouse", review_supported: false}]})
+        compare(findChild(history, "historyHeader").detail, "Game exports available shortly")
+        var rows = archiveRows(history)
+        compare(rows.length, 2)
+        verify(waitForRendering(history))
+        mouseClick(rows[0], rows[0].width / 2, rows[0].height / 2)
+        compare(gameMoveRequests().length, 1)
+        mouseClick(rows[1], rows[1].width / 2, rows[1].height / 2)
+        var dialog = findChild(app, "pgnExportDialog")
+        verify(dialog.visible && !dialog.saving)
+        compare(dialog.gameId, "var00001")
+        var save = findChild(dialog, "savePgnButton")
+        verify(!save.enabled)
+        compare(save.text, "Retry available shortly")
+        dialog.requestSave()
+        compare(pgnRequests().length, 0)
+        endpoint.reply({type: "PgnExportFailed", request_id: 0, game_id: "older001",
+                        message: "Old result", retry_after_ms: 20})
+        compare(app.gameExportRetryAt, deadline)
+        compare(dialog.errorMessage, "")
+
+        app.gameExportRetryAt = Date.now() + 50
+        tryCompare(save, "enabled", true)
+        compare(pgnRequests().length, 0)
+        save.clicked()
+        compare(pgnRequests().length, 1)
+        findChild(dialog, "closePgnExportButton").clicked()
+        mouseClick(rows[0], rows[0].width / 2, rows[0].height / 2)
+        compare(gameMoveRequests().length, 2)
+    }
+
+    function test_pgnCooldownBlocksNewReviewsWithoutClearingSavedPaths() {
+        app.openPgnExport("arch0001", true)
+        var dialog = findChild(app, "pgnExportDialog")
+        var saved = pgnRequests().slice(-1)[0]
+        var path = "/home/root/.config/remarkable-lichess/exports/arch0001.pgn"
+        endpoint.reply({type: "PgnExported", request_id: saved.request_id,
+                        game_id: saved.game_id, path: path})
+        findChild(dialog, "savePgnButton").clicked()
+        var limited = pgnRequests().slice(-1)[0]
+        endpoint.reply({type: "PgnExportFailed", request_id: limited.request_id,
+                        game_id: limited.game_id, message: "Rate limited", retry_after_ms: 60000})
+        compare(dialog.savedPath, path)
+        var close = findChild(dialog, "closePgnExportButton")
+        close.clicked()
+        app.openGame("another1")
+        var snapshot = boardState("another1")
+        snapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var review = findChild(board, "reviewFinishedGameButton")
+        verify(!review.enabled)
+        app.openGameReview("another1", null)
+        compare(gameMoveRequests().length, 0)
+        compare(board.statusText, "Draw")
+
+        app.gameExportRetryAt = Date.now() + 50
+        tryCompare(review, "enabled", true)
+        compare(gameMoveRequests().length, 0)
+        review.clicked()
+        compare(gameMoveRequests().length, 1)
+        compare(gameMoveRequests()[0].game_id, "another1")
+    }
+
     function test_reviewPgnExportTracksRetryReceiptAndCancellation() {
         app.openGameReview("arch0001", null)
         var request = endpoint.sentMessages.slice(-1)[0]

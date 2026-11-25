@@ -17,6 +17,7 @@ Rectangle {
     property var openGameReview: function() {}
     property var cancelGameReview: function() {}
     property bool openingReview: false
+    property bool gameExportCoolingDown: false
     // Keep review errors by Retry. A board notice replaces the result, and a separate dialog hides the summary.
     property string reviewOpenError: ""
     property bool darkMode: false
@@ -1326,8 +1327,9 @@ Rectangle {
             id: reviewButton
             width: parent.width
             text: boardScreen.openingReview ? "Opening game…"
+                : boardScreen.gameExportCoolingDown ? "Retry available shortly"
                 : boardScreen.reviewOpenError ? "Retry review" : reviewAction.idleText
-            enabled: !boardScreen.openingReview
+            enabled: !boardScreen.openingReview && !boardScreen.gameExportCoolingDown
             onClicked: boardScreen.openFinishedGameReview()
         }
     }
@@ -1877,7 +1879,8 @@ Rectangle {
     }
 
     function openFinishedGameReview() {
-        if (!boardScreen.gameOver || boardScreen.gameId.length === 0 || boardScreen.openingReview) return
+        if (!boardScreen.gameOver || boardScreen.gameId.length === 0 ||
+                boardScreen.openingReview || boardScreen.gameExportCoolingDown) return
         boardScreen.reviewOpenError = ""
         boardScreen.openGameReview(boardScreen.gameId, {
             game_id: boardScreen.gameId,

@@ -780,7 +780,12 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         variation_storage: Option<bool>,
     },
-    GameMovesFailed { request_id: u32, message: String },
+    GameMovesFailed {
+        request_id: u32,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
     ReviewVariations { review_id: u32, variations: ReviewVariations },
     ReviewVariationsLoadFailed { review_id: u32, message: String },
     ReviewVariationsSaved { review_id: u32, request_id: u32 },
@@ -1247,9 +1252,18 @@ mod tests {
         let failure = serde_json::to_value(BackendMessage::GameMovesFailed {
             request_id: 7,
             message: "unavailable".into(),
+            retry_after_ms: None,
         }).unwrap();
         assert_eq!(failure, serde_json::json!({
             "type": "GameMovesFailed", "request_id": 7, "message": "unavailable",
+        }));
+        let limited = serde_json::to_value(BackendMessage::GameMovesFailed {
+            request_id: 8,
+            message: "limited".into(),
+            retry_after_ms: Some(60000),
+        }).unwrap();
+        assert_eq!(limited, serde_json::json!({
+            "type": "GameMovesFailed", "request_id": 8, "message": "limited", "retry_after_ms": 60000,
         }));
     }
 
