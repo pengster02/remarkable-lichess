@@ -25,10 +25,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 /// Lichess requires no app registration -- any `client_id` works and is shown
@@ -50,6 +51,7 @@ pub const SCOPES: [&str; 4] = [
 pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 const CALLBACK_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CALLBACK_CONNECTIONS: usize = 4;
 const MAX_REQUEST_BYTES: usize = 8192;
 
 pub struct PendingLogin {
@@ -101,18 +103,22 @@ impl PendingLogin {
         exchange_code(base_url, &self.redirect_uri, &self.verifier, &code).await
     }
 
-    /// Loops rather than serving a single connection: browsers routinely open a
-    /// speculative connection or fetch /favicon.ico alongside the real redirect,
-    /// and treating the first arrival as the callback would abandon the sign-in
-    /// on a request that never carried a code.
     async fn wait_for_code(&self) -> Result<String> {
+        // Serial reads wait behind browser preconnects. Spawned readers need cleanup on cancellation.
+        let mut requests = FuturesUnordered::new();
         loop {
-            let (mut stream, _) = self
-                .listener
-                .accept()
-                .await
-                .context("sign-in callback listener failed")?;
-            let Some(target) = read_request_target(&mut stream).await else {
+            let (mut stream, target) = tokio::select! {
+                Some(request) = requests.next(), if !requests.is_empty() => request,
+                incoming = self.listener.accept(), if requests.len() < MAX_CALLBACK_CONNECTIONS => {
+                    let (mut stream, _) = incoming.context("sign-in callback listener failed")?;
+                    requests.push(async move {
+                        let target = read_request_target(&mut stream).await;
+                        (stream, target)
+                    });
+                    continue;
+                }
+            };
+            let Some(target) = target else {
                 respond(&mut stream, "400 Bad Request", "Bad request.").await;
                 continue;
             };
@@ -259,30 +265,20 @@ fn lan_address() -> Option<IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
-async fn read_request_target(stream: &mut TcpStream) -> Option<String> {
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 1024];
-    loop {
-        let read = tokio::time::timeout(CALLBACK_READ_TIMEOUT, stream.read(&mut chunk))
-            .await
-            .ok()?
-            .ok()?;
-        if read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-        // The request line is all we need, so stop at the first newline rather
-        // than draining headers we'll never look at.
-        if buffer.contains(&b'\n') || buffer.len() >= MAX_REQUEST_BYTES {
-            break;
-        }
+async fn read_request_target(stream: impl AsyncRead + Unpin) -> Option<String> {
+    let mut reader = BufReader::new(stream.take(MAX_REQUEST_BYTES as u64));
+    let mut line = Vec::new();
+    // Per-read timers restart on each fragment. A full HTTP parser would also wait for unused headers.
+    tokio::time::timeout(CALLBACK_READ_TIMEOUT, reader.read_until(b'\n', &mut line))
+        .await
+        .ok()?
+        .ok()?;
+    let line = std::str::from_utf8(line.strip_suffix(b"\n")?).ok()?;
+    let mut parts = line.split_ascii_whitespace();
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("GET"), Some(target), Some("HTTP/1.0" | "HTTP/1.1"), None) => Some(target.to_owned()),
+        _ => None,
     }
-    let head = String::from_utf8_lossy(&buffer);
-    let line = head.lines().next()?;
-    let mut parts = line.split_whitespace();
-    let method = parts.next()?;
-    let target = parts.next()?;
-    (method == "GET").then(|| target.to_owned())
 }
 
 async fn respond(stream: &mut TcpStream, status: &str, message: &str) {
@@ -412,6 +408,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn callback_reader_requires_a_complete_get_request_line() {
+        for invalid in [
+            "GET /callback",
+            "GET /callback HTTP/1.1",
+            "GET /callback\r\n",
+            "GET /callback HTTP/1.1 extra\r\n",
+            "POST /callback HTTP/1.1\r\n",
+        ] {
+            assert_eq!(read_request_target(invalid.as_bytes()).await, None, "{invalid:?}");
+        }
+        for valid in ["GET /callback HTTP/1.1\r\n", "GET /callback HTTP/1.0\n"] {
+            assert_eq!(
+                read_request_target(valid.as_bytes()).await.as_deref(),
+                Some("/callback"),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_reader_caps_the_request_line() {
+        let path = "a".repeat(MAX_REQUEST_BYTES - "GET / HTTP/1.1\r\n".len());
+        let at_limit = format!("GET /{path} HTTP/1.1\r\n");
+        let past_limit = format!("GET /{path}a HTTP/1.1\r\n");
+
+        assert_eq!(
+            read_request_target(at_limit.as_bytes()).await.unwrap().len(),
+            path.len() + 1,
+        );
+        assert_eq!(read_request_target(past_limit.as_bytes()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn callback_reader_deadline_spans_all_fragments() {
+        let (mut sender, receiver) = tokio::io::duplex(64);
+        let (target, ()) = tokio::join!(read_request_target(receiver), async {
+            sender.write_all(b"GET /callback ").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            sender.write_all(b"HTTP/1.1").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            let _ = sender.write_all(b"\r\n").await;
+        });
+
+        assert_eq!(target, None);
+    }
+
+    #[tokio::test]
     async fn exchange_code_returns_the_access_token() {
         use wiremock::matchers::{body_string_contains, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -461,6 +503,7 @@ mod tests {
         };
 
         let browser = tokio::spawn(async move {
+            let _preconnect = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             for (target, status) in [
                 ("/favicon.ico", "404 Not Found"),
                 ("/?error=access_denied&state=previous-attempt", "404 Not Found"),
