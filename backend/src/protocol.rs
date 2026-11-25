@@ -586,6 +586,10 @@ pub enum BackendMessage {
         game_id: String,
         position_id: PositionId,
         game_stream_connected: bool,
+        // Keep startup in the board snapshot. A separate event can race a
+        // reconnect, and missing legal moves also describe a finished position.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        awaiting_game_start: Option<bool>,
         // Pair release with its position. A separate acknowledgement can race premoves; last-move squares can match another line.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolved_move_request_id: Option<u32>,
@@ -1335,6 +1339,7 @@ mod tests {
             game_id: "g1".into(),
             position_id: PositionId(4_294_967_294),
             game_stream_connected: false,
+            awaiting_game_start: None,
             resolved_move_request_id: None,
             pending_game_action: None,
             opponent_departure: None,

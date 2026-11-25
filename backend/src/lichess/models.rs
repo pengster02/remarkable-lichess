@@ -110,6 +110,18 @@ pub struct GameState {
     pub expiration: Option<GameExpiration>,
 }
 
+impl GameState {
+    pub fn awaiting_start(&self) -> bool {
+        self.status == "created"
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        // Created has neither playable moves nor a result. A started-only
+        // check ends it early, while a fixed list of results misses new endings.
+        self.status != "started" && !self.awaiting_start()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GameExpiration {
     #[serde(rename = "idleMillis")]
