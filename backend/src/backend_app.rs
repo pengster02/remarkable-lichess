@@ -2203,12 +2203,7 @@ impl AppLoadBackend for LichessBackend {
             self.stop_cloud_evaluations().await;
             stop_game_request(&mut self.pending_match).await;
             stop_game_request(&mut self.pending_challenge_action).await;
-            stop_task(&mut self.move_submission).await;
-            stop_task(&mut self.game_action).await;
-            if let Some(session) = self.session.lock().await.as_mut() {
-                session.cancel_move();
-                session.cancel_game_action();
-            }
+            self.stop_game_stream().await;
             if !self.qr_sign_in_available {
                 self.send(replier, &BackendMessage::SignInOptions { qr_available: false });
                 if self.client.is_none() {
@@ -2257,6 +2252,11 @@ impl AppLoadBackend for LichessBackend {
                 self.start_home_refresh(replier, request_id, games_only).await;
             }
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
+            FrontendMessage::LeaveGame { game_id } => {
+                if self.game_stream.as_ref().is_some_and(|stream| stream.game_id == game_id) {
+                    self.stop_game_stream().await;
+                }
+            }
             FrontendMessage::CreateSeek { minutes, increment, rated, color, request_id } => {
                 self.start_match_request(replier, MatchRequest {
                     kind: MatchKind::Seek { rated, color }, minutes, increment, request_id,

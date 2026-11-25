@@ -103,6 +103,7 @@ pub enum FrontendMessage {
     // every ongoing game (see HomeState's ongoing_games), the frontend has to
     // say which one the user actually picked.
     ResumeGame { game_id: String },
+    LeaveGame { game_id: String },
     // `color` is "white"/"black"/"random" -- same enum Lichess's own
     // ChallengeColor.yaml uses for both /api/board/seek and /api/challenge/{username}.
     CreateSeek {
@@ -1032,6 +1033,9 @@ mod tests {
         ).unwrap();
         assert_eq!(legacy.message, FrontendMessage::ResumeGame { game_id: "g2".into() });
         assert_eq!(legacy.expected_game_id, None);
+        assert_eq!(serde_json::from_str::<FrontendMessage>(
+            r#"{"type":"LeaveGame","game_id":"g2"}"#,
+        ).unwrap(), FrontendMessage::LeaveGame { game_id: "g2".into() });
 
         let bound_move: FrontendRequest = serde_json::from_str(
             r#"{"type":"MakeMove","from":"e2","to":"e4","promotion":null,"expected_game_id":"g1","expected_position_id":4294967294,"request_id":9}"#,

@@ -631,7 +631,13 @@ Rectangle {
         source: "StartupScreen.qml"
         onSourceChanged: {
             root.cancelPendingReview()
+            // Release the board on navigation. A Home-only signal misses Review,
+            // while waiting for another ResumeGame leaves retries running.
+            var previousGameId = root.selectedGameId
             root.selectedGameId = ""
+            if (previousGameId) {
+                root.sendToBackend({type: "LeaveGame", game_id: previousGameId})
+            }
             if (root.pendingInvitation && root.pendingInvitation.openOnSuccess) {
                 root.pendingInvitation = Object.assign({}, root.pendingInvitation, {openOnSuccess: false})
             }
