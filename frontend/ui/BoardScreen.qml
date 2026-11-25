@@ -15,7 +15,10 @@ Rectangle {
     property var nextRequestId
     property var navigateTo
     property var openGameReview: function() {}
+    property var cancelGameReview: function() {}
     property bool openingReview: false
+    // Keep review errors by Retry. A board notice replaces the result, and a separate dialog hides the summary.
+    property string reviewOpenError: ""
     property bool darkMode: false
     property string boardTheme: "brown"
     property string pieceSet: "cburnett"
@@ -28,6 +31,7 @@ Rectangle {
     }
 
     property string gameId: ""
+    onGameIdChanged: reviewOpenError = ""
     property string requestedGameId: ""
     property string streamError: ""
     property bool streamReconnecting: false
@@ -1299,11 +1303,41 @@ Rectangle {
         }
     }
 
+    component FinishedReviewAction: Column {
+        id: reviewAction
+        property string idleText
+        property alias buttonName: reviewButton.objectName
+        property alias highlighted: reviewButton.highlighted
+        width: parent.width
+        visible: boardScreen.gameOver && boardScreen.gameId.length > 0
+        spacing: theme.spacingXs
+
+        Text {
+            objectName: "finishedReviewError"
+            width: parent.width
+            visible: text.length > 0
+            text: boardScreen.reviewOpenError
+            color: theme.errorText
+            font.pixelSize: theme.fontSmall
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+        }
+        AppButton {
+            id: reviewButton
+            width: parent.width
+            text: boardScreen.openingReview ? "Opening game…"
+                : boardScreen.reviewOpenError ? "Retry review" : reviewAction.idleText
+            enabled: !boardScreen.openingReview
+            onClicked: boardScreen.openFinishedGameReview()
+        }
+    }
+
     Loader {
         id: gameActionsLoader
         objectName: "gameActionsLoader"
         anchors.fill: parent
         active: boardScreen.showGameActions
+        onActiveChanged: if (!active && boardScreen.openingReview) boardScreen.cancelGameReview()
         sourceComponent: Component {
         AppDialog {
             anchors.fill: parent
@@ -1330,13 +1364,10 @@ Rectangle {
             color: theme.textMuted
         }
 
-        AppButton {
-            width: parent.width
-            text: boardScreen.openingReview ? "Opening game…" : "Review this game"
-            enabled: !boardScreen.openingReview
+        FinishedReviewAction {
+            buttonName: "reviewFinishedActionButton"
+            idleText: "Review this game"
             highlighted: true
-            visible: boardScreen.gameOver && boardScreen.gameId.length > 0
-            onClicked: boardScreen.openFinishedGameReview()
         }
         AppButton {
             width: parent.width
@@ -1539,6 +1570,7 @@ Rectangle {
         }
         AppButton {
             width: parent.width
+            objectName: "closeGameActionsButton"
             text: "Close"
             onClicked: boardScreen.showGameActions = false
         }
@@ -1723,6 +1755,7 @@ Rectangle {
         objectName: "gameOverLoader"
         anchors.fill: parent
         active: boardScreen.gameOver && boardScreen.showGameOverDialog
+        onActiveChanged: if (!active && boardScreen.openingReview) boardScreen.cancelGameReview()
         z: 300
         sourceComponent: Component {
             AppDialog {
@@ -1750,16 +1783,13 @@ Rectangle {
                         boardScreen.navigateTo("HomeScreen.qml")
                     }
                 }
-                AppButton {
-                    width: parent.width
-                    objectName: "reviewFinishedGameButton"
-                    text: boardScreen.openingReview ? "Opening game…" : "Review game"
-                    enabled: !boardScreen.openingReview
-                    visible: boardScreen.gameId.length > 0
-                    onClicked: boardScreen.openFinishedGameReview()
+                FinishedReviewAction {
+                    buttonName: "reviewFinishedGameButton"
+                    idleText: "Review game"
                 }
                 AppButton {
                     width: parent.width
+                    objectName: "viewFinalBoardButton"
                     text: "View final board"
                     onClicked: boardScreen.showGameOverDialog = false
                 }
@@ -1847,7 +1877,8 @@ Rectangle {
     }
 
     function openFinishedGameReview() {
-        boardScreen.showGameOverDialog = false
+        if (!boardScreen.gameOver || boardScreen.gameId.length === 0 || boardScreen.openingReview) return
+        boardScreen.reviewOpenError = ""
         boardScreen.openGameReview(boardScreen.gameId, {
             game_id: boardScreen.gameId,
             opponent_name: boardScreen.opponentName,
@@ -2089,7 +2120,9 @@ Rectangle {
             boardScreen.opponentDeparture = msg.gone
                 ? {claim_win_in_seconds: msg.claim_win_in_seconds}
                 : null
-        } else if (msg.type === "GameMovesFailed" || msg.type === "ErrorMsg") {
+        } else if (msg.type === "GameMovesFailed") {
+            boardScreen.reviewOpenError = msg.message || "Could not open this game for review."
+        } else if (msg.type === "ErrorMsg") {
             boardScreen.boardNotice = {text: msg.message, positionBound: false}
         }
     }
