@@ -11,6 +11,8 @@ Rectangle {
     property bool darkMode: false
     property bool waiting: false
     property string waitingLabel: ""
+    // One preference covers player matches. A global setting would imply rated
+    // computer play, while per-action toggles would repeat the same choice.
     property bool rated: false
     // "white"/"black"/"random" -- same enum Lichess's own ChallengeColor.yaml
     // uses for seeks, direct challenges, and computer games.
@@ -347,7 +349,12 @@ Rectangle {
             title: "Game preferences"
             visible: seekScreen.showingSetup
 
-            Text { text: "Game type"; font.pixelSize: theme.fontLabel; color: theme.textMuted }
+            Text {
+                objectName: "playerGameTypeLabel"
+                text: "Games with other players"
+                font.pixelSize: theme.fontLabel
+                color: theme.textMuted
+            }
             SegmentedControl {
                 objectName: "gameTypeControl"
                 width: parent.width
@@ -490,7 +497,7 @@ Rectangle {
                 width: parent.width
                 text: seekScreen.pendingAction === "computer"
                     ? "Starting game…"
-                    : "Start computer game"
+                    : "Start casual computer game"
                 enabled: seekScreen.pendingAction.length === 0
                 onClicked: seekScreen.submitComputerGame()
             }
