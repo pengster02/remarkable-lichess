@@ -53,6 +53,49 @@ TestCase {
         return null
     }
 
+    function test_boardWaitsForStartAndAcceptsAMoveFromTheSamePosition() {
+        app.openGame("starting")
+        var snapshot = boardState("starting")
+        snapshot.position_id = 14
+        snapshot.game_stream_connected = true
+        snapshot.awaiting_game_start = true
+        snapshot.initial_clock_ms = 600000
+        snapshot.main_clock_paused = true
+        endpoint.reply(snapshot)
+
+        var board = screen.item
+        verify(!board.gameOver)
+        verify(!findChild(board, "gameOverLoader").active)
+        compare(board.topStatusText(), "Waiting for game to start")
+        compare(board.activeTurnColor, "")
+        verify(findChild(board, "boardBackButton").visible)
+        compare(board.displayClockFor("white"), 600000)
+        var before = endpoint.sentMessages.length
+        board.requestGameAction({type: "Resign"}, "Resign")
+        board.onSquareTapped("e2")
+        board.onBoardGesture("e2", "e4")
+        compare(board.selectedSquare, "")
+        compare(endpoint.sentMessages.length, before)
+
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "starting"})
+        compare(board.topStatusText(), "Waiting for game to start")
+        delete snapshot.awaiting_game_start
+        snapshot.main_clock_paused = false
+        snapshot.can_abort = true
+        snapshot.legal_moves = [{from: "e2", to: "e4"}]
+        endpoint.reply(snapshot)
+        compare(board.topStatusText(), "Your move")
+        compare(board.activeTurnColor, "white")
+        verify(!findChild(board, "boardBackButton").visible)
+        verify(board.canAbort)
+        board.onBoardGesture("e2", "e4")
+        var move = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(move.type, "MakeMove")
+        compare(move.expected_position_id, 14)
+        compare(move.from, "e2")
+        compare(move.to, "e4")
+    }
+
     function verifyBoardLabels(board, flipped) {
         var corner = findChild(board, flipped ? "boardSquare-h1" : "boardSquare-a8")
         var origin = corner.mapToItem(board, 0, 0)

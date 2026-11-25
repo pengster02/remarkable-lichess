@@ -47,7 +47,7 @@ Rectangle {
     property string previewCapturedPiece: ""
     property string turn: "white"
     property string liveTurn: "white"
-    readonly property string activeTurnColor: boardScreen.gameOver || boardScreen.awaitingBoard ||
+    readonly property string activeTurnColor: !boardScreen.gameplayAvailable || boardScreen.awaitingBoard ||
         boardScreen.streamError.length > 0 ? "" : boardScreen.turn
     // Pushed from main.qml's root state (TokenVerified's username) -- shown
     // on your own player bar below the board, matching every reference
@@ -114,12 +114,12 @@ Rectangle {
     property bool canBerserk: false
     property bool canOfferDraw: false
     property bool canOfferTakeback: false
-    readonly property bool offerActionsAvailable: !boardScreen.gameOver &&
+    readonly property bool offerActionsAvailable: boardScreen.gameplayAvailable &&
         !boardScreen.streamReconnecting && boardScreen.streamError.length === 0
     property bool canGiveTime: false
     property var opponentDeparture: null
     readonly property bool opponentGone: boardScreen.opponentDeparture !== null &&
-        !boardScreen.gameOver && !boardScreen.streamReconnecting && boardScreen.streamError.length === 0
+        boardScreen.gameplayAvailable && !boardScreen.streamReconnecting && boardScreen.streamError.length === 0
     readonly property var claimWinInSeconds: boardScreen.opponentGone
         ? boardScreen.opponentDeparture.claim_win_in_seconds : null
     readonly property bool canClaimDeparture: boardScreen.claimWinInSeconds === 0
@@ -217,9 +217,11 @@ Rectangle {
         }
     }
     property bool gameOver: false
+    property bool awaitingGameStart: false
+    readonly property bool gameplayAvailable: !boardScreen.gameOver && !boardScreen.awaitingGameStart
     property bool showGameOverDialog: false
     readonly property bool canNavigateHome: boardScreen.gameOver || boardScreen.awaitingBoard ||
-        boardScreen.streamError.length > 0
+        boardScreen.awaitingGameStart || boardScreen.streamError.length > 0
     property string gameResult: ""
     property string gameReason: ""
     property bool annotationMode: false
@@ -539,6 +541,7 @@ Rectangle {
     function topStatusText() {
         if (boardScreen.gameOver && boardScreen.showGameOverDialog) return ""
         if (boardScreen.streamError.length > 0) return boardScreen.streamError
+        if (boardScreen.awaitingGameStart) return "Waiting for game to start"
         if (boardScreen.streamReconnecting) {
             return boardScreen.statusText.length > 0
                 ? "Reconnecting · " + boardScreen.statusText
@@ -581,7 +584,7 @@ Rectangle {
 
     function requestGameAction(message, action) {
         if (boardScreen.gameId.length === 0 || boardScreen.awaitingBoard ||
-                boardScreen.gameOver || boardScreen.streamError.length > 0 ||
+                !boardScreen.gameplayAvailable || boardScreen.streamError.length > 0 ||
                 boardScreen.pendingActionRequest !== null || !boardScreen.nextRequestId) return
         message.request_id = boardScreen.nextRequestId()
         message.expected_game_id = boardScreen.gameId
@@ -884,7 +887,7 @@ Rectangle {
     }
 
     function onSquareTapped(squareName) {
-        if (boardScreen.gameOver || boardScreen.viewingHistory ||
+        if (!boardScreen.gameplayAvailable || boardScreen.viewingHistory ||
                 moveRequestGate.pending !== null) return
         // Not a correctness fix (legalMoves is always keyed to whoever's turn it
         // actually is, per the current FEN, so a tap during the opponent's turn
@@ -942,7 +945,7 @@ Rectangle {
             boardScreen.onSquareTapped(to)
             return
         }
-        if (boardScreen.gameOver || boardScreen.pendingMoveConfirmation !== null ||
+        if (!boardScreen.gameplayAvailable || boardScreen.pendingMoveConfirmation !== null ||
                 moveRequestGate.pending !== null ||
                 !boardScreen.isOwnPiece(boardScreen.pieceAt(from))) {
             return
@@ -1567,7 +1570,7 @@ Rectangle {
             busy: boardScreen.pendingGameAction === "Resign"
             critical: true
             extraConfirm: boardScreen.confirmResign
-            visible: !boardScreen.gameOver && !boardScreen.canAbort
+            visible: boardScreen.gameplayAvailable && !boardScreen.canAbort
             onConfirmed: boardScreen.requestGameAction({type: "Resign"}, "Resign")
         }
         AppButton {
@@ -1863,6 +1866,7 @@ Rectangle {
             boardScreen.gameResult = result
         }
         boardScreen.gameOver = true
+        boardScreen.awaitingGameStart = false
         boardScreen.streamReconnecting = false
         boardScreen.gameReason = reason
         boardScreen.legalMoves = []
@@ -1898,6 +1902,8 @@ Rectangle {
             var nextLastMove = msg.last_move || null
             var nextGameId = msg.game_id || ""
             var gameChanged = boardScreen.gameId !== nextGameId
+            var awaitingStart = msg.awaiting_game_start === true
+            var startChanged = boardScreen.awaitingGameStart !== awaitingStart
             if (msg.outcome && typeof msg.outcome.rating_diff === "number") {
                 boardScreen.gameRatingChange = {gameId: nextGameId, diff: msg.outcome.rating_diff}
             }
@@ -1932,16 +1938,17 @@ Rectangle {
             }
             boardScreen.gameId = nextGameId
             boardScreen.livePositionId = msg.position_id
+            boardScreen.awaitingGameStart = awaitingStart
             boardScreen.opponentDeparture = msg.opponent_departure || null
-            if (promptScopeChanged) {
+            if (promptScopeChanged || startChanged) {
                 // Invalidate unsent prompts on the authoritative change. FEN
                 // alone misses rewrites, and rechecking legality could still
                 // submit a move selected on the old line.
                 boardScreen.clearMovePrompts()
-                boardScreen.clearAnnotations()
+                if (promptScopeChanged) boardScreen.clearAnnotations()
                 boardScreen.resetGameActionControls()
                 if (boardScreen.pendingPremove !== null &&
-                        (gameChanged || !boardChanged || !boardScreen.extendsLiveHistory(msg))) {
+                        (startChanged || gameChanged || !boardChanged || !boardScreen.extendsLiveHistory(msg))) {
                     boardScreen.cancelPremove()
                 }
             }
@@ -1955,6 +1962,7 @@ Rectangle {
             var previous = boardChanged || initialInCheck !== boardScreen.initialInCheck
                 ? boardScreen.captureBoardAppearance() : null
             boardScreen.initialInCheck = initialInCheck
+            if (boardChanged || startChanged) boardScreen.legalMoves = msg.legal_moves
             if (boardChanged) {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
@@ -1984,7 +1992,6 @@ Rectangle {
                 boardScreen.historyIndex = boardScreen.positionHistory.length - 1
                 boardScreen.turn = msg.turn
                 boardScreen.liveTurn = msg.turn
-                boardScreen.legalMoves = msg.legal_moves
                 boardScreen.lastMove = nextLastMove
                 boardScreen.liveLastMove = nextLastMove
                 boardScreen.inCheck = msg.in_check || false

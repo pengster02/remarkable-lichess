@@ -222,7 +222,8 @@ fn to_board_state(
     };
     let elapsed_ms = elapsed_whole_millis(session.state_received_at, now);
     let active = state.status == "started";
-    let main_clock_paused = active && state.expiration.is_some();
+    let awaiting_start = state.awaiting_start();
+    let main_clock_paused = awaiting_start || (active && state.expiration.is_some());
     let mut white_time_ms = state.wtime;
     let mut black_time_ms = state.btime;
     if active && session.initial_clock_ms.is_some() && !main_clock_paused {
@@ -242,6 +243,7 @@ fn to_board_state(
         game_id: session.game_id.clone(),
         position_id: session.position_id,
         game_stream_connected: session.game_stream_connected,
+        awaiting_game_start: awaiting_start.then_some(true),
         resolved_move_request_id: None,
         pending_game_action: session.pending_game_action.as_ref().filter(|_| active)
             .map(|pending| Box::new(pending.request)),
@@ -280,7 +282,7 @@ fn to_board_state(
         first_move_time_ms: first_move_time_ms.map(Box::new),
         main_clock_paused,
         initial_clock_ms: session.initial_clock_ms.map(Box::new),
-        outcome: (!active).then(|| {
+        outcome: state.is_terminal().then(|| {
             let mut result = outcome(&state.status, state.winner.as_deref());
             result.rating_diff = session.your_rating_diff;
             Box::new(result)

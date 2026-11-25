@@ -31,6 +31,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MOVE_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(2);
+const START_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const CLOUD_QUEUE_CAPACITY: usize = 4;
 const LICHESS_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
@@ -86,6 +87,18 @@ impl GameStreamReadiness {
         // Waiting for socket expiry stalls stale boards. Reopening immediately interrupts recoverable streams.
         if let Self::Ready(deadline) = self {
             deadline.get_or_insert(now + MOVE_RECONCILIATION_TIMEOUT);
+        }
+    }
+
+    fn accept_state(&mut self, awaiting_start: bool, now: Instant) {
+        if awaiting_start {
+            // Start can go unannounced on this stream. Waiting for a move
+            // blocks White, and reopening immediately can churn the endpoint.
+            if !matches!(self, Self::Ready(Some(_))) {
+                *self = Self::Ready(Some(now + START_SNAPSHOT_REFRESH_INTERVAL));
+            }
+        } else {
+            *self = Self::Ready(None);
         }
     }
 }
@@ -1928,7 +1941,7 @@ fn spawn_game_stream(
                                 GameStreamMessage::Full(full) => {
                                     match GameSession::from_game_full(&full, &my_id) {
                                         Ok((mut s, mut board_msg)) => {
-                                            readiness = GameStreamReadiness::Ready(None);
+                                            readiness.accept_state(full.state.awaiting_start(), Instant::now());
                                             if let Some(previous) = guard.as_mut().filter(|session| {
                                                 session.game_id == s.game_id
                                             }) {
@@ -1946,7 +1959,7 @@ fn spawn_game_stream(
                                             }) {
                                                 s.inherit_pending_requests(previous, &mut board_msg);
                                             }
-                                            if full.state.status != "started" {
+                                            if full.state.is_terminal() {
                                                 stream_finished = true;
                                                 *guard = None;
                                                 Some(board_msg)
@@ -1975,11 +1988,12 @@ fn spawn_game_stream(
                                 }
                                 GameStreamMessage::State(state) => match guard.as_mut() {
                                     Some(s) if matches!(readiness, GameStreamReadiness::Ready(_)) && s.game_id == game_id => {
-                                        let is_over = state.status != "started";
+                                        let is_over = state.is_terminal();
+                                        let awaiting_start = state.awaiting_start();
                                         let fallback = is_over.then(|| outcome(&state.status, state.winner.as_deref()));
                                         let result = match s.apply_stream_update(state) {
                                             Ok(Some(msg)) => {
-                                                readiness = GameStreamReadiness::Ready(None);
+                                                readiness.accept_state(awaiting_start, Instant::now());
                                                 Some(msg)
                                             }
                                             Ok(None) => None,
