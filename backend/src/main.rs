@@ -24,7 +24,9 @@ async fn main() {
     // either failure -- log a clean, greppable error through the logger this
     // file already just initialized instead, matching how every other error
     // in this backend is surfaced.
-    let mut app = match AppLoad::new(LichessBackend::new(token_path)) {
+    let qr_sign_in_available = !matches!(std::env::var("REMARKABLE_LICHESS_SIGN_IN").as_deref(), Ok("token"));
+    let backend = LichessBackend::new(token_path).with_qr_sign_in_available(qr_sign_in_available);
+    let mut app = match AppLoad::new(backend) {
         Ok(app) => app,
         Err(e) => {
             log::error!("failed to initialize AppLoad: {e}");

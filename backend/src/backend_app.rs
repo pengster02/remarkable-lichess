@@ -308,6 +308,7 @@ fn wifi_link_state() -> Option<bool> {
 }
 
 pub struct LichessBackend {
+    qr_sign_in_available: bool,
     token_path: PathBuf,
     // Sibling file next to the token (see settings::load/save) -- app-level
     // preferences (see backend/src/settings.rs), not per-account like the token.
@@ -355,6 +356,7 @@ impl LichessBackend {
     pub fn new(token_path: PathBuf) -> Self {
         let settings_path = token_path.with_file_name("settings.json");
         Self {
+            qr_sign_in_available: true,
             token_path,
             settings_path,
             client: None,
@@ -383,6 +385,11 @@ impl LichessBackend {
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
         }
+    }
+
+    pub fn with_qr_sign_in_available(mut self, available: bool) -> Self {
+        self.qr_sign_in_available = available;
+        self
     }
 
     fn send(&self, replier: &BackendReplier<Self>, msg: &BackendMessage) {
@@ -512,6 +519,13 @@ impl LichessBackend {
     }
 
     async fn start_qr_sign_in(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>) {
+        if !self.qr_sign_in_available {
+            self.send(replier, &BackendMessage::LoginFailed {
+                request_id,
+                reason: "Use a personal access token to sign in with the emulator.".into(),
+            });
+            return;
+        }
         let request = SignInRequest { method: SignInMethod::Qr, request_id };
         if request_id.is_some() && self.is_current_sign_in(request) {
             return;
@@ -2105,6 +2119,12 @@ impl AppLoadBackend for LichessBackend {
             if let Some(session) = self.session.lock().await.as_mut() {
                 session.cancel_move();
                 session.cancel_game_action();
+            }
+            if !self.qr_sign_in_available {
+                self.send(replier, &BackendMessage::SignInOptions { qr_available: false });
+                if self.client.is_none() {
+                    self.spawn_connectivity_report(replier);
+                }
             }
             self.handle_request_settings(replier);
             if self.client.is_none() {

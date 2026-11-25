@@ -90,6 +90,24 @@ TestCase {
         compare(qr.width, qr.height)
     }
 
+    function test_tokenOnlySignInNeedsNoChallenge() {
+        var screen = createTemporaryObject(freshLogin, login, {qrSignInAvailable: false})
+        verify(screen !== null)
+        screen.backendSender = function(msg) { sent.push(msg) }
+        screen.nextRequestId = function() { return ++sequence }
+        screen.startLogin()
+        compare(sent.length, 0)
+        verify(screen.showingTokenEntry)
+        verify(!screen.showingQr && !screen.showingScanAlternative)
+
+        findChild(screen, "tokenField").text = "synthetic-fixture-token"
+        screen.saveToken()
+        compare(sent.length, 1)
+        compare(sent[0].type, "SaveToken")
+        verify(sent[0].request_id > 0)
+        verify(screen.manualPending)
+    }
+
     // The matrix is only as good as where it lands on screen: this pins the
     // quiet-zone offset and the per-module scale against the painted pixels.
     // The synthetic matrix is a checkerboard starting dark at (0,0).

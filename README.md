@@ -279,8 +279,9 @@ or change it in the app. Signing out in the app persists across launches. The
 emulator mounts `backend/` and `frontend/` as read-only sources. Keep a custom
 `TOKEN_FILE` in the checkout root or another host-only directory.
 
-QR sign-in requires your phone to reach the backend's callback address. For the
-default Docker network, use the token prompt above or the in-app token field.
+The Docker emulator opens the token form by default. Use the prompt above or
+the in-app field. Tablet QR sign-in requires your phone to reach the backend's
+callback address.
 
 For a quick frontend-only redeploy into a running emulator:
 
