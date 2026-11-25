@@ -50,6 +50,8 @@ TestCase {
 
         verify(!minutes.activeFocus)
         verify(!seek.keyboardActive)
+        minutes.clear()
+        verify(!findChild(minutes, "textFieldPlaceholder").visible)
     }
 
     function test_pageNavigationDismissesTheKeyboard() {
