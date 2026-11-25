@@ -4,13 +4,14 @@ use crate::lichess::models::{
     PlayingResponse, UserStatus,
 };
 use crate::lichess::stream::parse_ndjson_line;
-use crate::protocol::HistoryCursor;
+use crate::protocol::{HistoryCursor, OpeningDatabase, OpeningExplorerData};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 
 #[derive(Clone)]
 pub struct LichessClient {
     http: reqwest::Client,
+    explorer_http: reqwest::Client,
     base_url: String,
     token: String,
     request_timeout: std::time::Duration,
@@ -68,6 +69,7 @@ pub(crate) fn is_rate_limited(error: &anyhow::Error) -> bool {
 /// Shared with the OAuth sign-in flow (see lichess::oauth), which talks to the
 /// same host before any client exists to hold it.
 pub const LICHESS_BASE_URL: &str = "https://lichess.org";
+const OPENING_EXPLORER_URL: &str = "https://explorer.lichess.org";
 
 /// Unauthenticated "is Lichess there at all" check, for the sign-in screen --
 /// every other connectivity report comes from a real API call that needs a
@@ -152,6 +154,14 @@ impl LichessClient {
             .expect("reqwest client with a timeout always builds");
         Self {
             http,
+            // Rated requests carry the token only to the published origin.
+            // Shared redirects allow another URL, and anonymous rated reads fail.
+            explorer_http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::none())
+                .user_agent("remarkable-lichess")
+                .build()
+                .expect("opening explorer HTTP client always builds"),
             base_url,
             token,
             request_timeout: ONE_SHOT_REQUEST_TIMEOUT,
@@ -394,6 +404,34 @@ impl LichessClient {
             return Err(error_from_response("get_cloud_evaluation", resp).await);
         }
         Ok(Some(resp.json::<CloudEvaluation>().await?))
+    }
+
+    pub async fn get_opening_explorer(
+        &self, database: OpeningDatabase, root_fen: &str, play: &[String],
+    ) -> Result<OpeningExplorerData> {
+        self.get_opening_explorer_at(OPENING_EXPLORER_URL, database, root_fen, play).await
+    }
+
+    async fn get_opening_explorer_at(
+        &self, base_url: &str, database: OpeningDatabase, root_fen: &str, play: &[String],
+    ) -> Result<OpeningExplorerData> {
+        let route = match database {
+            OpeningDatabase::Masters => "masters",
+            OpeningDatabase::Lichess => "lichess",
+        };
+        let mut request = self.explorer_http.get(format!("{base_url}/{route}"))
+            .query(&[("fen", root_fen), ("moves", "12"), ("topGames", "0")]);
+        if !play.is_empty() {
+            request = request.query(&[("play", play.join(","))]);
+        }
+        if database == OpeningDatabase::Lichess {
+            request = self.bearer(request.query(&[("recentGames", "0")]));
+        }
+        let response = self.send_logged("opening explorer", request).await?;
+        if !response.status().is_success() {
+            return Err(error_from_response("opening explorer", response).await);
+        }
+        Ok(response.json().await?)
     }
 
     pub async fn make_move(&self, game_id: &str, uci: &str) -> Result<()> {
@@ -1310,6 +1348,36 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         assert_eq!(client.get_cloud_evaluation("8/8/8/8/8/8/8/K6k w - - 0 1").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn opening_explorer_only_authenticates_the_rated_database_and_refuses_redirects() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        Mock::given(method("GET")).and(path("/masters"))
+            .and(query_param("fen", fen)).and(query_param("play", "e2e4,e7e5"))
+            .and(query_param("moves", "12")).and(query_param("topGames", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "white": 5, "draws": 3, "black": 4,
+                "opening": {"eco": "C20", "name": "King's Pawn Game"},
+                "moves": [{"san": "Nf3", "uci": "g1f3", "white": 3, "draws": 2, "black": 2}],
+            }))).expect(1).mount(&server).await;
+        Mock::given(method("GET")).and(path("/lichess"))
+            .and(header("Authorization", "Bearer test-token")).and(query_param("recentGames", "0"))
+            .respond_with(ResponseTemplate::new(302).insert_header("Location", "/unexpected"))
+            .expect(1).mount(&server).await;
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let data = client.get_opening_explorer_at(&server.uri(), OpeningDatabase::Masters, fen,
+                                                &["e2e4".into(), "e7e5".into()]).await.unwrap();
+        assert_eq!(data.opening.unwrap().eco, "C20");
+        assert_eq!(data.moves[0].san, "Nf3");
+        assert!(client.get_opening_explorer_at(&server.uri(), OpeningDatabase::Lichess, fen, &[]).await.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].headers.get("authorization").is_none());
+        assert_eq!(requests[1].url.path(), "/lichess");
     }
 
     #[tokio::test]

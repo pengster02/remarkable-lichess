@@ -2003,6 +2003,96 @@ TestCase {
         compare(review.currentFen(), d4)
     }
 
+    function test_openingExplorerLoadsOnDemandAndTriesAContinuation() {
+        var reviewId = choose("openings")
+        var e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var e5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: ["e4"], fens: [startFen, e4]})
+        var review = screen.item
+        function requests() {
+            return endpoint.sentMessages.filter(function(message) { return message.type === "RequestOpeningExplorer" })
+        }
+        function openingReply(request, type, fields) {
+            endpoint.reply(Object.assign({type: type, request_id: request.request_id, review_id: request.review_id,
+                                          database: request.database, fen: request.fen}, fields))
+        }
+        review.goNext()
+        compare(requests().length, 0)
+        review.showReviewOptions = true
+        var open = findChild(review, "openOpeningExplorerButton")
+        verify(open && waitForRendering(open))
+        mouseClick(open, open.width / 2, open.height / 2)
+        var dialog = findChild(review, "openingExplorerDialog")
+        var selector = findChild(dialog, "openingDatabaseSelector")
+        var status = findChild(dialog, "openingExplorerStatus")
+        verify(dialog.visible)
+        compare(status.text, "Loading opening statistics…")
+        var first = requests()[0]
+        compare(first, {type: "RequestOpeningExplorer", request_id: first.request_id, review_id: reviewId,
+                        database: "masters", fen: e4, root_fen: startFen, played_san: ["e4"]})
+
+        selector.selected("lichess")
+        var rated = requests()[1]
+        compare(rated.database, "lichess")
+        var data = {white: 5, draws: 2, black: 3, opening: {eco: "B00", name: "King's Pawn Game"},
+                    moves: [{uci: "e7e5", san: "e5", white: 4, draws: 2, black: 2}]}
+        openingReply(first, "OpeningExplorer", {data: data})
+        compare(status.text, "Loading opening statistics…")
+        openingReply(rated, "OpeningExplorerFailed",
+                     {message: "Lichess limited opening statistics requests.", retry_after_ms: 400})
+        var retry = findChild(dialog, "openingExplorerRetry")
+        verify(retry.visible && !retry.enabled)
+        compare(retry.text, "Retry available shortly")
+        selector.selected("masters")
+        compare(requests().length, 2)
+        selector.selected("lichess")
+        compare(requests().length, 2)
+        tryCompare(retry, "enabled", true)
+        compare(requests().length, 2)
+        retry.clicked()
+        compare(requests().length, 3)
+        var retried = requests()[2]
+        compare(retried.database, "lichess")
+        openingReply(retried, "OpeningExplorer", {data: data})
+        compare(findChild(dialog, "openingName").text, "B00 · King's Pawn Game")
+        compare(status.text, "10 games")
+        var move = findChild(dialog, "openingMove-e7e5")
+        compare(move.subtitle, "8 games\n50% White · 25% Draw · 25% Black")
+        verify(!findChild(move, "menuRowSubtitle").truncated)
+
+        findChild(dialog, "closeOpeningExplorerButton").clicked()
+        open.clicked()
+        compare(requests().length, 3)
+        verify(dialog.visible)
+        verify(waitForRendering(move))
+        mouseClick(move, move.width / 2, move.height / 2)
+        verify(!dialog.visible && review.exploreMode)
+        var position = endpoint.sentMessages.slice(-1)[0]
+        compare(position.type, "RequestAnalysisPosition")
+        compare(position.fen, e4)
+        endpoint.reply({type: "AnalysisPosition", request_id: position.request_id,
+                        requested_fen: e4, fen: e4, legal_moves: [{from: "e7", to: "e5"}]})
+        var continuation = endpoint.sentMessages.slice(-1)[0]
+        compare(continuation, {type: "MakeAnalysisMove", request_id: continuation.request_id,
+                               fen: e4, from: "e7", to: "e5", promotion: null})
+        endpoint.reply({type: "AnalysisMove", request_id: continuation.request_id,
+                        from_fen: e4, fen: e5, san: "e5", legal_moves: []})
+        compare(review.variationMoves, ["e5"])
+        compare(review.currentFen(), e5)
+        compare(requests().length, 3)
+
+        open.clicked()
+        var next = requests()[3]
+        compare(next.played_san, ["e4", "e5"])
+        compare(next.fen, e5)
+        findChild(review, "reviewBackButton").clicked()
+        tryVerify(function() {
+            return endpoint.sentMessages.some(function(message) {
+                return message.type === "CancelOpeningExplorer" && message.review_id === reviewId
+            })
+        })
+    }
+
     function test_cancelExplorePromotionKeepsTheVariation() {
         var reviewId = choose("promotion-game")
         var fen = "7k/P7/8/8/8/8/8/4K3 w - - 0 1"

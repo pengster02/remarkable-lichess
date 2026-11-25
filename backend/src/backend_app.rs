@@ -1,5 +1,6 @@
 use crate::credentials;
 use crate::game::outcome::outcome;
+use crate::game::replay::OpeningExplorerPosition;
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
 use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
@@ -9,7 +10,8 @@ use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
-    GameAction, GameActionRequest, HistoryCursor, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
+    GameAction, GameActionRequest, HistoryCursor, HistoryGameSummary, MoveAnalysis, OngoingGameSummary,
+    OpeningExplorerRequest, RatingSummary,
     MoveRequest, OfferRequest, OpenChallengeQrCodes, OpponentDeparture, PlayerStatusSummary,
     MSG_TYPE_BACKEND_TO_FRONTEND,
 };
@@ -33,6 +35,7 @@ const CLOUD_QUEUE_CAPACITY: usize = 4;
 const LICHESS_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. Try again shortly.";
 const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.";
+const OPENING_RATE_LIMIT_MESSAGE: &str = "Lichess limited opening statistics requests.";
 
 struct StreamReconnectDelay {
     next: Duration,
@@ -77,10 +80,10 @@ struct GameRequest {
     completion: Option<oneshot::Receiver<()>>,
 }
 
-struct ReviewVariationScope {
+struct ReviewScope {
     review_id: u32,
     game_id: String,
-    loaded: bool,
+    loaded_variations: bool,
 }
 
 impl GameRequest {
@@ -324,7 +327,9 @@ pub struct LichessBackend {
     // reentry, while an API-wide gate could interrupt live play.
     history_retry_after: Arc<Mutex<Option<Instant>>>,
     review_export: Option<GameRequest>,
-    review_variation_scope: Option<ReviewVariationScope>,
+    review_scope: Option<ReviewScope>,
+    opening_explorer: Option<tokio::task::JoinHandle<()>>,
+    opening_retry_after: Arc<Mutex<Option<Instant>>>,
     cloud_evaluations: Option<CloudEvaluationQueue>,
     cloud_retry_after: Arc<Mutex<Option<Instant>>>,
     pending_sign_in: Option<SignInAttempt>,
@@ -361,7 +366,9 @@ impl LichessBackend {
             history_load: None,
             history_retry_after: Arc::new(Mutex::new(None)),
             review_export: None,
-            review_variation_scope: None,
+            review_scope: None,
+            opening_explorer: None,
+            opening_retry_after: Arc::new(Mutex::new(None)),
             cloud_evaluations: None,
             cloud_retry_after: Arc::new(Mutex::new(None)),
             pending_sign_in: None,
@@ -706,10 +713,11 @@ impl LichessBackend {
             return;
         };
         stop_game_request(&mut self.review_export).await;
+        stop_task(&mut self.opening_explorer).await;
         // Scope writes to the backend's reviewed game. A front-end game ID can
         // outlive an account change, while a token-derived key breaks on re-login.
-        self.review_variation_scope = request_id.map(|review_id| ReviewVariationScope {
-            review_id, game_id: game_id.clone(), loaded: false,
+        self.review_scope = request_id.map(|review_id| ReviewScope {
+            review_id, game_id: game_id.clone(), loaded_variations: false,
         });
         let task = tokio::spawn(Self::fetch_game_review(
             client, self.my_id.clone(), replier.clone(), self.write_lock.clone(),
@@ -780,7 +788,7 @@ impl LichessBackend {
 
     fn handle_load_variations(&mut self, replier: &BackendReplier<Self>, review_id: u32) {
         let config_dir = self.token_path.parent().unwrap_or_else(|| Path::new("."));
-        let (Some(scope), Some(account_id)) = (&mut self.review_variation_scope, &self.my_id) else {
+        let (Some(scope), Some(account_id)) = (&mut self.review_scope, &self.my_id) else {
             return;
         };
         if scope.review_id != review_id {
@@ -788,11 +796,11 @@ impl LichessBackend {
         }
         let reply = match variations::load(config_dir, account_id, &scope.game_id) {
             Ok(variations) => {
-                scope.loaded = true;
+                scope.loaded_variations = true;
                 BackendMessage::ReviewVariations { review_id, variations }
             }
             Err(error) => {
-                scope.loaded = false;
+                scope.loaded_variations = false;
                 log::warn!("could not read saved review variations: {error}");
                 BackendMessage::ReviewVariationsLoadFailed {
                     review_id, message: "Could not load saved variations.".into(),
@@ -807,13 +815,13 @@ impl LichessBackend {
         variations: ReviewVariations,
     ) {
         let config_dir = self.token_path.parent().unwrap_or_else(|| Path::new("."));
-        let (Some(scope), Some(account_id)) = (&self.review_variation_scope, &self.my_id) else {
+        let (Some(scope), Some(account_id)) = (&self.review_scope, &self.my_id) else {
             return;
         };
         if scope.review_id != review_id {
             return;
         }
-        let reply = if !scope.loaded {
+        let reply = if !scope.loaded_variations {
             BackendMessage::ReviewVariationsSaveFailed {
                 review_id, request_id, message: "Reload the review before saving variations.".into(),
             }
@@ -826,6 +834,25 @@ impl LichessBackend {
             BackendMessage::ReviewVariationsSaved { review_id, request_id }
         };
         self.send(replier, &reply);
+    }
+
+    async fn start_opening_explorer(
+        &mut self, replier: &BackendReplier<Self>, request: OpeningExplorerRequest,
+    ) {
+        if !self.review_scope.as_ref().is_some_and(|scope| scope.review_id == request.review_id) {
+            return;
+        }
+        let Some(client) = self.client.clone() else { return };
+        // One visible lookup owns the slot. A queue can outlast source switches,
+        // and parallel calls compete for the same explorer rate limit.
+        stop_task(&mut self.opening_explorer).await;
+        let replier = replier.clone();
+        let write_lock = self.write_lock.clone();
+        let retry_after = self.opening_retry_after.clone();
+        self.opening_explorer = Some(tokio::spawn(async move {
+            let reply = fetch_opening_explorer(&client, request, &retry_after).await;
+            send_locked(&replier, &write_lock, &reply);
+        }));
     }
 
     async fn queue_cloud_evaluation(
@@ -1071,7 +1098,8 @@ impl LichessBackend {
     }
 
     async fn stop_authenticated_activity(&mut self) {
-        self.review_variation_scope = None;
+        self.review_scope = None;
+        stop_task(&mut self.opening_explorer).await;
         stop_task(&mut self.home_games).await;
         stop_task(&mut self.home_ratings).await;
         stop_game_request(&mut self.history_load).await;
@@ -1432,6 +1460,47 @@ async fn send_pending_challenges(
         }
     };
     send_locked(replier, write_lock, &msg);
+}
+
+async fn fetch_opening_explorer(
+    client: &LichessClient,
+    request: OpeningExplorerRequest,
+    retry_after: &Mutex<Option<Instant>>,
+) -> BackendMessage {
+    let OpeningExplorerRequest { request_id, review_id, database, fen, root_fen, played_san } = request;
+    let failed = |message: &str, delay: Option<Duration>| BackendMessage::OpeningExplorerFailed {
+        review_id, request_id, database, fen: fen.clone(), message: message.into(),
+        retry_after_ms: delay.map(|remaining| remaining.as_millis().max(1) as u32),
+    };
+    let remaining = retry_after.lock().await
+        .and_then(|until| until.checked_duration_since(Instant::now()));
+    if let Some(remaining) = remaining {
+        return failed(OPENING_RATE_LIMIT_MESSAGE, Some(remaining));
+    }
+    let position = match OpeningExplorerPosition::from_replay(&root_fen, &played_san, &fen) {
+        Ok(position) => position,
+        Err(error) => {
+            log::warn!("could not reconstruct opening explorer position: {error}");
+            return failed("Could not reconstruct this position.", None);
+        }
+    };
+    match client.get_opening_explorer(database, &position.root_fen, &position.play).await {
+        Ok(mut data) => {
+            position.normalize_moves(&mut data);
+            BackendMessage::OpeningExplorer { review_id, request_id, database, fen, data }
+        }
+        Err(error) if is_rate_limited(&error) => {
+            *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+            failed(OPENING_RATE_LIMIT_MESSAGE, Some(LICHESS_RATE_LIMIT_DELAY))
+        }
+        Err(error) if is_auth_rejection(&error) => {
+            failed("Lichess denied access to this opening database.", None)
+        }
+        Err(error) => {
+            log::warn!("could not load opening explorer statistics: {error}");
+            failed("Could not load opening statistics.", None)
+        }
+    }
 }
 
 fn history_rate_limit_reply(request_id: Option<u32>, remaining: Duration) -> BackendMessage {
@@ -1956,7 +2025,8 @@ impl AppLoadBackend for LichessBackend {
         }
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             // The new frontend starts its request sequence over.
-            self.review_variation_scope = None;
+            self.review_scope = None;
+            stop_task(&mut self.opening_explorer).await;
             self.stop_sign_in(None).await;
             stop_task(&mut self.home_games).await;
             stop_task(&mut self.home_ratings).await;
@@ -2157,8 +2227,9 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::CancelGameReview { request_id } => {
                 cancel_game_request(&mut self.review_export, request_id).await;
-                if self.review_variation_scope.as_ref().is_some_and(|scope| scope.review_id == request_id) {
-                    self.review_variation_scope = None;
+                if self.review_scope.as_ref().is_some_and(|scope| scope.review_id == request_id) {
+                    self.review_scope = None;
+                    stop_task(&mut self.opening_explorer).await;
                 }
             }
             FrontendMessage::RequestReviewVariations { review_id } => {
@@ -2173,6 +2244,14 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::CancelCloudEvaluations { review_id } => {
                 if self.cloud_evaluations.as_ref().is_some_and(|queue| queue.review_id == Some(review_id)) {
                     self.stop_cloud_evaluations().await;
+                }
+            }
+            FrontendMessage::RequestOpeningExplorer { request } => {
+                self.start_opening_explorer(replier, request).await;
+            }
+            FrontendMessage::CancelOpeningExplorer { review_id } => {
+                if self.review_scope.as_ref().is_some_and(|scope| scope.review_id == review_id) {
+                    stop_task(&mut self.opening_explorer).await;
                 }
             }
             FrontendMessage::RequestAnalysisPosition { fen, request_id } => {
