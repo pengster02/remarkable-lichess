@@ -51,6 +51,8 @@ Rectangle {
     property int ratingsRequestId: 0
     property bool gamesLoadPending: false
     property bool gamesRefreshQueued: false
+    readonly property bool canRefreshGames: !!homeScreen.backendSender && !!homeScreen.nextRequestId &&
+        !homeScreen.gamesLoadPending && !homeScreen.gamesRefreshQueued && !gameRetryDelay.running
     // Hide finished IDs until a later read confirms removal. Waiting for GET
     // keeps a dead Resume button, and removing only the row lets GET restore it.
     property var finishedGameIds: []
@@ -185,26 +187,6 @@ Rectangle {
 
             SectionCard {
                 darkMode: homeScreen.darkMode
-                title: "Connection problem"
-                visible: homeScreen.loadError.length > 0
-
-                Text {
-                    width: parent.width
-                    text: homeScreen.loadError
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: theme.fontBody
-                    color: theme.errorText
-                }
-                AppButton {
-                    width: parent.width
-                    text: "Retry"
-                    highlighted: true
-                    onClicked: homeScreen.refresh()
-                }
-            }
-
-            SectionCard {
-                darkMode: homeScreen.darkMode
                 title: "Challenges unavailable"
                 visible: homeScreen.challengesError.length > 0
 
@@ -246,7 +228,32 @@ Rectangle {
             SectionCard {
                 darkMode: homeScreen.darkMode
                 title: "Your games"
-                visible: homeScreen.ongoingGames.length > 0
+                visible: homeScreen.loadedOnce || homeScreen.ongoingGames.length > 0
+                Text {
+                    width: parent.width
+                    visible: homeScreen.loadError.length > 0
+                    text: homeScreen.loadError
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.errorText
+                }
+                Text {
+                    visible: homeScreen.loadedOnce && !homeScreen.loadError && homeScreen.ongoingGames.length === 0
+                    text: "No games in progress"
+                    font.pixelSize: theme.fontLabel
+                    color: theme.textMuted
+                }
+                // Account events omit moves. Polling adds recurring HTTP reads and per-game
+                // streams keep sockets open, so refresh the visible list on demand.
+                AppButton {
+                    objectName: "homeGamesRefreshButton"
+                    width: parent.width
+                    compact: true
+                    text: homeScreen.gamesLoadPending ? "Refreshing games…" :
+                        homeScreen.loadError ? "Retry games" : "Refresh games"
+                    enabled: homeScreen.canRefreshGames
+                    onClicked: homeScreen.queueGamesRefresh()
+                }
                 Repeater {
                     model: homeScreen.ongoingGames
                     // Same stacked-not-Row reasoning as pendingChallenges below --
@@ -382,9 +389,11 @@ Rectangle {
                 }
 
                 AppButton {
+                    objectName: "homeRefreshButton"
                     width: parent.width
                     compact: true
-                    text: "Refresh"
+                    text: "Refresh all"
+                    enabled: homeScreen.canRefreshGames
                     onClicked: homeScreen.refresh()
                 }
             }
