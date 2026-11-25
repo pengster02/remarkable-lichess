@@ -81,6 +81,13 @@ impl GameStreamReadiness {
         };
         deadline.map_or(STREAM_IDLE_TIMEOUT, |deadline| deadline.saturating_duration_since(now))
     }
+
+    fn schedule_resync(&mut self, now: Instant) {
+        // Waiting for socket expiry stalls stale boards. Reopening immediately interrupts recoverable streams.
+        if let Self::Ready(deadline) = self {
+            deadline.get_or_insert(now + MOVE_RECONCILIATION_TIMEOUT);
+        }
+    }
 }
 
 struct AccountStream {
@@ -1883,6 +1890,11 @@ fn spawn_game_stream(
                             let mut status_ids = None;
                             let mut guard = session_handle.lock().await;
                             let board_msg = match msg {
+                                GameStreamMessage::Full(full) if full.id != game_id => {
+                                    log::warn!("game stream {game_id} received a snapshot for a different game");
+                                    readiness.schedule_resync(Instant::now());
+                                    None
+                                }
                                 // A finished game can send only one Full snapshot
                                 // before EOF, which would otherwise trigger a retry.
                                 GameStreamMessage::Full(full) => {
@@ -1933,23 +1945,16 @@ fn spawn_game_stream(
                                         }
                                     }
                                 }
-                                GameStreamMessage::State(state) => match (&mut readiness, guard.as_mut()) {
-                                    (GameStreamReadiness::Ready(resync_deadline), Some(s)) if s.game_id == game_id => {
+                                GameStreamMessage::State(state) => match guard.as_mut() {
+                                    Some(s) if matches!(readiness, GameStreamReadiness::Ready(_)) && s.game_id == game_id => {
                                         let is_over = state.status != "started";
                                         let fallback = is_over.then(|| outcome(&state.status, state.winner.as_deref()));
                                         let result = match s.apply_stream_update(state) {
                                             Ok(Some(msg)) => {
-                                                *resync_deadline = None;
+                                                readiness = GameStreamReadiness::Ready(None);
                                                 Some(msg)
                                             }
-                                            Ok(None) => {
-                                                // This may be an old frame or a missed takeback.
-                                                // Applying it immediately can undo the accepted move;
-                                                // ignoring it indefinitely can leave a stale board.
-                                                // If the stream stays ambiguous, reopen for a full snapshot.
-                                                resync_deadline.get_or_insert_with(|| Instant::now() + MOVE_RECONCILIATION_TIMEOUT);
-                                                None
-                                            }
+                                            Ok(None) => None,
                                             Err(error) => {
                                                 log::warn!(
                                                     "couldn't apply gameState for {game_id}: {error}"
@@ -1964,6 +1969,8 @@ fn spawn_game_stream(
                                         if is_over {
                                             stream_finished = true;
                                             *guard = None;
+                                        } else if result.is_none() {
+                                            readiness.schedule_resync(Instant::now());
                                         }
                                         result
                                     }
@@ -2054,6 +2061,20 @@ mod stream_watchdog_tests {
         let reconciling = GameStreamReadiness::Ready(Some(started + MOVE_RECONCILIATION_TIMEOUT));
         assert_eq!(reconciling.read_timeout(started + Duration::from_secs(1)), Duration::from_secs(1));
         assert_eq!(reconciling.read_timeout(started + Duration::from_secs(2)), Duration::ZERO);
+    }
+
+    #[test]
+    fn repeated_reconciliation_requests_keep_the_existing_deadline() {
+        let started = Instant::now();
+        let one_second_later = started + Duration::from_secs(1);
+        let mut awaiting = GameStreamReadiness::AwaitingSnapshot(started + STREAM_IDLE_TIMEOUT);
+        awaiting.schedule_resync(one_second_later);
+        assert_eq!(awaiting.read_timeout(one_second_later), STREAM_IDLE_TIMEOUT - Duration::from_secs(1));
+
+        let mut ready = GameStreamReadiness::Ready(None);
+        ready.schedule_resync(started);
+        ready.schedule_resync(one_second_later);
+        assert_eq!(ready.read_timeout(started + MOVE_RECONCILIATION_TIMEOUT), Duration::ZERO);
     }
 
     #[test]
