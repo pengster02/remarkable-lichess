@@ -135,13 +135,13 @@ Rectangle {
     property string openingDatabase: "masters"
     property var openingLookups: ({})
     property var pendingOpeningLookup: null
+    property bool openingExplorerCoolingDown: false
     readonly property string openingPositionKey: JSON.stringify(
         [currentIndex, currentFen(), exploreMode ? variationMoves : []])
     readonly property string openingLookupKey: openingDatabase + openingPositionKey
     readonly property var currentOpeningLookup: openingLookups[openingLookupKey] || null
     readonly property bool canTryOpeningMove: pendingAnalysisRequestId === 0 && variationStoreState !== "loading"
     onOpeningPositionKeyChanged: showOpeningExplorer = false
-    Timer { id: openingRetryDelay }
     readonly property int coordinateGutter: 52
 
     Component.onDestruction: {
@@ -570,7 +570,7 @@ Rectangle {
 
     function requestOpeningStatistics() {
         var fen = currentFen()
-        if (!fen || !reviewRequestId || openingRetryDelay.running ||
+        if (!fen || !reviewRequestId || openingExplorerCoolingDown ||
                 (currentOpeningLookup && currentOpeningLookup.phase !== "failed")) return
         var cache = Object.assign({}, openingLookups)
         if (pendingOpeningLookup) delete cache[pendingOpeningLookup.key]
@@ -593,13 +593,7 @@ Rectangle {
         pendingOpeningLookup = null
         var cache = Object.assign({}, openingLookups)
         if (msg.type === "OpeningExplorer") cache[pending.key] = {phase: "ready", data: msg.data}
-        else {
-            cache[pending.key] = {phase: "failed", message: msg.message || "Could not load opening statistics."}
-            if (msg.retry_after_ms > 0) {
-                openingRetryDelay.interval = msg.retry_after_ms
-                openingRetryDelay.restart()
-            }
-        }
+        else cache[pending.key] = {phase: "failed", message: msg.message || "Could not load opening statistics."}
         openingLookups = cache
     }
 
@@ -1095,7 +1089,7 @@ Rectangle {
         darkMode: gameReviewScreen.darkMode
         database: gameReviewScreen.openingDatabase
         lookup: gameReviewScreen.currentOpeningLookup
-        coolingDown: openingRetryDelay.running
+        coolingDown: gameReviewScreen.openingExplorerCoolingDown
         canTryMove: gameReviewScreen.canTryOpeningMove
         onDatabaseSelected: (database) => {
             gameReviewScreen.openingDatabase = database
