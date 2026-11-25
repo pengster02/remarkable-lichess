@@ -31,6 +31,7 @@ Rectangle {
     readonly property bool showingSetup: !waiting && !connectingMatch && !seekEnded
     readonly property bool canSubmit: !waiting && pendingAction.length === 0
     property string formError: ""
+    property Item setupRetryItem: null
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
         aiLevelField.activeFocus
@@ -79,9 +80,11 @@ Rectangle {
         return ""
     }
 
-    function validateTimeControl(maximumIncrement) {
-        formError = timeControlError(maximumIncrement)
-        return formError.length === 0
+    function validateTimeControl(maximumIncrement, retry) {
+        var message = timeControlError(maximumIncrement)
+        if (message) showSetupError(message, retry)
+        else formError = ""
+        return message.length === 0
     }
 
     function dismissKeyboard() {
@@ -96,7 +99,7 @@ Rectangle {
     function submitSeek() {
         // Lichess permits 180s on seeks but only 60s on challenges; one global
         // 60s cap hides valid seeks, while separate duplicate forms add drift.
-        if (!canSubmit || !validateTimeControl(180)) return
+        if (!canSubmit || !validateTimeControl(180, findOpponentButton)) return
         dismissKeyboard()
         matchRequestId = nextRequestId()
         seekMatchBeforeAckId = ""
@@ -134,11 +137,30 @@ Rectangle {
         openGame(gameId)
     }
 
-    function revealChallengeSetup() {
-        if (!seekScreen.showingSetup || !seekScreen.canSubmit || !seekScreen.formError) return
-        // Waiting shrinks the pager. Remembered offsets can drift, and the first page can hide the retry.
+    function setupRetryInView(retry) {
+        var top = retry.mapToItem(seekColumn, 0, 0).y
+        return retry.visible && top >= seekPager.contentY - seekPager.positionTolerance &&
+            top + retry.height <= seekPager.contentY + seekPager.pageHeight + seekPager.positionTolerance
+    }
+
+    function showSetupError(message, retry, returnToSetup) {
+        // Measure before the error shrinks the page. Returning to page one
+        // can hide the retry, and reserved error space would shrink every page.
+        setupRetryItem = returnToSetup || setupRetryInView(retry) ? retry : null
+        formError = message
+        if (setupRetryItem) Qt.callLater(seekScreen.revealSetupRetry)
+    }
+
+    function revealSetupRetry() {
+        var retry = setupRetryItem
+        setupRetryItem = null
+        if (!retry || !seekScreen.showingSetup || !seekScreen.canSubmit || !seekScreen.formError ||
+                !retry.visible) return
         seekColumn.forceLayout()
-        seekPager.showPageContaining(playerChallengeSection.y, playerChallengeSection.height)
+        if (setupRetryInView(retry)) return
+        var top = retry.mapToItem(seekColumn, 0, 0).y
+        seekPager.showPageContaining(top, retry.height)
+        seekPager.reveal(top, retry.height)
     }
 
     function revealOpenChallenge() {
@@ -148,10 +170,10 @@ Rectangle {
     }
 
     function submitChallenge() {
-        if (!showingSetup || !canSubmit || !validateTimeControl(60)) return
+        if (!showingSetup || !canSubmit || !validateTimeControl(60, challengePlayerButton)) return
         var username = usernameField.text.trim()
         if (username.length === 0) {
-            formError = "Enter the Lichess username you want to challenge."
+            showSetupError("Enter the Lichess username you want to challenge.", challengePlayerButton)
             return
         }
         dismissKeyboard()
@@ -171,7 +193,8 @@ Rectangle {
     }
 
     function submitOpenChallenge() {
-        if (!showingSetup || !canSubmit || openChallengeUrls !== null || !validateTimeControl(60)) return
+        if (!showingSetup || !canSubmit || openChallengeUrls !== null ||
+                !validateTimeControl(60, openChallengeButton)) return
         dismissKeyboard()
         matchRequestId = nextRequestId()
         pendingAction = "open"
@@ -185,10 +208,10 @@ Rectangle {
     }
 
     function submitComputerGame() {
-        if (!showingSetup || !canSubmit || !validateTimeControl(60)) return
+        if (!showingSetup || !canSubmit || !validateTimeControl(60, computerGameButton)) return
         var level = wholeNumber(aiLevelField.text)
         if (isNaN(level) || level < 1 || level > 8) {
-            formError = "Computer level must be a whole number from 1 to 8."
+            showSetupError("Computer level must be a whole number from 1 to 8.", computerGameButton)
             return
         }
         dismissKeyboard()
@@ -260,7 +283,10 @@ Rectangle {
         anchors.topMargin: theme.pageTopMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: seekColumn.height
-        onPageNavigationRequested: seekScreen.dismissKeyboard()
+        onPageNavigationRequested: {
+            seekScreen.setupRetryItem = null
+            seekScreen.dismissKeyboard()
+        }
         pageStops: {
             if (!seekScreen.showingSetup) return [0]
             var stops = [0, playerChallengeSection.y]
@@ -393,6 +419,7 @@ Rectangle {
         }
 
         AppButton {
+            id: findOpponentButton
             width: parent.width
             objectName: "findOpponentButton"
             text: seekScreen.seekEnded ? "Search again" : "Find an opponent"
@@ -434,6 +461,7 @@ Rectangle {
                 onDismissRequested: seekScreen.dismissKeyboard()
             }
             AppButton {
+                id: challengePlayerButton
                 objectName: "challengePlayerButton"
                 width: parent.width
                 text: seekScreen.pendingAction === "challenge"
@@ -445,6 +473,7 @@ Rectangle {
         }
 
         AppButton {
+            id: openChallengeButton
             objectName: "openChallengeButton"
             width: parent.width
             text: seekScreen.pendingAction === "open"
@@ -493,6 +522,7 @@ Rectangle {
                 onDismissRequested: seekScreen.dismissKeyboard()
             }
             AppButton {
+                id: computerGameButton
                 objectName: "computerGameButton"
                 width: parent.width
                 text: seekScreen.pendingAction === "computer"
@@ -534,7 +564,8 @@ Rectangle {
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
             seekScreen.seekEnded = false
-            seekScreen.formError = msg.message || "Lichess could not find an opponent."
+            seekScreen.showSetupError(msg.message || "Lichess could not find an opponent.",
+                                      findOpponentButton, true)
         } else if (msg.type === "SeekEnded") {
             if (!seekScreen.waiting || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.waitingLabel = "Checking for a match..."
@@ -550,15 +581,14 @@ Rectangle {
             if (seekScreen.pendingAction !== "challenge" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
-            seekScreen.formError = msg.message || "Lichess could not create the challenge."
-            Qt.callLater(seekScreen.revealChallengeSetup)
+            seekScreen.showSetupError(msg.message || "Lichess could not create the challenge.",
+                                      playerChallengeSection, true)
         } else if (msg.type === "ChallengeResolved") {
             if (!seekScreen.waiting || msg.game_id !== seekScreen.waitingChallengeGameId ||
                     msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.clearWaiting()
             if (msg.error) {
-                seekScreen.formError = msg.error
-                Qt.callLater(seekScreen.revealChallengeSetup)
+                seekScreen.showSetupError(msg.error, playerChallengeSection, true)
             } else {
                 seekScreen.openGame(msg.game_id)
             }
@@ -576,9 +606,10 @@ Rectangle {
             Qt.callLater(seekScreen.revealOpenChallenge)
         } else if (msg.type === "MatchCreationFailed") {
             if (!seekScreen.creatingMatch || msg.request_id !== seekScreen.matchRequestId) return
+            var retry = seekScreen.pendingAction === "computer" ? computerGameButton : openChallengeButton
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
-            seekScreen.formError = msg.message || "Lichess could not create that game."
+            seekScreen.showSetupError(msg.message || "Lichess could not create that game.", retry)
         } else if (msg.type === "GameStarted") {
             var lookingForOpponent = seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0
             var matchingLink = seekScreen.pendingAction.length === 0 && !seekScreen.waiting &&
