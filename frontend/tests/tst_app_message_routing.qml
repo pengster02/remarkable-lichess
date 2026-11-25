@@ -2035,18 +2035,19 @@ TestCase {
         compare(board.topStatusText(), "Move rejected: try again")
     }
 
-    function test_liveClockTimerReachesCadenceBoundaryAfterResync_data() {
+    function test_liveClockCadenceAtExactAges_data() {
         return [
             {tag: "main clock at one minute", mainMs: 60400, firstMoveMs: null,
-             before: "1:00", after: "0:59"},
+             boundaryMs: 60000, afterInterval: 5000, before: "1:00", after: "0:59", late: "0:57"},
             {tag: "main clock at fifteen seconds", mainMs: 15400, firstMoveMs: null,
-             before: "0:15", after: "0:14"},
+             boundaryMs: 15000, afterInterval: 1000, before: "0:15", after: "0:14", late: "0:12"},
             {tag: "first move at fifteen seconds", mainMs: 600000, firstMoveMs: 15400,
-             before: "Move in ~16s", after: "Move in ~15s"}
+             boundaryMs: 15000, afterInterval: 1000, before: "Move in ~16s",
+             after: "Move in ~15s", late: "Move in ~13s"}
         ]
     }
 
-    function test_liveClockTimerReachesCadenceBoundaryAfterResync(data) {
+    function openClockCadenceGame(data) {
         app.openGame("active")
         var snapshot = boardState("active")
         snapshot.initial_clock_ms = 600000
@@ -2058,22 +2059,59 @@ TestCase {
         var bar = findChild(board, mainClock ? "bottomPlayerBar" : "topPlayerBar")
         var label = findChild(bar, mainClock ? "playerClockText" : "playerStatusText")
         verify(label.visible)
-        compare(label.text, data.before)
+        return {board: board, snapshot: snapshot, label: label}
+    }
+
+    function test_liveClockCadenceAtExactAges(data) {
+        var game = openClockCadenceGame(data)
+        var board = game.board
+        var receivedAt = board.liveClock.receivedAt
+
+        // Controlled ages cover exact boundaries that fixed waits can skip and a broad deadline can't distinguish.
+        board.clockNowMs = receivedAt
+        compare(board.clockRefreshIntervalMs(), 1000)
+        compare(game.label.text, data.before)
+        board.clockNowMs = receivedAt + 999
+        compare(board.clockRefreshIntervalMs(), 1)
+        compare(game.label.text, data.before)
+        board.clockNowMs = receivedAt + 1000
+        compare(board.clockRefreshIntervalMs(), data.afterInterval)
+        compare(game.label.text, data.after)
+        board.clockNowMs = receivedAt + 3000
+        compare(game.label.text, data.late)
+        compare(board.displayClockFor("black"), 600000)
+    }
+
+    function test_liveClockTimerResyncAndCatchUp_data() {
+        return test_liveClockCadenceAtExactAges_data()
+    }
+
+    function test_liveClockTimerResyncAndCatchUp(data) {
+        var game = openClockCadenceGame(data)
+        var board = game.board
+        var snapshot = game.snapshot
         wait(650)
         endpoint.reply(snapshot)
-        var pulse = board.clockPulse
-        wait(550)
-        compare(board.clockPulse, pulse)
-        compare(label.text, data.before)
-        tryCompare(label, "text", data.after, 2400)
+        compare(game.label.text, data.before)
+        var firstPulseAge = null
+        var recordPulseAge = function() {
+            if (firstPulseAge === null) firstPulseAge = Date.now() - board.liveClock.receivedAt
+        }
+        board.clockPulseChanged.connect(recordPulseAge)
+        tryVerify(function() { return board.activeCountdownMs <= data.boundaryMs }, 4500)
+        board.clockPulseChanged.disconnect(recordPulseAge)
+        verify(firstPulseAge !== null && firstPulseAge >= 850,
+               "First timer pulse after the resync was at " + firstPulseAge + " ms")
+        verify(game.label.text !== data.before)
         compare(board.displayClockFor("black"), 600000)
 
         snapshot.first_move_time_ms = null
+        snapshot.white_time_ms = 10000
         snapshot.outcome = {result: "draw", reason: "Agreement"}
         endpoint.reply(snapshot)
         verify(board.gameOver)
-        pulse = board.clockPulse
-        wait(1200)
+        var pulse = board.clockPulse
+        wait(1250)
         compare(board.clockPulse, pulse)
     }
 
