@@ -67,6 +67,22 @@ struct GameStream {
     task: tokio::task::JoinHandle<()>,
 }
 
+// An idle timeout restarts on keepalives. Applying deltas before gameFull would reuse a previous connection's board.
+enum GameStreamReadiness {
+    AwaitingSnapshot(Instant),
+    Ready(Option<Instant>),
+}
+
+impl GameStreamReadiness {
+    fn read_timeout(&self, now: Instant) -> Duration {
+        let deadline = match *self {
+            Self::AwaitingSnapshot(deadline) => Some(deadline),
+            Self::Ready(deadline) => deadline,
+        };
+        deadline.map_or(STREAM_IDLE_TIMEOUT, |deadline| deadline.saturating_duration_since(now))
+    }
+}
+
 struct AccountStream {
     task: tokio::task::JoinHandle<()>,
     challenge_refresh: mpsc::Sender<()>,
@@ -1854,12 +1870,10 @@ fn spawn_game_stream(
             }
             if let Ok(mut lines) = response {
                 let connected_at = Instant::now();
-                let mut resync_deadline: Option<Instant> = None;
+                let mut readiness = GameStreamReadiness::AwaitingSnapshot(connected_at + STREAM_IDLE_TIMEOUT);
                 let mut opponent_departure = None;
                 loop {
-                    let timeout = resync_deadline.map_or(STREAM_IDLE_TIMEOUT, |deadline| {
-                        deadline.saturating_duration_since(Instant::now())
-                    });
+                    let timeout = readiness.read_timeout(Instant::now());
                     if timeout.is_zero() {
                         break;
                     }
@@ -1874,7 +1888,7 @@ fn spawn_game_stream(
                                 GameStreamMessage::Full(full) => {
                                     match GameSession::from_game_full(&full, &my_id) {
                                         Ok((mut s, mut board_msg)) => {
-                                            resync_deadline = None;
+                                            readiness = GameStreamReadiness::Ready(None);
                                             if let Some(previous) = guard.as_mut().filter(|session| {
                                                 session.game_id == s.game_id
                                             }) {
@@ -1919,13 +1933,13 @@ fn spawn_game_stream(
                                         }
                                     }
                                 }
-                                GameStreamMessage::State(state) => match guard.as_mut() {
-                                    Some(s) if s.game_id == game_id => {
+                                GameStreamMessage::State(state) => match (&mut readiness, guard.as_mut()) {
+                                    (GameStreamReadiness::Ready(resync_deadline), Some(s)) if s.game_id == game_id => {
                                         let is_over = state.status != "started";
                                         let fallback = is_over.then(|| outcome(&state.status, state.winner.as_deref()));
                                         let result = match s.apply_stream_update(state) {
                                             Ok(Some(msg)) => {
-                                                resync_deadline = None;
+                                                *resync_deadline = None;
                                                 Some(msg)
                                             }
                                             Ok(None) => {
@@ -2016,11 +2030,31 @@ fn spawn_game_stream(
 #[cfg(test)]
 mod stream_watchdog_tests {
     use super::{
-        game_for_request, next_stream_line, GameSession, GameStream, LichessBackend, LineStream,
-        StreamReconnectDelay, STREAM_IDLE_TIMEOUT,
+        game_for_request, next_stream_line, GameSession, GameStream, GameStreamReadiness,
+        LichessBackend, LineStream, StreamReconnectDelay, MOVE_RECONCILIATION_TIMEOUT,
+        STREAM_IDLE_TIMEOUT,
     };
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn snapshot_wait_has_a_fixed_deadline_and_ready_keeps_its_own_timeouts() {
+        let started = Instant::now();
+        let awaiting = GameStreamReadiness::AwaitingSnapshot(started + STREAM_IDLE_TIMEOUT);
+        for (elapsed, remaining) in [(0, 30), (7, 23), (14, 16), (28, 2), (30, 0), (32, 0)] {
+            assert_eq!(
+                awaiting.read_timeout(started + Duration::from_secs(elapsed)),
+                Duration::from_secs(remaining),
+            );
+        }
+        assert_eq!(
+            GameStreamReadiness::Ready(None).read_timeout(started + Duration::from_secs(45)),
+            STREAM_IDLE_TIMEOUT,
+        );
+        let reconciling = GameStreamReadiness::Ready(Some(started + MOVE_RECONCILIATION_TIMEOUT));
+        assert_eq!(reconciling.read_timeout(started + Duration::from_secs(1)), Duration::from_secs(1));
+        assert_eq!(reconciling.read_timeout(started + Duration::from_secs(2)), Duration::ZERO);
+    }
 
     #[test]
     fn reconnect_backs_off_until_a_stream_delivers_sustained_progress() {
