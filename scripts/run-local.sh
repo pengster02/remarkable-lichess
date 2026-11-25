@@ -34,6 +34,11 @@ fi
 IMAGE="${IMAGE:-remarkable-lichess-local-pc}"
 PORT="${PORT:-6080}"
 NAME="${NAME:-remarkable-lichess-local}"
+READY_TIMEOUT="${READY_TIMEOUT:-180}"
+if ! [[ "${READY_TIMEOUT}" =~ ^[1-9][0-9]{0,5}$ ]]; then
+  echo "READY_TIMEOUT must be a whole number of seconds from 1 to 999999." >&2
+  exit 1
+fi
 CONFIG_ROOT="/var/lib/remarkable-lichess"
 CONFIG_DIR="${CONFIG_ROOT}/config"
 # A named volume follows the emulator name. A checkout bind follows the source tree.
@@ -136,23 +141,38 @@ if [ -n "${LICHESS_TOKEN:-}" ]; then
 fi
 
 echo "Starting emulator on http://localhost:${PORT}/vnc.html"
-docker run "${RUN_ARGS[@]}" "${IMAGE}"
+CONTAINER_ID="$(docker run "${RUN_ARGS[@]}" "${IMAGE}")"
+DEADLINE=$((SECONDS + READY_TIMEOUT))
 
-echo "Container ${NAME} started. Waiting for noVNC..."
-for ((attempt = 0; attempt < 90; attempt++)); do
-  if curl -sf "http://127.0.0.1:${PORT}/vnc.html" >/dev/null 2>&1; then
-    echo "Ready: http://localhost:${PORT}/vnc.html"
-    echo "Logs: docker logs -f ${NAME}"
-    exit 0
-  fi
-  if ! docker ps --format '{{.Names}}' | grep -qx "${NAME}"; then
-    echo "Container exited early:" >&2
-    docker logs "${NAME}" >&2 || true
+echo "Container ${NAME} started. Waiting for the noVNC display..."
+while (( SECONDS < DEADLINE )); do
+  if ! running="$(docker container inspect --format '{{.State.Running}}' "${CONTAINER_ID}")"; then
+    echo "Could not check emulator container ${NAME}." >&2
     exit 1
   fi
-  sleep 2
+  if [ "${running}" != true ]; then
+    echo "Container ${NAME} exited before noVNC was ready:" >&2
+    docker logs "${CONTAINER_ID}" >&2 || true
+    exit 1
+  fi
+
+  remaining=$((DEADLINE - SECONDS))
+  if (( remaining > 0 )) &&
+    curl -fs --noproxy 127.0.0.1 --max-time "$((remaining < 2 ? remaining : 2))" \
+      "http://127.0.0.1:${PORT}/vnc.html" >/dev/null 2>&1; then
+    remaining=$((DEADLINE - SECONDS))
+    if (( remaining > 0 )) &&
+      docker exec "${CONTAINER_ID}" timeout "$((remaining < 2 ? remaining : 2))" \
+        /usr/bin/python3 /usr/local/bin/check-display.py >/dev/null 2>&1; then
+      echo "Ready: http://localhost:${PORT}/vnc.html"
+      echo "Logs: docker logs -f ${NAME}"
+      exit 0
+    fi
+  fi
+
+  if (( SECONDS < DEADLINE )); then sleep 1; fi
 done
 
-echo "Still starting (first build compiles Qt + Rust). Follow logs:"
-echo "  docker logs -f ${NAME}"
-echo "Then open http://localhost:${PORT}/vnc.html"
+echo "The noVNC display did not become ready within ${READY_TIMEOUT} seconds." >&2
+echo "The container is still available. Follow progress with docker logs -f ${NAME}." >&2
+exit 1

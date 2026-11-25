@@ -89,7 +89,7 @@ cd "${APPLOAD_SRC}"
 while true; do
   "${APPLOAD_BUILD_DIR}/appload" remarkable-lichess >>/tmp/appload.log 2>&1 &
   APP_PID=$!
-  echo "Ready: open http://localhost:6080/vnc.html (appload pid=${APP_PID})"
+  echo "AppLoad started (pid=${APP_PID})"
   wait "${APP_PID}" || true
   echo "AppLoad exited; restarting in 2s..." >>/tmp/appload.log
   sleep 2
