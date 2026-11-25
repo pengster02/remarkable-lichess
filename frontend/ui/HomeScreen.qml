@@ -13,6 +13,11 @@ Rectangle {
     property var respondToChallenge
     property bool darkMode: false
     property bool liveClockEnabled: true
+    readonly property var navigationActions: [
+        {name: "homeNewGame", label: "New game", screen: "SeekScreen.qml", primary: true},
+        {name: "homeGameHistory", label: "Game history", screen: "GameHistoryScreen.qml", primary: false},
+        {name: "homeSettings", label: "Settings", screen: "SettingsScreen.qml", primary: false}
+    ]
     // Every now-playing game, not just one -- replaces the old singular
     // resumableGameId, which silently dropped every game past the first for
     // anyone with more than one correspondence game going (see protocol.rs's
@@ -150,18 +155,47 @@ Rectangle {
         return "Offline — Lichess unreachable"
     }
 
+    // Keep destinations reachable from every page. A first-page menu requires
+    // paging back, and a separate menu adds a tap to every visit.
+    Row {
+        id: homeNavigation
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.topMargin: theme.pageTopMargin
+        anchors.leftMargin: theme.pageSideMargin
+        anchors.rightMargin: theme.pageSideMargin
+        spacing: theme.spacingXs
+
+        Repeater {
+            model: homeScreen.navigationActions
+            AppButton {
+                required property var modelData
+                objectName: modelData.name
+                width: (homeNavigation.width - homeNavigation.spacing * (homeScreen.navigationActions.length - 1))
+                    / homeScreen.navigationActions.length
+                compact: true
+                leftPadding: theme.spacingXs
+                rightPadding: theme.spacingXs
+                text: modelData.label
+                highlighted: modelData.primary
+                enabled: !!homeScreen.navigateTo
+                onClicked: homeScreen.navigateTo(modelData.screen)
+            }
+        }
+    }
+
     EinkPagedFlickable {
         objectName: "homePager"
-        anchors.fill: parent
-        anchors.margins: theme.pageSideMargin
-        anchors.topMargin: theme.pageTopMargin
+        anchors.top: homeNavigation.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.topMargin: theme.spacingSmall
+        anchors.leftMargin: theme.pageSideMargin
+        anchors.rightMargin: theme.pageSideMargin
+        anchors.bottomMargin: theme.pageSideMargin
         contentHeight: contentColumn.height
-        // No rubber-band overshoot at the ends -- same reasoning as every
-        // other Flickable/ListView in this app (see GameHistoryScreen's own
-        // comment on this): that bounce is itself a multi-frame animation,
-        // a real e-ink refresh cost for a purely cosmetic effect. This one
-        // was missing it before this pass -- the one Flickable in the app
-        // that had drifted from that rule.
 
         Column {
             id: contentColumn
@@ -225,76 +259,8 @@ Rectangle {
                 }
             }
 
-            SectionCard {
-                darkMode: homeScreen.darkMode
-                title: "Your games"
-                visible: homeScreen.loadedOnce || homeScreen.ongoingGames.length > 0
-                Text {
-                    width: parent.width
-                    visible: homeScreen.loadError.length > 0
-                    text: homeScreen.loadError
-                    wrapMode: Text.WordWrap
-                    font.pixelSize: theme.fontBody
-                    color: theme.errorText
-                }
-                Text {
-                    visible: homeScreen.loadedOnce && !homeScreen.loadError && homeScreen.ongoingGames.length === 0
-                    text: "No games in progress"
-                    font.pixelSize: theme.fontLabel
-                    color: theme.textMuted
-                }
-                // Account events omit moves. Polling adds recurring HTTP reads and per-game
-                // streams keep sockets open, so refresh the visible list on demand.
-                AppButton {
-                    objectName: "homeGamesRefreshButton"
-                    width: parent.width
-                    compact: true
-                    text: homeScreen.gamesLoadPending ? "Refreshing games…" :
-                        homeScreen.loadError ? "Retry games" : "Refresh games"
-                    enabled: homeScreen.canRefreshGames
-                    onClicked: homeScreen.queueGamesRefresh()
-                }
-                Repeater {
-                    model: homeScreen.ongoingGames
-                    // Same stacked-not-Row reasoning as pendingChallenges below --
-                    // a long opponent name plus a Resume button doesn't reliably
-                    // fit the device's ~400px content width.
-                    Column {
-                        required property var modelData
-                        readonly property var correspondenceMs: homeScreen.correspondenceTimeLeftMs(modelData.game_id)
-                        width: parent.width
-                        spacing: theme.spacingXs
-
-                        Text {
-                            objectName: "homeGameSummary"
-                            text: (modelData.opponent_name || "Opponent") +
-                                  (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
-                                  (modelData.is_my_turn ? " — your move" : " — waiting") +
-                                  (parent.correspondenceMs === null ? "" :
-                                      " ·\u00a0" + chessDisplay.formatCorrespondenceClock(parent.correspondenceMs)
-                                          .replace(/ /g, "\u00a0") + "\u00a0left")
-                            font.pixelSize: theme.fontLabel
-                            font.bold: modelData.is_my_turn
-                            wrapMode: Text.WordWrap
-                            textFormat: Text.PlainText
-                            width: parent.width
-                            color: theme.text
-                        }
-                        AppButton {
-                            objectName: "homeResumeButton"
-                            // Full-width row, not a shrink-wrapped button --
-                            // the e-ink list convention (KOReader et al.):
-                            // a row's hittability comes from spanning the
-                            // whole content width.
-                            width: parent.width
-                            text: "Resume"
-                            highlighted: modelData.is_my_turn
-                            onClicked: homeScreen.openGame(modelData.game_id)
-                        }
-                    }
-                }
-            }
-
+            // Show invitations before the long game list so their actions are reachable
+            // immediately. A banner or a separate screen would add another step.
             SectionCard {
                 darkMode: homeScreen.darkMode
                 title: "Challenges"
@@ -346,6 +312,7 @@ Rectangle {
                                 onClicked: homeScreen.submitChallengeAction("accept", modelData.id)
                             }
                             AppButton {
+                                objectName: "homeDeclineChallenge"
                                 width: (parent.width - theme.spacingSmall) / 2
                                 text: homeScreen.pendingChallengeId === modelData.id &&
                                     homeScreen.pendingChallengeAction === "decline"
@@ -359,42 +326,83 @@ Rectangle {
                 }
             }
 
-            Column {
-                width: parent.width
-                spacing: theme.spacingSmall
-
-                MenuRow {
+            SectionCard {
+                darkMode: homeScreen.darkMode
+                title: "Your games"
+                visible: homeScreen.loadedOnce || homeScreen.ongoingGames.length > 0
+                Text {
                     width: parent.width
-                    darkMode: homeScreen.darkMode
-                    title: "New game"
-                    subtitle: "Find a match or challenge a player"
-                    highlighted: true
-                    onClicked: homeScreen.navigateTo("SeekScreen.qml")
+                    visible: homeScreen.loadError.length > 0
+                    text: homeScreen.loadError
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.errorText
                 }
-
-                MenuRow {
-                    width: parent.width
-                    darkMode: homeScreen.darkMode
-                    title: "Game history"
-                    subtitle: "Replay finished games"
-                    onClicked: homeScreen.navigateTo("GameHistoryScreen.qml")
+                Text {
+                    visible: homeScreen.loadedOnce && !homeScreen.loadError && homeScreen.ongoingGames.length === 0
+                    text: "No games in progress"
+                    font.pixelSize: theme.fontLabel
+                    color: theme.textMuted
                 }
-
-                MenuRow {
+                Row {
                     width: parent.width
-                    darkMode: homeScreen.darkMode
-                    title: "Settings"
-                    subtitle: "Board, display, and gameplay"
-                    onClicked: homeScreen.navigateTo("SettingsScreen.qml")
+                    spacing: theme.spacingSmall
+
+                    // Account events omit moves. Polling adds recurring HTTP reads and per-game
+                    // streams keep sockets open, so refresh the visible list on demand.
+                    AppButton {
+                        objectName: "homeGamesRefreshButton"
+                        width: (parent.width - parent.spacing) / 2
+                        compact: true
+                        text: homeScreen.gamesLoadPending ? "Refreshing games…" :
+                            homeScreen.loadError ? "Retry games" : "Refresh games"
+                        enabled: homeScreen.canRefreshGames
+                        onClicked: homeScreen.queueGamesRefresh()
+                    }
+                    AppButton {
+                        objectName: "homeRefreshButton"
+                        width: (parent.width - parent.spacing) / 2
+                        compact: true
+                        text: "Refresh all"
+                        enabled: homeScreen.canRefreshGames
+                        onClicked: homeScreen.refresh()
+                    }
                 }
+                Repeater {
+                    model: homeScreen.ongoingGames
+                    Column {
+                        required property var modelData
+                        readonly property var correspondenceMs: homeScreen.correspondenceTimeLeftMs(modelData.game_id)
+                        width: parent.width
+                        spacing: theme.spacingXs
 
-                AppButton {
-                    objectName: "homeRefreshButton"
-                    width: parent.width
-                    compact: true
-                    text: "Refresh all"
-                    enabled: homeScreen.canRefreshGames
-                    onClicked: homeScreen.refresh()
+                        Text {
+                            objectName: "homeGameSummary"
+                            text: (modelData.opponent_name || "Opponent") +
+                                  (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
+                                  (modelData.is_my_turn ? " — your move" : " — waiting") +
+                                  (parent.correspondenceMs === null ? "" :
+                                      " ·\u00a0" + chessDisplay.formatCorrespondenceClock(parent.correspondenceMs)
+                                          .replace(/ /g, "\u00a0") + "\u00a0left")
+                            font.pixelSize: theme.fontLabel
+                            font.bold: modelData.is_my_turn
+                            wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
+                            width: parent.width
+                            color: theme.text
+                        }
+                        AppButton {
+                            objectName: "homeResumeButton"
+                            // Full-width row, not a shrink-wrapped button --
+                            // the e-ink list convention (KOReader et al.):
+                            // a row's hittability comes from spanning the
+                            // whole content width.
+                            width: parent.width
+                            text: "Resume"
+                            highlighted: modelData.is_my_turn
+                            onClicked: homeScreen.openGame(modelData.game_id)
+                        }
+                    }
                 }
             }
 
