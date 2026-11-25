@@ -104,6 +104,10 @@ Rectangle {
         if (root.hasToken) screenLoader.setSource("GameHistoryScreen.qml", visit || {})
     }
 
+    function openPgnExport(gameId, saveNow) {
+        if (root.hasToken) pgnExport.openFor(gameId, saveNow)
+    }
+
     function nextRequestId() {
         root.requestSequence += 1
         return root.requestSequence
@@ -165,6 +169,7 @@ Rectangle {
     }
 
     function requireAuthentication() {
+        pgnExport.reset()
         root.hasToken = false
         root.authenticationState = "required"
         root.username = ""
@@ -402,6 +407,7 @@ Rectangle {
                 if (root.username !== (msg.username || "")) {
                     root.resolvedChallengeIds = []
                     root.pendingInvitation = null
+                    pgnExport.reset()
                 }
                 root.hasToken = true
                 root.authenticationState = "authenticated"
@@ -475,6 +481,8 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
+            } else if (msg.type === "PgnExported" || msg.type === "PgnExportFailed") {
+                pgnExport.handleMessage(msg)
             } else if (msg.type === "GameMoves" || msg.type === "GameMovesFailed") {
                 var request = root.pendingReview
                 if (!request || msg.request_id !== request.id) return
@@ -497,6 +505,7 @@ Rectangle {
                     // Scope the return data to this replay. A root cache can reach
                     // later visits, while saved settings would outlive sign-out.
                     screenLoader.setSource("GameReviewScreen.qml", {
+                        pgnGameId: request.gameId,
                         returnToGameHistory: function() { root.returnToGameHistory(visit) }
                     })
                     if (msg.variation_storage === true && screenLoader.item) {
@@ -562,6 +571,14 @@ Rectangle {
 
     function navigateTo(screenName) {
         screenLoader.source = screenName
+    }
+
+    PgnExportDialog {
+        id: pgnExport
+        anchors.fill: parent
+        darkMode: root.darkMode
+        backendSender: root.sendToBackend
+        nextRequestId: root.nextRequestId
     }
 
     Loader {
@@ -695,6 +712,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGameReview")) {
                 item.openGameReview = root.openGameReview
+            }
+            if (item.hasOwnProperty("openPgnExport")) {
+                item.openPgnExport = root.openPgnExport
             }
             if (item.hasOwnProperty("nextRequestId")) {
                 item.nextRequestId = root.nextRequestId

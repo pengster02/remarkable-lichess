@@ -32,6 +32,7 @@
         <file>ui/VariationTree.js</file>
         <file>ui/VariationDialog.qml</file>
         <file>ui/OpeningExplorerDialog.qml</file>
+        <file>ui/PgnExportDialog.qml</file>
         <file>ui/BoardScreen.qml</file>
         <file>ui/BoardSquare.qml</file>
         <file>ui/BoardStyle.qml</file>

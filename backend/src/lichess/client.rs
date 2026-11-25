@@ -4,6 +4,7 @@ use crate::lichess::models::{
     PlayingResponse, UserStatus,
 };
 use crate::lichess::stream::parse_ndjson_line;
+use crate::pgn_export::{PgnExport, PgnGameId};
 use crate::protocol::{HistoryCursor, OpeningDatabase, OpeningExplorerData};
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
@@ -386,6 +387,26 @@ impl LichessClient {
             return Err(error_from_response("export_game", resp).await);
         }
         Ok(resp.json::<GameExport>().await?)
+    }
+
+    pub async fn export_pgn(&self, game_id: PgnGameId) -> Result<PgnExport> {
+        // Raw PGN preserves Lichess annotations byte for byte. Rebuilding it
+        // loses metadata, and pgnInJson adds bytes to every review load.
+        const MEDIA_TYPE: &str = "application/x-chess-pgn";
+        let response = self.send_logged("export PGN", self.bearer(self.http
+            .get(format!("{}/game/export/{}", self.base_url, game_id.as_str()))
+            .header(reqwest::header::ACCEPT, MEDIA_TYPE)
+            .query(&[("clocks", "true"), ("evals", "true"), ("opening", "true"), ("literate", "true")])))
+            .await?;
+        if !response.status().is_success() {
+            return Err(error_from_response("export PGN", response).await);
+        }
+        let media_type = response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next());
+        anyhow::ensure!(media_type.is_some_and(|value| value.trim().eq_ignore_ascii_case(MEDIA_TYPE)),
+            "Lichess did not return PGN");
+        PgnExport::from_response(game_id, response.bytes().await?.to_vec())
     }
 
     pub async fn get_cloud_evaluation(&self, fen: &str) -> Result<Option<CloudEvaluation>> {

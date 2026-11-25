@@ -20,7 +20,7 @@ The current UI supports:
   contract-gated draw/takeback,
   abort/resign, opponent-left claims, time gifts, typed action-completion
   feedback, reconnect and game-over states;
-- game-history filters and finished-game review;
+- game-history filters, finished-game review, and local PGN export;
 - clickable move notation, first/previous/next/last, board flip, annotations,
   locally saved branches in Explore, on-demand opening statistics, and cached
   Lichess cloud evaluation with a SAN best line;
@@ -37,6 +37,7 @@ The current UI supports:
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
 | Review variations | `frontend/ui/VariationTree.js`, `backend/src/variations.rs` | Branch navigation and per-account, per-game persistence |
 | Opening explorer | `frontend/ui/OpeningExplorerDialog.qml`, `backend/src/game/replay.rs` | On-demand database results and legal continuation moves |
+| PGN export | `frontend/ui/PgnExportDialog.qml`, `backend/src/pgn_export.rs` | Scoped download, raw file validation, and atomic save |
 | Visual system | `frontend/ui/Theme.qml`, `BoardStyle.qml`, `BoardPreview.qml`, `ChessDisplay.qml` | App chrome, board appearance, settings preview, and API-to-display mappings |
 | Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `EinkRefreshArea.qml`, `MoveRequestGate.qml`, `MoveListRow.qml`, `MoveListCell.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, refresh policy, move submission, score-sheet rows, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
@@ -140,6 +141,8 @@ Minimum emulator smoke test:
 3. Request Cloud evaluation from Menu and verify the eval and best line.
    Open Opening explorer from an early position, compare the two databases,
    and select a continuation to verify it enters Explore from that position.
+   Export a PGN and verify the saved file from the dialog path. Export a
+   variant directly from Game History if its review is unavailable.
 4. Enter Explore and make a tap move and a drag move. Use Previous to back up,
    try another move, then select both lines. Reopen the review and verify the
    saved lines are still available from their archived position.
@@ -286,9 +289,8 @@ current firmware before deployment.
 
 ## Highest-value remaining work
 
-1. PGN export before platform-specific sharing.
-2. A final real-device pass for ghosting, latency, physical touch size, and
-   Paper Pro Move orientation.
+A final real-device pass for ghosting, latency, physical touch size, and
+Paper Pro Move orientation.
 
 Do not add a continuously updating engine or dense desktop analysis panel by
 default; both are poor fits for e-ink.

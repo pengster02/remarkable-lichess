@@ -8,6 +8,7 @@ pub mod protocol;
 pub mod qr;
 pub mod lichess;
 pub mod game;
+pub mod pgn_export;
 pub mod settings;
 pub mod variations;
 mod storage;

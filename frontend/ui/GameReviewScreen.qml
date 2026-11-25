@@ -14,6 +14,8 @@ Rectangle {
     ChessDisplay { id: chessDisplay }
     property var backendSender
     property var returnToGameHistory
+    property var openPgnExport
+    property string pgnGameId: ""
     property bool darkMode: false
     property string boardTheme: "brown"
     property string pieceSet: "cburnett"
@@ -1060,6 +1062,16 @@ Rectangle {
                         gameReviewScreen.showReviewOptions = false
                         gameReviewScreen.showOpeningExplorer = true
                         gameReviewScreen.requestOpeningStatistics()
+                    }
+                }
+                AppButton {
+                    objectName: "openPgnExportButton"
+                    width: parent.width
+                    visible: gameReviewScreen.pgnGameId.length > 0 && !!gameReviewScreen.openPgnExport
+                    text: "Export PGN"
+                    onClicked: {
+                        gameReviewScreen.showReviewOptions = false
+                        gameReviewScreen.openPgnExport(gameReviewScreen.pgnGameId, true)
                     }
                 }
                 AppButton {
