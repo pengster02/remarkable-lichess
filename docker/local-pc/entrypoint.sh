@@ -9,32 +9,9 @@ BUILD_ROOT="/tmp/remarkable-lichess-build"
 APPLOAD_BUILD_DIR="${BUILD_ROOT}/appload"
 export REMARKABLE_LICHESS_CONFIG_DIR="${REMARKABLE_LICHESS_CONFIG_DIR:-/tmp/remarkable-lichess-config}"
 
-CONFIG_EXISTS=0
-if [ -d "$REMARKABLE_LICHESS_CONFIG_DIR" ]; then
-  CONFIG_EXISTS=1
-fi
 install -d -m 0700 "$REMARKABLE_LICHESS_CONFIG_DIR"
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
-# Sign-out removes the token file. Checking that file would sign the user back in.
-# A separate initialization marker would have to stay in sync with migrated data.
-if [ -n "${LICHESS_TOKEN:-}" ] &&
-  { [ "${LICHESS_TOKEN_IF_NEW:-0}" != 1 ] || [ "$CONFIG_EXISTS" = 0 ]; }; then
-  if ! (
-    umask 077
-    token_file="$(mktemp "$REMARKABLE_LICHESS_CONFIG_DIR/.token.XXXXXXXX")" || exit 1
-    trap 'rm -f -- "$token_file"' EXIT
-    printf '%s\n' "$LICHESS_TOKEN" > "$token_file" &&
-      mv -fT -- "$token_file" "$REMARKABLE_LICHESS_CONFIG_DIR/token"
-  ); then
-    if [ "$CONFIG_EXISTS" = 0 ]; then
-      rmdir -- "$REMARKABLE_LICHESS_CONFIG_DIR" || true
-    fi
-    exit 1
-  fi
-  echo "==> Seeded sign-in for the emulator"
-fi
-unset LICHESS_TOKEN LICHESS_TOKEN_IF_NEW
 
 echo "==> Building AppLoad PC emulator for Linux"
 export XOVI_REPO="${XOVI_SRC}"

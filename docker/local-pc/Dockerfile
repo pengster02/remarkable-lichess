@@ -51,6 +51,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 WORKDIR /opt
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY check-display.py /usr/local/bin/check-display.py
+COPY seed-token.sh /usr/local/bin/seed-token.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 6080

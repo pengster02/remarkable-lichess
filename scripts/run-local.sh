@@ -4,6 +4,10 @@ set -euo pipefail
 # Run remarkable-lichess in AppLoad's Linux PC emulator via Docker + noVNC.
 # macOS cannot host AppLoad backends (no AF_UNIX SOCK_SEQPACKET).
 
+unset emulator_token
+emulator_token="${LICHESS_TOKEN:-}"
+unset LICHESS_TOKEN
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Sibling clones live next to this repo (e.g. ~/rm-appload, ~/xovi).
 HOST_ROOT="$(cd "${ROOT}/.." && pwd)"
@@ -48,10 +52,10 @@ CONFIG_MOUNT="type=volume,src=${CONFIG_VOLUME},dst=${CONFIG_ROOT},volume-nocopy"
 
 # Optional token: env LICHESS_TOKEN, or repo-local gitignored file.
 TOKEN_FILE="${TOKEN_FILE:-${ROOT}/.lichess-token}"
-TOKEN_IF_NEW=0
-if [ -z "${LICHESS_TOKEN:-}" ] && [ -f "${TOKEN_FILE}" ]; then
-  LICHESS_TOKEN="$(tr -d ' \t\r\n' < "${TOKEN_FILE}")"
-  TOKEN_IF_NEW=1
+TOKEN_MODE=replace
+if [ -z "$emulator_token" ] && [ -f "${TOKEN_FILE}" ]; then
+  emulator_token="$(tr -d ' \t\r\n' < "${TOKEN_FILE}")"
+  TOKEN_MODE=initial
 fi
 
 echo "Building local-pc image (first run is slow)..."
@@ -95,26 +99,49 @@ migrate_legacy_config() (
     ' migrate "${CONFIG_DIR}" "${CONFIG_ROOT}" "${legacy##*/}" < "${backup}/config.tar"
 )
 
+restart_previous() {
+  if [ "${PREVIOUS_STOPPED}" = 1 ]; then
+    docker start "${PREVIOUS_ID}" >/dev/null ||
+      echo "Could not restart ${NAME}. Retry with docker start ${NAME}." >&2
+  fi
+}
+
 PREVIOUS_ID="$(docker ps -a --no-trunc --format '{{.ID}} {{.Names}}' |
   awk -v name="${NAME}" '$2 == name { print $1 }')"
+PREVIOUS_STOPPED=0
 if [ -n "${PREVIOUS_ID}" ]; then
   PREVIOUS_MOUNT="$(docker container inspect --format \
     "{{range .Mounts}}{{if eq .Destination \"${CONFIG_ROOT}\"}}{{.Type}} {{.Name}}{{end}}{{end}}" \
     "${PREVIOUS_ID}")"
+  NEEDS_MIGRATION=0
   if [ "${PREVIOUS_MOUNT}" != "volume ${CONFIG_VOLUME}" ]; then
+    NEEDS_MIGRATION=1
+  fi
+  if [ "${NEEDS_MIGRATION}" = 1 ] || { [ "${TOKEN_MODE}" = replace ] && [ -n "$emulator_token" ]; }; then
     PREVIOUS_RUNNING="$(docker container inspect --format '{{.State.Running}}' "${PREVIOUS_ID}")"
     if [ "${PREVIOUS_RUNNING}" = true ]; then
       docker stop "${PREVIOUS_ID}" >/dev/null
-    fi
-    if ! migrate_legacy_config "${PREVIOUS_ID}"; then
-      echo "Could not preserve configuration from ${NAME}. Its container is still available." >&2
-      if [ "${PREVIOUS_RUNNING}" = true ]; then
-        docker start "${PREVIOUS_ID}" >/dev/null ||
-          echo "Could not restart ${NAME}. Retry with docker start ${NAME}." >&2
-      fi
-      exit 1
+      PREVIOUS_STOPPED=1
     fi
   fi
+  if [ "${NEEDS_MIGRATION}" = 1 ] && ! migrate_legacy_config "${PREVIOUS_ID}"; then
+    echo "Could not preserve configuration from ${NAME}. Its container is still available." >&2
+    restart_previous
+    exit 1
+  fi
+fi
+
+# Docker retains env vars and command arguments. The one-shot helper reads stdin.
+if [ -n "$emulator_token" ] &&
+  ! printf '%s\n' "$emulator_token" | docker run --rm --network none -i --mount "${CONFIG_MOUNT}" \
+    --entrypoint /bin/bash "${IMAGE}" /usr/local/bin/seed-token.sh "${CONFIG_DIR}" "${TOKEN_MODE}"; then
+  echo "Could not seed the emulator token." >&2
+  restart_previous
+  exit 1
+fi
+unset emulator_token
+
+if [ -n "${PREVIOUS_ID}" ]; then
   docker rm -f "${PREVIOUS_ID}" >/dev/null
 fi
 
@@ -135,10 +162,6 @@ RUN_ARGS=(
   -e APPLOAD_SRC=/workspace/rm-appload
   -e XOVI_SRC=/workspace/xovi
 )
-if [ -n "${LICHESS_TOKEN:-}" ]; then
-  export LICHESS_TOKEN
-  RUN_ARGS+=(-e LICHESS_TOKEN -e "LICHESS_TOKEN_IF_NEW=${TOKEN_IF_NEW}")
-fi
 
 echo "Starting emulator on http://localhost:${PORT}/vnc.html"
 CONTAINER_ID="$(docker run "${RUN_ARGS[@]}" "${IMAGE}")"
