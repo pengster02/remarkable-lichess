@@ -2622,6 +2622,55 @@ TestCase {
         compare(qr.rows, matrices.join.rows)
     }
 
+    function test_computerActionStatesItsModeWithRatedSelected_data() {
+        return [
+            {tag: "Paper Pro Move", width: 954, height: 1696, color: "white", colorX: 1 / 6},
+            {tag: "Paper Pro", width: 1620, height: 2160, color: "black", colorX: 1 / 2}
+        ]
+    }
+
+    function test_computerActionStatesItsModeWithRatedSelected(data) {
+        width = data.width
+        height = data.height
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        var pager = findChild(seek, "seekFlickable")
+        verify(waitForRendering(seek))
+        var rating = findChild(seek, "gameTypeControl")
+        var label = findChild(seek, "playerGameTypeLabel")
+        verify(label.visible)
+        compare(label.text, "Games with other players")
+        mouseClick(rating, rating.width * 3 / 4, rating.height / 2)
+        compare(rating.value, "rated")
+        var color = findChild(seek, "colorControl")
+        mouseClick(color, color.width * data.colorX, color.height / 2)
+        compare(color.value, data.color)
+
+        findChild(seek, "minutesField").text = "7"
+        findChild(seek, "incrementField").text = "3"
+        findChild(seek, "aiLevelField").text = "6"
+        var section = findChild(seek, "computerSection")
+        pager.showPageContaining(section.y, section.height)
+        var start = findChild(section, "computerGameButton")
+        verify(waitForRendering(start))
+        compare(start.text, "Start casual computer game")
+        verify(start.width >= start.naturalWidth)
+        mouseClick(start, start.width / 2, start.height / 2)
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(first, {type: "ChallengeAi", request_id: seek.matchRequestId,
+                        minutes: 7, increment: 3, level: 6, color: data.color})
+        verify(!start.enabled)
+        endpoint.reply({type: "MatchCreationFailed", request_id: first.request_id, message: "Try again"})
+        compare(rating.value, "rated")
+        compare(start.text, "Start casual computer game")
+        verify(start.enabled)
+        verify(waitForRendering(start))
+        mouseClick(start, start.width / 2, start.height / 2)
+        var retry = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        verify(retry.request_id > first.request_id)
+        compare(retry, Object.assign({}, first, {request_id: retry.request_id}))
+    }
+
     function test_matchCreationIsScopedAcrossVisits_data() {
         return [{tag: "computer", action: "computer", success: "ComputerGameCreated",
                  button: "computerGameButton", busyText: "Starting game…"},
