@@ -1476,6 +1476,8 @@ TestCase {
         var next = findChild(pager, "pageDownButton")
         var older = findChild(history, "loadOlderGamesButton")
         verify(waitForRendering(pager))
+        var initialCards = archiveRows(history)
+        compare(initialCards.length, 20)
         for (var page = 1; page < pager.pageCount; page++) mouseClick(next, next.width / 2, next.height / 2)
         verify(!next.enabled)
         var oldOffset = pager.contentY
@@ -1503,7 +1505,8 @@ TestCase {
         verify(retry.request_id > first.request_id)
         compare(retry, Object.assign({}, first, {request_id: retry.request_id}))
 
-        var olderGame = {game_id: "older-0", opponent_name: "Earlier opponent", review_supported: true}
+        var olderGame = {game_id: "older-0", opponent_name: "Earlier opponent", review_supported: true,
+                         your_analysis: {accuracy: 95, blunders: 1, mistakes: 2}}
         var nextCursor = {until_ms: 1765526398001}
         endpoint.reply({type: "GameHistory", request_id: first.request_id, games: [{game_id: "stale"}]})
         verify(history.loadingOlder)
@@ -1515,7 +1518,13 @@ TestCase {
         tryVerify(function() { return next.enabled })
         tryCompare(pager, "contentY", oldOffset)
 
-        var card = archiveRows(history)[20]
+        var appendedCards = archiveRows(history)
+        compare(appendedCards.length, 21)
+        for (var rowIndex = 0; rowIndex < initialCards.length; rowIndex++) {
+            verify(initialCards[rowIndex] === appendedCards[rowIndex], "Recreated archive card " + rowIndex)
+        }
+        var card = appendedCards[20]
+        compare(findChild(card, "historyAnalysis").text, "Accuracy 95% · 1 blunders, 2 mistakes")
         pager.showPageContaining(card.y, card.height)
         verify(waitForRendering(card))
         mouseClick(card, card.width / 2, card.height / 2)
@@ -1530,11 +1539,19 @@ TestCase {
         compare(returned.games.length, 21)
         compare(returned.nextHistoryCursor, nextCursor)
         compare(returned.filterSummary(), "Rated · Rapid · Played Black")
+        var restoredCards = archiveRows(returned)
+        compare(restoredCards.length, 21)
+        compare(findChild(restoredCards[20], "historyAnalysis").text,
+                "Accuracy 95% · 1 blunders, 2 mistakes")
         returned.loadOlderGames()
         var last = historyRequests().slice(-1)[0]
         compare(last.cursor, nextCursor)
         endpoint.reply({type: "GameHistory", request_id: last.request_id, games: [{game_id: "oldest"}]})
         compare(returned.games.length, 22)
+        var finalCards = archiveRows(returned)
+        compare(finalCards.length, 22)
+        verify(finalCards[20] === restoredCards[20])
+        compare(finalCards[21].modelData.game_id, "oldest")
         verify(!findChild(returned, "loadOlderGamesButton").visible)
     }
 
