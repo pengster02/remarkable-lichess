@@ -1,6 +1,6 @@
 import QtQuick 2.5
 
-// Draws the module matrix the backend hands over (see lichess::oauth::qr_rows),
+// Draws the module matrix the backend hands over (see qr::QrMatrix),
 // one '0'/'1' character per module, one string per row.
 //
 // Canvas rather than a Repeater of Rectangles: a URL this long encodes to a

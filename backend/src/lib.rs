@@ -5,6 +5,7 @@
 //! once Task 8 introduces it.
 
 pub mod protocol;
+pub mod qr;
 pub mod lichess;
 pub mod game;
 pub mod settings;

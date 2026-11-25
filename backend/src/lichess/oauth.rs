@@ -25,8 +25,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use qrcode::types::Color;
-use qrcode::QrCode;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::time::Duration;
@@ -221,25 +219,6 @@ async fn exchange_code(
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("Lichess sent no access token"))
-}
-
-/// The QR is handed over as one `'0'`/`'1'` string per row. Alternatives:
-/// (1) a nested `Vec<Vec<bool>>`, several times the JSON for the same data;
-/// (2) a bit-packed base64 blob, smaller but needing unpacking code in QML --
-/// a row string is already directly indexable there with `charAt`.
-pub fn qr_rows(data: &str) -> Result<(u32, Vec<String>)> {
-    let code = QrCode::new(data.as_bytes()).context("couldn't encode the sign-in QR code")?;
-    let width = code.width();
-    let rows = code
-        .to_colors()
-        .chunks(width)
-        .map(|row| {
-            row.iter()
-                .map(|c| if *c == Color::Dark { '1' } else { '0' })
-                .collect::<String>()
-        })
-        .collect();
-    Ok((width as u32, rows))
 }
 
 fn authorize_url(base_url: &str, redirect_uri: &str, state: &str, challenge: &str) -> String {
@@ -449,14 +428,6 @@ mod tests {
         let params = query_params("/?error_description=Access%20denied&state=a%2Bb");
         assert_eq!(params[0].1, "Access denied");
         assert_eq!(params[1].1, "a+b");
-    }
-
-    #[test]
-    fn qr_rows_are_square_and_match_the_reported_width() {
-        let (width, rows) = qr_rows("https://lichess.org/oauth?response_type=code").unwrap();
-        assert_eq!(rows.len(), width as usize);
-        assert!(rows.iter().all(|row| row.len() == width as usize));
-        assert!(rows.iter().any(|row| row.contains('1')));
     }
 
     #[tokio::test]

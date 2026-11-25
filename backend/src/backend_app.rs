@@ -10,8 +10,10 @@ use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
     GameAction, GameActionRequest, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
-    MoveRequest, OfferRequest, OpponentDeparture, PlayerStatusSummary, MSG_TYPE_BACKEND_TO_FRONTEND,
+    MoveRequest, OfferRequest, OpenChallengeQrCodes, OpponentDeparture, PlayerStatusSummary,
+    MSG_TYPE_BACKEND_TO_FRONTEND,
 };
+use crate::qr::QrMatrix;
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -497,7 +499,7 @@ impl LichessBackend {
                 return;
             }
         };
-        let (qr_size, qr_rows) = match oauth::qr_rows(&pending.authorize_url) {
+        let qr = match QrMatrix::encode(&pending.authorize_url) {
             Ok(qr) => qr,
             Err(e) => {
                 log::warn!("start_login: {e}");
@@ -509,8 +511,8 @@ impl LichessBackend {
             replier,
             &BackendMessage::LoginChallenge {
                 authorize_url: pending.authorize_url.clone(),
-                qr_size,
-                qr_rows,
+                qr_size: qr.size,
+                qr_rows: qr.rows,
                 expires_in_secs: oauth::LOGIN_TIMEOUT.as_secs(),
                 request_id,
             },
@@ -1524,6 +1526,9 @@ async fn run_match_request(
         MatchKind::Open { rated } => match client.create_open_challenge(minutes, increment, *rated).await {
             Ok(challenge) => BackendMessage::OpenChallengeCreated {
                 game_id: challenge.id,
+                qr_codes: Box::new(OpenChallengeQrCodes::from_links(
+                    &challenge.url, &challenge.url_white, &challenge.url_black,
+                )),
                 url: challenge.url,
                 url_white: challenge.url_white,
                 url_black: challenge.url_black,
