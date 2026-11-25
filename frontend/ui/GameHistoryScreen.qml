@@ -14,6 +14,7 @@ Rectangle {
     // RequestGameMoves *and* remembers the tapped row's own summary so
     // GameReviewScreen's header can show who was played, not just moves/fens.
     property var selectGameForReview
+    property var openPgnExport
     property var games: []
     // "all"/"rated"/"casual" -- "all" sends rated: null, matching GET
     // /api/games/user's own default of no rated/casual filter at all.
@@ -306,6 +307,7 @@ Rectangle {
                 readonly property var modelData: gameHistoryScreen.games[gameIndex] || ({})
                 readonly property var analysis: modelData.your_analysis || null
                 readonly property bool canReview: modelData.review_supported !== false
+                readonly property bool canExport: !!gameHistoryScreen.openPgnExport && !!modelData.game_id
                 readonly property string variantLabel: chessDisplay.variantLabel(modelData.variant)
                 width: parent.width
                 // Never thinner than the shared list-row touch floor, however
@@ -327,10 +329,11 @@ Rectangle {
 
                 MouseArea {
                     anchors.fill: parent
-                    enabled: gameCard.canReview
+                    enabled: gameCard.canReview || gameCard.canExport
                     onClicked: {
                         gameHistoryScreen.errorMessage = ""
-                        gameHistoryScreen.selectGameForReview(modelData)
+                        if (gameCard.canReview) gameHistoryScreen.selectGameForReview(modelData)
+                        else gameHistoryScreen.openPgnExport(modelData.game_id, false)
                     }
                 }
 
@@ -445,7 +448,7 @@ Rectangle {
                     Text {
                         objectName: "historyReviewUnavailable"
                         visible: !gameCard.canReview
-                        text: "Review unavailable"
+                        text: gameCard.canExport ? "Review unavailable · Export PGN" : "Review unavailable"
                         font.pixelSize: theme.fontSmall
                         width: rowContent.width
                         wrapMode: Text.WordWrap

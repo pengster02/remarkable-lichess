@@ -186,6 +186,8 @@ pub enum FrontendMessage {
         cursor: Option<HistoryCursor>,
     },
     CancelGameHistory { request_id: u32 },
+    RequestPgnExport { game_id: String, request_id: u32 },
+    CancelPgnExport { request_id: u32 },
     // POST /api/challenge/open -- a shareable link either side can open to start
     // the game, no destination username needed (unlike CreateChallenge). Uses
     // the same minutes/increment/rated fields as CreateSeek/CreateChallenge; no
@@ -729,6 +731,14 @@ pub enum BackendMessage {
         next_cursor: Option<HistoryCursor>,
     },
     GameHistoryFailed {
+        request_id: u32,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
+    PgnExported { game_id: String, request_id: u32, path: String },
+    PgnExportFailed {
+        game_id: String,
         request_id: u32,
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]

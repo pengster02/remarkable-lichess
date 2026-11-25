@@ -98,7 +98,7 @@ network analysis runs on request.
 
 | Game history | Replay | Board options |
 | --- | --- | --- |
-| <img src="docs/images/game-history.png" width="250" alt="Game history with rated, speed, and color filters"> | <img src="docs/images/review.png" width="250" alt="Reviewing a game at move 12 with the score sheet in sync"> | <img src="docs/images/review-menu.png" width="250" alt="Board options with cloud evaluation and opening explorer"> |
+| <img src="docs/images/game-history.png" width="250" alt="Game history with rated, speed, and color filters"> | <img src="docs/images/review.png" width="250" alt="Reviewing a game at move 12 with the score sheet in sync"> | <img src="docs/images/review-menu.png" width="250" alt="Board options with cloud evaluation, opening explorer, and Export PGN"> |
 
 | Cloud evaluation | Explore |
 | --- | --- |
@@ -116,6 +116,20 @@ Choose **Menu → Opening explorer** to look up the displayed position in the
 Masters or Lichess rated database. The panel shows the opening name when
 available and the results for common continuations. Tap a move to try it in
 Explore. The rated database uses your Lichess sign-in.
+
+Choose **Menu → Export PGN** in Review to save the original Lichess game with
+its clocks and annotations when available. For variants without replay, tap
+**Export PGN** on the Game History card. The dialog shows the saved file path.
+
+The default tablet export directory is
+`/home/root/.config/remarkable-lichess/exports`. Copy the file from the
+tablet over SSH, or from the default emulator before restarting its container.
+Replace `GAMEID` with the game ID shown in the filename.
+
+```sh
+scp root@10.11.99.1:/home/root/.config/remarkable-lichess/exports/GAMEID.pgn .
+docker cp remarkable-lichess-local:/tmp/remarkable-lichess-config/exports/GAMEID.pgn .
+```
 
 ### Settings
 
@@ -153,6 +167,7 @@ resign/abort guard.
 - Replay with tappable notation, first/previous/next/last, board flip
 - On-demand cached Lichess cloud evaluation with a SAN best line
 - On-demand master and rated-game opening statistics with playable moves
+- Local PGN export with the original Lichess tags, clocks, and annotations
 - Explore mode with locally saved variation branches
 
 **Built for the device**
@@ -402,8 +417,8 @@ The constraints that shaped this app, and that changes should respect:
 | [`docs/DEVELOPER_HANDOFF.md`](docs/DEVELOPER_HANDOFF.md) | The fastest path to running, understanding, and extending the app |
 | [`docs/remarkable-appload-platform-notes.md`](docs/remarkable-appload-platform-notes.md) | AppLoad, XOVI, e-ink refresh, build, and deploy constraints |
 
-Known remaining work includes PGN export and a final real-device pass for
-ghosting, latency, and Paper Pro Move orientation.
+Known remaining work includes a final real-device pass for ghosting, latency,
+and Paper Pro Move orientation.
 
 ---
 

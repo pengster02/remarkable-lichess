@@ -8,6 +8,7 @@ use crate::lichess::oauth;
 use crate::lichess::models::{ChallengeResolution, ChallengeResult, EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
+use crate::pgn_export::PgnGameId;
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
     GameAction, GameActionRequest, HistoryCursor, HistoryGameSummary, MoveAnalysis, OngoingGameSummary,
@@ -36,6 +37,7 @@ const LICHESS_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. Try again shortly.";
 const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.";
 const OPENING_RATE_LIMIT_MESSAGE: &str = "Lichess limited opening statistics requests.";
+const PGN_RATE_LIMIT_MESSAGE: &str = "Lichess limited PGN export requests.";
 
 struct StreamReconnectDelay {
     next: Duration,
@@ -326,6 +328,8 @@ pub struct LichessBackend {
     // Keep the export cooldown across screen visits. A QML-only timer misses
     // reentry, while an API-wide gate could interrupt live play.
     history_retry_after: Arc<Mutex<Option<Instant>>>,
+    pgn_export: Option<GameRequest>,
+    pgn_retry_after: Arc<Mutex<Option<Instant>>>,
     review_export: Option<GameRequest>,
     review_scope: Option<ReviewScope>,
     opening_explorer: Option<tokio::task::JoinHandle<()>>,
@@ -365,6 +369,8 @@ impl LichessBackend {
             home_games_retry_after: Arc::new(Mutex::new(None)),
             history_load: None,
             history_retry_after: Arc::new(Mutex::new(None)),
+            pgn_export: None,
+            pgn_retry_after: Arc::new(Mutex::new(None)),
             review_export: None,
             review_scope: None,
             opening_explorer: None,
@@ -694,6 +700,27 @@ impl LichessBackend {
             send_locked(&replier, &write_lock, &reply);
         });
         self.history_load = Some(GameRequest { request_id, task, completion: None });
+    }
+
+    async fn start_pgn_export(
+        &mut self, replier: &BackendReplier<Self>, game_id: String, request_id: u32,
+    ) {
+        let Some(client) = self.client.clone() else {
+            self.send(replier, &BackendMessage::PgnExportFailed {
+                game_id, request_id, message: "Not signed in to Lichess".into(), retry_after_ms: None,
+            });
+            return;
+        };
+        stop_game_request(&mut self.pgn_export).await;
+        let config_dir = self.token_path.parent().unwrap_or_else(|| Path::new(".")).to_owned();
+        let replier = replier.clone();
+        let write_lock = self.write_lock.clone();
+        let retry_after = self.pgn_retry_after.clone();
+        let task = tokio::spawn(async move {
+            let reply = export_pgn(&client, &config_dir, game_id, request_id, &retry_after).await;
+            send_locked(&replier, &write_lock, &reply);
+        });
+        self.pgn_export = Some(GameRequest { request_id: Some(request_id), task, completion: None });
     }
 
     async fn start_game_review_export(
@@ -1100,6 +1127,7 @@ impl LichessBackend {
     async fn stop_authenticated_activity(&mut self) {
         self.review_scope = None;
         stop_task(&mut self.opening_explorer).await;
+        stop_game_request(&mut self.pgn_export).await;
         stop_task(&mut self.home_games).await;
         stop_task(&mut self.home_ratings).await;
         stop_game_request(&mut self.history_load).await;
@@ -1460,6 +1488,42 @@ async fn send_pending_challenges(
         }
     };
     send_locked(replier, write_lock, &msg);
+}
+
+async fn export_pgn(
+    client: &LichessClient, config_dir: &Path, game_id: String, request_id: u32,
+    retry_after: &Mutex<Option<Instant>>,
+) -> BackendMessage {
+    let failed = |message: &str, delay: Option<Duration>| BackendMessage::PgnExportFailed {
+        game_id: game_id.clone(), request_id, message: message.into(),
+        retry_after_ms: delay.map(|remaining| remaining.as_millis().max(1) as u32),
+    };
+    let Some(valid_id) = PgnGameId::parse(game_id.clone()) else {
+        return failed("This game does not have a valid Lichess ID.", None);
+    };
+    let remaining = retry_after.lock().await
+        .and_then(|until| until.checked_duration_since(Instant::now()));
+    if let Some(remaining) = remaining {
+        return failed(PGN_RATE_LIMIT_MESSAGE, Some(remaining));
+    }
+    let pgn = match client.export_pgn(valid_id).await {
+        Ok(pgn) => pgn,
+        Err(error) if is_rate_limited(&error) => {
+            *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+            return failed(PGN_RATE_LIMIT_MESSAGE, Some(LICHESS_RATE_LIMIT_DELAY));
+        }
+        Err(error) => {
+            log::warn!("could not download game PGN: {error}");
+            return failed("Could not download the game's PGN from Lichess.", None);
+        }
+    };
+    match pgn.save(config_dir) {
+        Ok(path) => BackendMessage::PgnExported { game_id, request_id, path: path.to_string_lossy().into_owned() },
+        Err(error) => {
+            log::warn!("could not save game PGN: {error}");
+            failed("Could not save the PGN file.", None)
+        }
+    }
 }
 
 async fn fetch_opening_explorer(
@@ -2027,6 +2091,7 @@ impl AppLoadBackend for LichessBackend {
             // The new frontend starts its request sequence over.
             self.review_scope = None;
             stop_task(&mut self.opening_explorer).await;
+            stop_game_request(&mut self.pgn_export).await;
             self.stop_sign_in(None).await;
             stop_task(&mut self.home_games).await;
             stop_task(&mut self.home_ratings).await;
@@ -2216,6 +2281,12 @@ impl AppLoadBackend for LichessBackend {
             }
             FrontendMessage::CancelGameHistory { request_id } => {
                 cancel_game_request(&mut self.history_load, request_id).await;
+            }
+            FrontendMessage::RequestPgnExport { game_id, request_id } => {
+                self.start_pgn_export(replier, game_id, request_id).await;
+            }
+            FrontendMessage::CancelPgnExport { request_id } => {
+                cancel_game_request(&mut self.pgn_export, request_id).await;
             }
             FrontendMessage::CreateOpenChallenge { minutes, increment, rated, request_id } => {
                 self.start_match_request(replier, MatchRequest {

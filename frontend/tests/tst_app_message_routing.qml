@@ -1462,6 +1462,93 @@ TestCase {
         })
     }
 
+    function pgnRequests() {
+        return endpoint.sentMessages.filter(function(message) { return message.type === "RequestPgnExport" })
+    }
+
+    function test_reviewPgnExportTracksRetryReceiptAndCancellation() {
+        app.openGameReview("arch0001", null)
+        var request = endpoint.sentMessages.slice(-1)[0]
+        replyWithMoves(request.request_id, "e4")
+        var review = screen.item
+        review.goNext()
+        review.showReviewOptions = true
+        var action = findChild(review, "openPgnExportButton")
+        verify(action && waitForRendering(action))
+        compare(pgnRequests().length, 0)
+        mouseClick(action, action.width / 2, action.height / 2)
+        var dialog = findChild(app, "pgnExportDialog")
+        var status = findChild(dialog, "pgnExportStatus")
+        var file = findChild(dialog, "pgnExportPath")
+        verify(dialog.visible && dialog.saving)
+        compare(status.text, "Saving PGN…")
+        var first = pgnRequests().slice(-1)[0]
+        compare(first.game_id, "arch0001")
+        endpoint.reply({type: "PgnExported", request_id: first.request_id, game_id: "wrong001", path: "/wrong"})
+        verify(dialog.saving && !file.visible)
+
+        endpoint.reply({type: "PgnExportFailed", request_id: first.request_id, game_id: "arch0001",
+                        retry_after_ms: 400, message: "Lichess limited PGN export requests."})
+        var retry = findChild(dialog, "savePgnButton")
+        verify(retry.visible && !retry.enabled)
+        compare(retry.text, "Retry available shortly")
+        dialog.requestSave()
+        compare(pgnRequests().length, 1)
+        tryCompare(retry, "enabled", true)
+        compare(pgnRequests().length, 1)
+        retry.clicked()
+        var retried = pgnRequests().slice(-1)[0]
+        verify(retried.request_id > first.request_id)
+        var path = "/home/root/.config/remarkable-lichess/exports/arch0001.pgn"
+        endpoint.reply({type: "PgnExported", request_id: retried.request_id, game_id: "arch0001", path: path})
+        compare(status.text, "PGN saved")
+        compare(file.text, path)
+        verify(file.visible)
+        compare(review.currentIndex, 1)
+
+        compare(retry.text, "Export again")
+        retry.clicked()
+        var canceled = pgnRequests().slice(-1)[0]
+        var close = findChild(dialog, "closePgnExportButton")
+        compare(close.text, "Cancel")
+        close.clicked()
+        compare(endpoint.sentMessages.slice(-1)[0],
+                {type: "CancelPgnExport", request_id: canceled.request_id})
+        endpoint.reply({type: "PgnExported", request_id: canceled.request_id,
+                        game_id: "arch0001", path: "/unexpected"})
+        verify(!dialog.visible && !dialog.saving)
+        compare(file.text, path)
+        compare(pgnRequests().length, 3)
+        compare(screen.item, review)
+    }
+
+    function test_historyCanExportAVariantWithoutOpeningReview() {
+        var history = screen.item
+        endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest,
+                        games: [{game_id: "var00001", variant: "crazyhouse", review_supported: false}]})
+        var card = findChild(history, "historyGameRow")
+        verify(card && waitForRendering(card))
+        compare(findChild(card, "historyReviewUnavailable").text, "Review unavailable · Export PGN")
+        var before = endpoint.sentMessages.length
+        mouseClick(card, card.width / 2, card.height / 2)
+        var dialog = findChild(app, "pgnExportDialog")
+        verify(dialog.visible && !dialog.saving)
+        compare(dialog.gameId, "var00001")
+        compare(endpoint.sentMessages.length, before)
+        findChild(dialog, "savePgnButton").clicked()
+        var saved = pgnRequests().slice(-1)[0]
+        compare(saved.game_id, "var00001")
+        verify(dialog.saving)
+        compare(screen.item, history)
+
+        endpoint.reply({type: "AuthenticationRequired"})
+        verify(!dialog.visible && !dialog.saving)
+        endpoint.reply({type: "PgnExported", request_id: saved.request_id,
+                        game_id: "var00001", path: "/unexpected"})
+        compare(dialog.savedPath, "")
+        verify(String(screen.source).endsWith("LoginScreen.qml"))
+    }
+
     function test_historyRateLimitHoldsInitialRetryAcrossFilterChanges() {
         var requestId = applyHistoryFilters("rapid")
         var history = screen.item
