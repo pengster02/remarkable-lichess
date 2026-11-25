@@ -94,7 +94,9 @@ The `.lichess-token` file seeds a new configuration. Run
 `./scripts/connect-lichess.sh` or pass `LICHESS_TOKEN` explicitly to the launcher
 to replace the token in an existing configuration. A short-lived container reads
 the token from standard input and writes it to the private config volume.
-[README instructions](../README.md#run-locally)
+The main emulator mounts the app's `backend/` and `frontend/` directories
+read-only. The checkout root stays on the host. Cargo and RCC output go to the
+emulator's build volume. [README instructions](../README.md#run-locally)
 
 For a quick frontend-only redeploy into an already running emulator:
 

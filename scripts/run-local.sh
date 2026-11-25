@@ -45,6 +45,7 @@ if ! [[ "${READY_TIMEOUT}" =~ ^[1-9][0-9]{0,5}$ ]]; then
 fi
 CONFIG_ROOT="/var/lib/remarkable-lichess"
 CONFIG_DIR="${CONFIG_ROOT}/config"
+APP_SRC="/workspace/remarkable-lichess"
 # A named volume follows the emulator name. A checkout bind follows the source tree.
 # Container-local storage disappears on replacement.
 CONFIG_VOLUME="${NAME}-config"
@@ -148,7 +149,10 @@ fi
 RUN_ARGS=(
   -d --name "${NAME}"
   -p "127.0.0.1:${PORT}:6080"
-  -v "${ROOT}:/workspace/remarkable-lichess"
+  # Source binds preserve live edits. A whole checkout exposes host credentials.
+  # Copying sources into the image would require rebuilding it after an edit.
+  -v "${ROOT}/backend:${APP_SRC}/backend:ro"
+  -v "${ROOT}/frontend:${APP_SRC}/frontend:ro"
   -v "${APPLOAD_HOST}:/workspace/rm-appload"
   -v "${XOVI_HOST}:/workspace/xovi"
   --mount "${CONFIG_MOUNT}"
@@ -158,7 +162,8 @@ RUN_ARGS=(
   -v "${CACHE_PREFIX}-${BUILD_KEY}-build:/tmp/remarkable-lichess-build"
   -v "${CACHE_PREFIX}-cargo-registry:/usr/local/cargo/registry"
   -v "${CACHE_PREFIX}-cargo-git:/usr/local/cargo/git"
-  -e APP_SRC=/workspace/remarkable-lichess
+  -e "APP_SRC=${APP_SRC}"
+  -e CARGO_TARGET_DIR=/tmp/remarkable-lichess-build/backend
   -e APPLOAD_SRC=/workspace/rm-appload
   -e XOVI_SRC=/workspace/xovi
 )

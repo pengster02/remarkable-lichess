@@ -43,13 +43,14 @@ if [ -z "${RCC_BIN}" ]; then
   echo "Qt rcc not found" >&2
   exit 1
 fi
-"${RCC_BIN}" --binary -o resources.rcc application.qrc
+RCC_FILE="${BUILD_ROOT}/resources.rcc"
+"${RCC_BIN}" --binary -o "${RCC_FILE}" application.qrc
 
 echo "==> Staging app into applications_root"
 rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/backend"
 cp "${APP_SRC}/frontend/manifest.json" "${APP_DIR}/manifest.json"
-cp "${APP_SRC}/frontend/resources.rcc" "${APP_DIR}/resources.rcc"
+cp "${RCC_FILE}" "${APP_DIR}/resources.rcc"
 cp "${BACKEND_BIN}" "${APP_DIR}/backend/entry"
 chmod +x "${APP_DIR}/backend/entry"
 

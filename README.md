@@ -272,9 +272,11 @@ copies configuration from an older emulator before replacing its container.
 Each custom `NAME` has its own config volume. Compiled files are scoped to the
 selected checkouts and image.
 
-A repo-local `.lichess-token` seeds the first launch of a new volume. Use
-`./scripts/connect-lichess.sh` again to replace the saved sign-in, or change it
-in the app. Signing out in the app persists across launches.
+A repo-local `.lichess-token` stays on the host and seeds the first launch of a
+new volume. Use `./scripts/connect-lichess.sh` again to replace the saved sign-in,
+or change it in the app. Signing out in the app persists across launches. The
+emulator mounts `backend/` and `frontend/` as read-only sources. Keep a custom
+`TOKEN_FILE` in the checkout root or another host-only directory.
 
 QR sign-in requires your phone to reach the backend's callback address. For the
 default Docker network, use the token prompt above or the in-app token field.
