@@ -2090,6 +2090,78 @@ TestCase {
         compare(review.currentFen(), d4)
     }
 
+    function test_exploreRecoversSavedLinesWithoutLosingLocalMoves() {
+        var reviewId = choose("recover-branches")
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [startFen],
+                        variation_storage: true})
+        var review = screen.item
+        var failure = {type: "ReviewVariationsLoadFailed", review_id: reviewId,
+                       message: "Could not load saved variations."}
+        endpoint.reply(failure)
+        review.beginExploration()
+
+        var e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var e5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var c5 = "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var d4 = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
+        endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                        requested_fen: startFen, fen: startFen, legal_moves: [{from: "e2", to: "e4"}]})
+        verify(review.requestExplorationMove("e2", "e4"))
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: startFen, san: "e4", fen: e4, legal_moves: [{from: "c7", to: "c5"}]})
+        verify(review.requestExplorationMove("c7", "c5"))
+        endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                        from_fen: e4, san: "c5", fen: c5, legal_moves: []})
+        compare(review.variationMoves, ["e4", "c5"])
+        compare(endpoint.sentMessages.slice(-1)[0].type, "MakeAnalysisMove")
+
+        findChild(review, "showVariationsButton").clicked()
+        var dialog = findChild(review, "variationDialog")
+        var retry = findChild(dialog, "retryLoadingVariationsButton")
+        verify(retry && retry.visible && retry.enabled, "failed loading should offer a retry")
+        verify(waitForRendering(retry))
+        mouseClick(retry, retry.width / 2, retry.height / 2)
+        compare(endpoint.sentMessages.slice(-1)[0], {type: "RequestReviewVariations", review_id: reviewId})
+        verify(!retry.enabled)
+        endpoint.reply(failure)
+        verify(retry.visible && retry.enabled)
+        compare(review.variationMoves, ["e4", "c5"])
+        retry.clicked()
+
+        endpoint.reply({type: "ReviewVariations", review_id: reviewId + 1, variations: {positions: []}})
+        verify(!retry.enabled)
+        endpoint.reply({type: "ReviewVariations", review_id: reviewId, variations: {positions: [
+            {ply: 0, fen: startFen, nodes: [
+                {parent: null, san: "d4", fen: d4},
+                {parent: null, san: "e4", fen: e4},
+                {parent: 1, san: "e5", fen: e5}
+            ]},
+            {ply: 1, fen: e4, nodes: [{parent: null, san: "e5", fen: e5}]}
+        ]}})
+        verify(!retry.visible)
+        compare(review.variationLoadError, "")
+        compare(review.currentFen(), c5)
+        compare(review.variationMoves, ["e4", "c5"])
+        var saved = endpoint.sentMessages.slice(-1)[0]
+        compare(saved.type, "SaveReviewVariations")
+        compare(saved.review_id, reviewId)
+        compare(saved.variations, {positions: [
+            {ply: 0, fen: startFen, nodes: [
+                {parent: null, san: "e4", fen: e4},
+                {parent: 0, san: "c5", fen: c5},
+                {parent: null, san: "d4", fen: d4},
+                {parent: 0, san: "e5", fen: e5}
+            ]},
+            {ply: 1, fen: e4, nodes: [{parent: null, san: "e5", fen: e5}]}
+        ]})
+        endpoint.reply({type: "ReviewVariationsSaved", review_id: reviewId, request_id: saved.request_id})
+        var recovered = findChild(dialog, "variationLine-3")
+        compare(recovered.title, "e4 e5")
+        recovered.clicked()
+        compare(review.variationMoves, ["e4", "e5"])
+        compare(review.currentFen(), e5)
+    }
+
     function test_openingExplorerLoadsOnDemandAndTriesAContinuation() {
         var reviewId = choose("openings")
         var e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"

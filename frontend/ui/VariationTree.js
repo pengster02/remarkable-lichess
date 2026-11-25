@@ -26,6 +26,50 @@ function addMove(variations, root, parent, san, fen) {
     return {variations: {positions: positions}, nodeIndex: root.nodes.length}
 }
 
+function moveKey(parent, node) {
+    return JSON.stringify([parent, node.san, node.fen])
+}
+
+function mergeSavedNodes(localNodes, savedNodes) {
+    var nodes = localNodes.slice()
+    var indices = new Map()
+    nodes.forEach(function(node, index) {
+        indices.set(moveKey(node.parent, node), index)
+    })
+    var savedIndices = []
+    savedNodes.forEach(function(node) {
+        var parent = node.parent === null ? null : savedIndices[node.parent]
+        var key = moveKey(parent, node)
+        var index = indices.get(key)
+        if (index === undefined) {
+            index = nodes.length
+            nodes.push({parent: parent, san: node.san, fen: node.fen})
+            indices.set(key, index)
+        }
+        savedIndices.push(index)
+    })
+    return nodes
+}
+
+function mergeSaved(local, saved) {
+    if (local.positions.length === 0) return saved
+
+    // Replacing loses unsaved moves. Starting from saved indices can change the selected line.
+    var positions = local.positions.slice()
+    saved.positions.forEach(function(entry) {
+        var index = positions.findIndex(function(position) {
+            return position.ply === entry.ply && position.fen === entry.fen
+        })
+        if (index < 0) {
+            positions.push(entry)
+        } else {
+            positions[index] = {ply: entry.ply, fen: entry.fen,
+                                nodes: mergeSavedNodes(positions[index].nodes, entry.nodes)}
+        }
+    })
+    return {positions: positions}
+}
+
 function line(root, nodeIndex, baseFen) {
     var moves = []
     var fens = []
