@@ -55,6 +55,15 @@ Rectangle {
     // ended, not just a bare, contextless board.
     property var reviewGame: null
     property int reviewRequestId: 0
+    // A screen timer would reset on navigation. A fixed UI delay would ignore the remaining backend wait.
+    property double cloudEvaluationRetryAt: 0
+
+    Timer {
+        running: root.cloudEvaluationRetryAt > 0
+        interval: Math.max(0, root.cloudEvaluationRetryAt - Date.now())
+        onTriggered: root.cloudEvaluationRetryAt = 0
+    }
+
     // A shared sequence survives screen changes. Per-screen counters can repeat
     // IDs after navigation, and timestamps can collide across rapid requests.
     property int requestSequence: 0
@@ -509,6 +518,9 @@ Rectangle {
                     // later visits, while saved settings would outlive sign-out.
                     screenLoader.setSource("GameReviewScreen.qml", {
                         pgnGameId: request.gameId,
+                        cloudEvaluationCoolingDown: Qt.binding(function() {
+                            return root.cloudEvaluationRetryAt > 0
+                        }),
                         returnToGameHistory: function() { root.returnToGameHistory(visit) }
                     })
                     if (msg.variation_storage === true && screenLoader.item) {
@@ -522,6 +534,9 @@ Rectangle {
                        msg.type === "CloudEvaluation" ||
                        msg.type === "CloudEvaluationUnavailable" ||
                        msg.type === "CloudEvaluationFailed") {
+                if (msg.type === "CloudEvaluationFailed" && msg.retry_after_ms > 0) {
+                    root.cloudEvaluationRetryAt = Math.max(root.cloudEvaluationRetryAt, Date.now() + msg.retry_after_ms)
+                }
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }

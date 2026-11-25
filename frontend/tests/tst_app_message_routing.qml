@@ -2335,6 +2335,56 @@ TestCase {
         compare(review.cloudEvaluationPhase, "unavailable")
     }
 
+    function test_cloudCooldownBlocksRetriesAcrossPositionsAndReviews() {
+        var reviewId = choose("rate-limited-cloud")
+        var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: ["e4"], fens: [startFen, afterE4]})
+        var review = screen.item
+        review.requestCloudEvaluation()
+        var cached = endpoint.sentMessages.slice(-1)[0]
+        endpoint.reply({type: "CloudEvaluation", request_id: cached.request_id, requested_fen: startFen,
+                        evaluation: {depth: 24, knodes: 50, eval_cp: 10}})
+        review.goNext()
+        review.requestCloudEvaluation()
+        var limited = endpoint.sentMessages.slice(-1)[0]
+        endpoint.reply({type: "CloudEvaluationFailed", request_id: limited.request_id,
+                        requested_fen: afterE4, message: "Lichess is limiting cloud evaluations.",
+                        retry_after_ms: 60000})
+        verify(!review.canRequestCloudEvaluation, "the rate-limited position should wait before retry")
+        var deadline = app.cloudEvaluationRetryAt
+        endpoint.reply({type: "CloudEvaluationFailed", request_id: limited.request_id,
+                        requested_fen: afterE4, message: "Try again later.", retry_after_ms: 1})
+        compare(app.cloudEvaluationRetryAt, deadline)
+
+        var count = endpoint.sentMessages.length
+        review.requestCloudEvaluation()
+        compare(endpoint.sentMessages.length, count)
+        review.goPrev()
+        compare(review.currentCloudEvaluation().depth, 24)
+
+        findChild(review, "reviewBackButton").clicked()
+        reviewId = choose("another-cloud-review")
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [startFen]})
+        review = screen.item
+        verify(!review.canRequestCloudEvaluation)
+        review.showReviewOptions = true
+        var button = findChild(review, "requestCloudEvaluationButton")
+        verify(button.visible && !button.enabled)
+        compare(button.text, "Cloud evaluation paused")
+        count = endpoint.sentMessages.length
+        review.requestCloudEvaluation()
+        compare(endpoint.sentMessages.length, count)
+
+        app.cloudEvaluationRetryAt = Date.now() + 50
+        tryVerify(function() { return button.enabled })
+        verify(button.visible)
+        button.clicked()
+        var resumed = endpoint.sentMessages.slice(-1)[0]
+        compare(resumed.type, "RequestCloudEvaluation")
+        compare(resumed.review_id, reviewId)
+        compare(resumed.fen, startFen)
+    }
+
     function test_cloudLinePagesEveryMoveWithoutChangingTheBoard_data() {
         return [
             {tag: "Paper Pro Move", width: 954, height: 1696},

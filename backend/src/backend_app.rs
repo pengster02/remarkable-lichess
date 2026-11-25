@@ -156,11 +156,12 @@ struct CloudEvaluationRequest {
 }
 
 impl CloudEvaluationRequest {
-    fn failed(self, message: String) -> BackendMessage {
+    fn failed(self, message: String, retry_after: Option<Duration>) -> BackendMessage {
         BackendMessage::CloudEvaluationFailed {
             request_id: self.request_id,
             requested_fen: self.requested_fen,
             message,
+            retry_after_ms: retry_after.map(|remaining| remaining.as_millis().max(1) as u32),
         }
     }
 }
@@ -906,7 +907,7 @@ impl LichessBackend {
         let request = CloudEvaluationRequest { requested_fen, request_id };
         let Some(client) = self.client.clone() else {
             let reply = if request_id.is_some() {
-                request.failed("Not signed in to Lichess".into())
+                request.failed("Not signed in to Lichess".into(), None)
             } else {
                 BackendMessage::TokenInvalid { reason: "no token saved".into() }
             };
@@ -925,19 +926,14 @@ impl LichessBackend {
             let retry_after = self.cloud_retry_after.clone();
             let task = tokio::spawn(async move {
                 while let Some(request) = pending.recv().await {
-                    let limited = retry_after.lock().await.is_some_and(|until| until > Instant::now());
-                    let reply = if limited {
-                        request.failed(CLOUD_RATE_LIMIT_MESSAGE.into())
-                    } else {
-                        Self::fetch_cloud_evaluation(&client, request, &retry_after).await
-                    };
+                    let reply = Self::fetch_cloud_evaluation(&client, request, &retry_after).await;
                     send_locked(&replier, &write_lock, &reply);
                 }
             });
             CloudEvaluationQueue { review_id, requests, task }
         });
         if let Err(error) = queue.requests.try_send(request) {
-            self.send(replier, &error.into_inner().failed("Cloud evaluation is busy. Try again shortly.".into()));
+            self.send(replier, &error.into_inner().failed("Cloud evaluation is busy. Try again shortly.".into(), None));
         }
     }
 
@@ -953,16 +949,22 @@ impl LichessBackend {
         request: CloudEvaluationRequest,
         retry_after: &Mutex<Option<Instant>>,
     ) -> BackendMessage {
-        let CloudEvaluationRequest { requested_fen, request_id } = request;
-        match client.get_cloud_evaluation(&requested_fen).await {
+        let remaining = retry_after.lock().await
+            .and_then(|until| until.checked_duration_since(Instant::now()));
+        if let Some(remaining) = remaining {
+            return request.failed(CLOUD_RATE_LIMIT_MESSAGE.into(), Some(remaining));
+        }
+        match client.get_cloud_evaluation(&request.requested_fen).await {
             Ok(Some(cloud)) => {
                 let Some(pv) = cloud.pvs.into_iter().next() else {
-                    return BackendMessage::CloudEvaluationUnavailable { request_id, requested_fen };
+                    return BackendMessage::CloudEvaluationUnavailable {
+                        request_id: request.request_id, requested_fen: request.requested_fen,
+                    };
                 };
-                match replay_uci_moves_with_history(&requested_fen, &pv.moves) {
+                match replay_uci_moves_with_history(&request.requested_fen, &pv.moves) {
                     Ok((_, best_line)) => BackendMessage::CloudEvaluation {
-                        request_id,
-                        requested_fen,
+                        request_id: request.request_id,
+                        requested_fen: request.requested_fen,
                         evaluation: CloudEvaluationLine {
                             eval_cp: pv.cp,
                             mate_in: pv.mate,
@@ -971,27 +973,17 @@ impl LichessBackend {
                             best_line,
                         },
                     },
-                    Err(e) => BackendMessage::CloudEvaluationFailed {
-                        request_id,
-                        requested_fen,
-                        message: format!("couldn't read cloud best line: {e}"),
-                    },
+                    Err(e) => request.failed(format!("couldn't read cloud best line: {e}"), None),
                 }
             }
-            Ok(None) => BackendMessage::CloudEvaluationUnavailable { request_id, requested_fen },
-            Err(e) => {
-                let message = if is_rate_limited(&e) {
-                    *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
-                    CLOUD_RATE_LIMIT_MESSAGE.into()
-                } else {
-                    e.to_string()
-                };
-                BackendMessage::CloudEvaluationFailed {
-                    request_id,
-                    requested_fen,
-                    message,
-                }
+            Ok(None) => BackendMessage::CloudEvaluationUnavailable {
+                request_id: request.request_id, requested_fen: request.requested_fen,
+            },
+            Err(error) if is_rate_limited(&error) => {
+                *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+                request.failed(CLOUD_RATE_LIMIT_MESSAGE.into(), Some(LICHESS_RATE_LIMIT_DELAY))
             }
+            Err(error) => request.failed(error.to_string(), None),
         }
     }
 
@@ -2425,6 +2417,56 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         speed: game.speed,
         opening_name: game.opening.map(|o| o.name),
         created_at_ms: game.created_at,
+    }
+}
+
+#[cfg(test)]
+mod cloud_evaluation_tests {
+    use super::{CloudEvaluationRequest, LichessBackend, LichessClient, Mutex};
+    use std::time::{Duration, Instant};
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn cloud_cooldown_reports_the_remaining_wait_and_resumes_after_expiry() {
+        let server = MockServer::start().await;
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let after_e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+        for (fen, status) in [(start, 429), (after_e4, 404)] {
+            Mock::given(method("GET"))
+                .and(path("/api/cloud-eval"))
+                .and(query_param("fen", fen))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let cooldown = Mutex::new(None);
+        let fetch = |id, fen: &str| {
+            LichessBackend::fetch_cloud_evaluation(
+                &client,
+                CloudEvaluationRequest { requested_fen: fen.to_owned(), request_id: Some(id) },
+                &cooldown,
+            )
+        };
+
+        let limited = serde_json::to_value(fetch(1, start).await).unwrap();
+        assert_eq!(limited["type"], "CloudEvaluationFailed");
+        assert_eq!(limited["retry_after_ms"], 60_000);
+
+        let blocked = serde_json::to_value(fetch(2, after_e4).await).unwrap();
+        assert_eq!(blocked["type"], "CloudEvaluationFailed");
+        assert_eq!(blocked["request_id"], 2);
+        assert_eq!(blocked["requested_fen"], after_e4);
+        assert!((1..=60_000).contains(&blocked["retry_after_ms"].as_u64().unwrap()));
+
+        *cooldown.lock().await = Some(Instant::now() - Duration::from_millis(1));
+        let resumed = serde_json::to_value(fetch(3, after_e4).await).unwrap();
+        assert_eq!(resumed["type"], "CloudEvaluationUnavailable");
+        assert_eq!(resumed["request_id"], 3);
+        assert!(resumed.get("retry_after_ms").is_none());
+        server.verify().await;
     }
 }
 
