@@ -750,6 +750,7 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGameReview")) {
                 item.openGameReview = root.openGameReview
+                item.cancelGameReview = root.cancelPendingReview
             }
             if (item.hasOwnProperty("openPgnExport")) {
                 item.openPgnExport = root.openPgnExport

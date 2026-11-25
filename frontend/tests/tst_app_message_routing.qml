@@ -1917,6 +1917,90 @@ TestCase {
         compare(findChild(screen.item, "historyList").contentY, 0)
     }
 
+    function test_finishedBoardReviewCanRetryInPlace_data() {
+        return [{tag: "result dialog", fromActions: false},
+                {tag: "final board actions", fromActions: true}]
+    }
+
+    function test_finishedBoardReviewCanRetryInPlace(data) {
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "white", reason: "Checkmate", rating_diff: 5}
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var buttonName = "reviewFinishedGameButton"
+        var loaderName = "gameOverLoader"
+        if (data.fromActions) {
+            board.showGameOverDialog = false
+            board.showGameActions = true
+            buttonName = "reviewFinishedActionButton"
+            loaderName = "gameActionsLoader"
+        }
+        var dialog = findChild(board, loaderName)
+        var reviewButton = findChild(dialog, buttonName)
+        verify(reviewButton && reviewButton.visible)
+        reviewButton.clicked()
+        var first = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(first.type, "RequestGameMoves")
+        compare(first.game_id, "finished")
+        verify(dialog.active)
+        verify(!reviewButton.enabled)
+        compare(reviewButton.text, "Opening game…")
+        var failure = {type: "GameMovesFailed", request_id: first.request_id,
+                       message: "The archive is temporarily unavailable."}
+        endpoint.reply(failure)
+
+        verify(dialog.active)
+        compare(board.statusText, "You won · Checkmate · +5 rating")
+        var error = findChild(dialog, "finishedReviewError")
+        verify(error && error.visible)
+        compare(error.text, failure.message)
+        verify(reviewButton.enabled)
+        compare(reviewButton.text, "Retry review")
+        reviewButton.clicked()
+        var retry = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(retry.type, "RequestGameMoves")
+        compare(retry.game_id, first.game_id)
+        verify(retry.request_id > first.request_id)
+        verify(!error.visible)
+        endpoint.reply(failure)
+        verify(!error.visible && !reviewButton.enabled)
+        replyWithMoves(retry.request_id, "e4")
+        verify(String(screen.source).endsWith("GameReviewScreen.qml"))
+        compare(screen.item.game.rating_diff, 5)
+    }
+
+    function test_dismissingFinishedReviewCancelsThePendingRequest_data() {
+        return [{tag: "view final board", fromActions: false},
+                {tag: "close game actions", fromActions: true}]
+    }
+
+    function test_dismissingFinishedReviewCancelsThePendingRequest(data) {
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var reviewButtonName = "reviewFinishedGameButton"
+        var dismissButtonName = "viewFinalBoardButton"
+        if (data.fromActions) {
+            board.showGameOverDialog = false
+            board.showGameActions = true
+            reviewButtonName = "reviewFinishedActionButton"
+            dismissButtonName = "closeGameActionsButton"
+        }
+        findChild(board, reviewButtonName).clicked()
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "RequestGameMoves")
+        findChild(board, dismissButtonName).clicked()
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "CancelGameReview", request_id: request.request_id})
+        replyWithMoves(request.request_id, "e4")
+        compare(screen.item, board)
+        verify(!board.openingReview && !board.showGameOverDialog && !board.showGameActions)
+        compare(board.statusText, "Draw")
+    }
+
     function test_leavingHistoryCancelsThePendingFilter() {
         var request = screen.item.pendingHistoryRequest
         verify(request > 0)
