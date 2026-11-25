@@ -506,6 +506,7 @@ Rectangle {
             } else if (msg.type === "AnalysisPosition" || msg.type === "AnalysisMove" || msg.type === "AnalysisFailed" ||
                        msg.type === "ReviewVariations" || msg.type === "ReviewVariationsLoadFailed" ||
                        msg.type === "ReviewVariationsSaved" || msg.type === "ReviewVariationsSaveFailed" ||
+                       msg.type === "OpeningExplorer" || msg.type === "OpeningExplorerFailed" ||
                        msg.type === "CloudEvaluation" ||
                        msg.type === "CloudEvaluationUnavailable" ||
                        msg.type === "CloudEvaluationFailed") {

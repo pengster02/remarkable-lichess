@@ -1,6 +1,7 @@
-use super::rules::{starting_position, supports_variant};
+use super::rules::{resolve_uci_move, starting_position, supports_variant};
+use crate::protocol::OpeningExplorerData;
 use anyhow::{Context, Result};
-use shakmaty::{fen::Fen, san::SanPlus, Chess, EnPassantMode, Position};
+use shakmaty::{fen::Fen, san::SanPlus, uci::UciMove, Chess, EnPassantMode, Move, Position};
 
 #[derive(Debug)]
 pub struct ExportReplay {
@@ -63,16 +64,53 @@ fn replay_from_position(mut pos: Chess, moves: &[String]) -> Result<ExportReplay
     let mut fens = Vec::with_capacity(moves.len() + 1);
     fens.push(fen_string(&pos));
     for san_str in moves {
-        let san_plus = SanPlus::from_ascii(san_str.as_bytes())
-            .with_context(|| format!("parsing SAN move {san_str:?}"))?;
-        let m = san_plus
-            .san
-            .to_move(&pos)
-            .with_context(|| format!("resolving SAN move {san_str:?} against the current position"))?;
+        let m = resolve_san(&pos, san_str)?;
         pos.play_unchecked(m);
         fens.push(fen_string(&pos));
     }
     Ok(ExportReplay { fens, initial_in_check })
+}
+
+fn resolve_san(pos: &Chess, san: &str) -> Result<Move> {
+    SanPlus::from_ascii(san.as_bytes())
+        .with_context(|| format!("parsing SAN move {san:?}"))?
+        .san.to_move(pos)
+        .with_context(|| format!("resolving SAN move {san:?} against the current position"))
+}
+
+pub struct OpeningExplorerPosition {
+    pub root_fen: String,
+    pub play: Vec<String>,
+    position: Chess,
+}
+
+impl OpeningExplorerPosition {
+    pub fn from_replay(root_fen: &str, played_san: &[String], shown_fen: &str) -> Result<Self> {
+        let mut position = starting_position(root_fen)?;
+        let root_fen = fen_string(&position);
+        let mut play = Vec::with_capacity(played_san.len());
+        for san in played_san {
+            let chess_move = resolve_san(&position, san)?;
+            play.push(UciMove::from_standard(chess_move).to_string());
+            position.play_unchecked(chess_move);
+        }
+        anyhow::ensure!(
+            fen_string(&position) == fen_string(&starting_position(shown_fen)?),
+            "opening line does not match the displayed position",
+        );
+        Ok(Self { root_fen, play, position })
+    }
+
+    pub fn normalize_moves(&self, data: &mut OpeningExplorerData) {
+        data.moves.retain_mut(|row| {
+            let Ok(chess_move) = resolve_uci_move(&self.position, &row.uci) else {
+                return false;
+            };
+            row.uci = UciMove::from_standard(chess_move).to_string();
+            row.san = SanPlus::from_move(self.position.clone(), chess_move).to_string();
+            true
+        });
+    }
 }
 
 fn fen_string(pos: &Chess) -> String {
@@ -101,6 +139,30 @@ mod tests {
         assert!(fens[2].contains(" w "));
         // After 1. e4 e5 2. Nf3, Black to move, knight left g1.
         assert!(fens[3].contains(" b "));
+    }
+
+    #[test]
+    fn opening_explorer_preserves_the_played_path_and_normalizes_castling() {
+        let root = "r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1";
+        let explorer = OpeningExplorerPosition::from_replay(root, &[], root).unwrap();
+        let mut data: OpeningExplorerData = serde_json::from_value(serde_json::json!({
+            "white": 4, "draws": 2, "black": 3,
+            "moves": [
+                {"san": "O-O", "uci": "e1h1", "white": 4, "draws": 2, "black": 3},
+                {"san": "bad", "uci": "a1a8", "white": 0, "draws": 0, "black": 0}
+            ]
+        })).unwrap();
+        explorer.normalize_moves(&mut data);
+        assert_eq!(data.moves.len(), 1);
+        assert_eq!(data.moves[0].uci, "e1g1");
+        assert_eq!(data.moves[0].san, "O-O");
+
+        let played = ["O-O".to_owned()];
+        let fens = fens_for_export(Some("fromPosition"), Some(root), &played).unwrap();
+        let explorer = OpeningExplorerPosition::from_replay(root, &played, &fens[1]).unwrap();
+        assert_eq!(explorer.root_fen, root);
+        assert_eq!(explorer.play, ["e1g1"]);
+        assert!(OpeningExplorerPosition::from_replay(root, &played, root).is_err());
     }
 
     #[test]

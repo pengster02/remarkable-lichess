@@ -22,7 +22,7 @@ The current UI supports:
   feedback, reconnect and game-over states;
 - game-history filters and finished-game review;
 - clickable move notation, first/previous/next/last, board flip, annotations,
-  locally saved branches in Explore, and on-demand cached
+  locally saved branches in Explore, on-demand opening statistics, and cached
   Lichess cloud evaluation with a SAN best line;
 - e-ink-focused sizing, a dark-first high-contrast palette, minimal animation,
   four board palettes, three common piece sets, a live settings preview, drag
@@ -36,6 +36,7 @@ The current UI supports:
 | Live board | `frontend/ui/BoardScreen.qml` | Game interaction and live-game actions |
 | Review | `frontend/ui/GameReviewScreen.qml` | Replay navigation, clickable moves, candidate exploration |
 | Review variations | `frontend/ui/VariationTree.js`, `backend/src/variations.rs` | Branch navigation and per-account, per-game persistence |
+| Opening explorer | `frontend/ui/OpeningExplorerDialog.qml`, `backend/src/game/replay.rs` | On-demand database results and legal continuation moves |
 | Visual system | `frontend/ui/Theme.qml`, `BoardStyle.qml`, `BoardPreview.qml`, `ChessDisplay.qml` | App chrome, board appearance, settings preview, and API-to-display mappings |
 | Shared controls | `frontend/ui/AppButton.qml`, `AppDialog.qml`, `BoardToolButton.qml`, `ConfirmAction.qml`, `EinkRefreshArea.qml`, `MoveRequestGate.qml`, `MoveListRow.qml`, `MoveListCell.qml`, `PromotionDialog.qml`, `AppTextField.qml` | Consistent actions, confirmations, overlays, refresh policy, move submission, score-sheet rows, promotion choices, and inputs |
 | Wire contract | `backend/src/protocol.rs` | Every frontend/backend JSON message |
@@ -137,6 +138,8 @@ Minimum emulator smoke test:
 1. Home → Game history → open a game → Back to Game History → Back to Home.
 2. In review, tap moves in the score sheet and use previous/next plus first/last from Menu.
 3. Request Cloud evaluation from Menu and verify the eval and best line.
+   Open Opening explorer from an early position, compare the two databases,
+   and select a continuation to verify it enters Explore from that position.
 4. Enter Explore and make a tap move and a drag move. Use Previous to back up,
    try another move, then select both lines. Reopen the review and verify the
    saved lines are still available from their archived position.
@@ -283,9 +286,8 @@ current firmware before deployment.
 
 ## Highest-value remaining work
 
-1. On-demand opening explorer.
-2. PGN export before platform-specific sharing.
-3. A final real-device pass for ghosting, latency, physical touch size, and
+1. PGN export before platform-specific sharing.
+2. A final real-device pass for ghosting, latency, physical touch size, and
    Paper Pro Move orientation.
 
 Do not add a continuously updating engine or dense desktop analysis panel by

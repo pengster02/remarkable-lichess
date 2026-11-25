@@ -60,7 +60,14 @@ Rectangle {
     onCurrentIndexChanged: {
         if (gameReviewScreen.exploreMode) gameReviewScreen.rebaseExploration()
         else gameReviewScreen.refreshBoard()
-        Qt.callLater(function() { moveList.revealCurrentMove() })
+        if (moveReveal) moveReveal.restart()
+    }
+    // The screen-owned timer coalesces after layout and stops on teardown.
+    // Queued callbacks can outlive the review, while immediate reveal can use stale rows.
+    Timer {
+        id: moveReveal
+        interval: 0
+        onTriggered: moveList.revealCurrentMove()
     }
     Timer {
         id: boardFlashTimer
@@ -95,7 +102,7 @@ Rectangle {
     // annotations would also hide the judgment when Undo returns to that move.
     readonly property var displayedArchiveAnalysis: variationMoves.length === 0
         ? analysisAt(currentIndex - 1) : null
-    onVariationMovesChanged: if (moveList) Qt.callLater(moveList.revealCurrentMove)
+    onVariationMovesChanged: if (moveReveal) moveReveal.restart()
     property string selectedSquare: ""
     property var pendingPromotion: null
     property string exploreStatus: ""
@@ -105,6 +112,7 @@ Rectangle {
     property string exploreStatusCode: "playing"
     property var nextRequestId
     property int pendingAnalysisRequestId: 0
+    property string openingMoveAfterPosition: ""
     // Keep each position's state. One pending FEN forgets earlier work, and a
     // global busy flag prevents requesting another position while browsing.
     property var cloudEvaluationByFen: ({})
@@ -119,6 +127,17 @@ Rectangle {
     }
     property bool showCloudLine: false
     onCloudFenChanged: showCloudLine = false
+    property bool showOpeningExplorer: false
+    property string openingDatabase: "masters"
+    property var openingLookups: ({})
+    property var pendingOpeningLookup: null
+    readonly property string openingPositionKey: JSON.stringify(
+        [currentIndex, currentFen(), exploreMode ? variationMoves : []])
+    readonly property string openingLookupKey: openingDatabase + openingPositionKey
+    readonly property var currentOpeningLookup: openingLookups[openingLookupKey] || null
+    readonly property bool canTryOpeningMove: pendingAnalysisRequestId === 0 && variationStoreState !== "loading"
+    onOpeningPositionKeyChanged: showOpeningExplorer = false
+    Timer { id: openingRetryDelay }
     readonly property int coordinateGutter: 52
 
     Component.onDestruction: {
@@ -126,6 +145,9 @@ Rectangle {
                 Object.keys(gameReviewScreen.cloudEvaluationByFen).length > 0) {
             gameReviewScreen.backendSender({type: "CancelCloudEvaluations",
                                            review_id: gameReviewScreen.reviewRequestId})
+        }
+        if (gameReviewScreen.pendingOpeningLookup && gameReviewScreen.backendSender) {
+            gameReviewScreen.backendSender({type: "CancelOpeningExplorer", review_id: gameReviewScreen.reviewRequestId})
         }
     }
 
@@ -372,11 +394,11 @@ Rectangle {
         ) ? to : ""
     }
 
-    function rebaseExploration() {
+    function rebaseExploration(openingMove) {
         if (!gameReviewScreen.exploreMode || gameReviewScreen.fens.length === 0) return
         gameReviewScreen.showVariations = false
         gameReviewScreen.exploreRootFen = gameReviewScreen.fens[gameReviewScreen.currentIndex]
-        gameReviewScreen.selectVariationNode(null)
+        gameReviewScreen.selectVariationNode(null, openingMove)
     }
 
     function applyVariationLine(nodeIndex) {
@@ -387,9 +409,9 @@ Rectangle {
         exploreFen = line.fens[line.fens.length - 1]
     }
 
-    function selectVariationNode(nodeIndex) {
+    function selectVariationNode(nodeIndex, openingMove) {
         applyVariationLine(nodeIndex)
-        gameReviewScreen.loadExplorationPosition()
+        gameReviewScreen.loadExplorationPosition(openingMove)
     }
 
     function loadSavedVariations() {
@@ -409,7 +431,8 @@ Rectangle {
                        request_id: pendingVariationSaveId, variations: reviewVariations})
     }
 
-    function loadExplorationPosition() {
+    function loadExplorationPosition(openingMove) {
+        gameReviewScreen.openingMoveAfterPosition = openingMove || ""
         gameReviewScreen.exploreLegalMoves = []
         gameReviewScreen.selectedSquare = ""
         gameReviewScreen.pendingPromotion = null
@@ -432,10 +455,10 @@ Rectangle {
                                               from: from, to: to, promotion: promotion}, "Applying move...")
     }
 
-    function beginExploration() {
+    function beginExploration(openingMove) {
         if (variationStoreState === "loading") return
         gameReviewScreen.exploreMode = true
-        gameReviewScreen.rebaseExploration()
+        gameReviewScreen.rebaseExploration(openingMove)
     }
 
     function stopExploration() {
@@ -443,6 +466,7 @@ Rectangle {
         gameReviewScreen.showVariations = false
         gameReviewScreen.activeVariationNode = null
         gameReviewScreen.pendingAnalysisRequestId = 0
+        gameReviewScreen.openingMoveAfterPosition = ""
         gameReviewScreen.exploreFen = ""
         gameReviewScreen.exploreLegalMoves = []
         gameReviewScreen.variationFens = []
@@ -537,6 +561,53 @@ Rectangle {
         } else {
             gameReviewScreen.setCloudState(msg.requested_fen, {phase: "failed", message: msg.message || "unknown error"})
         }
+    }
+
+    function requestOpeningStatistics() {
+        var fen = currentFen()
+        if (!fen || !reviewRequestId || openingRetryDelay.running ||
+                (currentOpeningLookup && currentOpeningLookup.phase !== "failed")) return
+        var cache = Object.assign({}, openingLookups)
+        if (pendingOpeningLookup) delete cache[pendingOpeningLookup.key]
+        var requestId = nextRequestId()
+        pendingOpeningLookup = {key: openingLookupKey, requestId: requestId, database: openingDatabase, fen: fen}
+        cache[openingLookupKey] = {phase: "pending"}
+        openingLookups = cache
+        // The path identifies transposed openings. FEN alone can omit their name,
+        // while game ID alone cannot describe a position in a candidate line.
+        var played = moves.slice(0, currentIndex)
+        if (exploreMode) played = played.concat(variationMoves)
+        backendSender({type: "RequestOpeningExplorer", request_id: requestId, review_id: reviewRequestId,
+                       database: openingDatabase, fen: fen, root_fen: fens[0], played_san: played})
+    }
+
+    function handleOpeningReply(msg) {
+        var pending = pendingOpeningLookup
+        if (!pending || msg.review_id !== reviewRequestId || msg.request_id !== pending.requestId ||
+                msg.database !== pending.database || msg.fen !== pending.fen) return
+        pendingOpeningLookup = null
+        var cache = Object.assign({}, openingLookups)
+        if (msg.type === "OpeningExplorer") cache[pending.key] = {phase: "ready", data: msg.data}
+        else {
+            cache[pending.key] = {phase: "failed", message: msg.message || "Could not load opening statistics."}
+            if (msg.retry_after_ms > 0) {
+                openingRetryDelay.interval = msg.retry_after_ms
+                openingRetryDelay.restart()
+            }
+        }
+        openingLookups = cache
+    }
+
+    function submitOpeningMove(uci) {
+        submitExplorationMove(uci.slice(0, 2), uci.slice(2, 4), uci[4] || null)
+    }
+
+    function tryOpeningMove(uci) {
+        if (!canTryOpeningMove || !currentOpeningLookup || currentOpeningLookup.phase !== "ready" ||
+                !currentOpeningLookup.data.moves.some(function(move) { return move.uci === uci })) return
+        showOpeningExplorer = false
+        if (exploreMode) submitOpeningMove(uci)
+        else beginExploration(uci)
     }
 
     function moveRows() {
@@ -981,10 +1052,38 @@ Rectangle {
                     }
                 }
                 AppButton {
+                    objectName: "openOpeningExplorerButton"
+                    width: parent.width
+                    text: "Opening explorer"
+                    enabled: gameReviewScreen.reviewRequestId > 0 && gameReviewScreen.currentFen().length > 0
+                    onClicked: {
+                        gameReviewScreen.showReviewOptions = false
+                        gameReviewScreen.showOpeningExplorer = true
+                        gameReviewScreen.requestOpeningStatistics()
+                    }
+                }
+                AppButton {
                     width: parent.width
                     text: "Close"
                     onClicked: gameReviewScreen.showReviewOptions = false
                 }
+    }
+
+    OpeningExplorerDialog {
+        anchors.fill: parent
+        visible: gameReviewScreen.showOpeningExplorer
+        darkMode: gameReviewScreen.darkMode
+        database: gameReviewScreen.openingDatabase
+        lookup: gameReviewScreen.currentOpeningLookup
+        coolingDown: openingRetryDelay.running
+        canTryMove: gameReviewScreen.canTryOpeningMove
+        onDatabaseSelected: (database) => {
+            gameReviewScreen.openingDatabase = database
+            gameReviewScreen.requestOpeningStatistics()
+        }
+        onLookupRequested: gameReviewScreen.requestOpeningStatistics()
+        onMoveSelected: (uci) => gameReviewScreen.tryOpeningMove(uci)
+        onDismissed: gameReviewScreen.showOpeningExplorer = false
     }
 
     AppButton {
@@ -1020,7 +1119,7 @@ Rectangle {
             (gameReviewScreen.clockMs.length > 0 ? theme.moveRowWithClockHeight : theme.touchTarget))
         onPageHeightChanged: {
             updateMovePageStops()
-            Qt.callLater(revealCurrentMove)
+            if (moveReveal) moveReveal.restart()
         }
 
         function updateMovePageStops() {
@@ -1199,6 +1298,9 @@ Rectangle {
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
             gameReviewScreen.refreshBoard()
+            var openingMove = openingMoveAfterPosition
+            openingMoveAfterPosition = ""
+            if (openingMove) submitOpeningMove(openingMove)
         } else if (msg.type === "AnalysisMove") {
             if (!gameReviewScreen.exploreMode ||
                     msg.request_id !== gameReviewScreen.pendingAnalysisRequestId ||
@@ -1218,9 +1320,12 @@ Rectangle {
         } else if (msg.type === "CloudEvaluation" || msg.type === "CloudEvaluationUnavailable" ||
                    msg.type === "CloudEvaluationFailed") {
             gameReviewScreen.handleCloudReply(msg)
+        } else if (msg.type === "OpeningExplorer" || msg.type === "OpeningExplorerFailed") {
+            gameReviewScreen.handleOpeningReply(msg)
         } else if (msg.type === "AnalysisFailed") {
             if (gameReviewScreen.exploreMode && msg.request_id === gameReviewScreen.pendingAnalysisRequestId) {
                 gameReviewScreen.pendingAnalysisRequestId = 0
+                gameReviewScreen.openingMoveAfterPosition = ""
                 gameReviewScreen.exploreStatus = msg.message
             }
         }

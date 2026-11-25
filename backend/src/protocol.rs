@@ -206,6 +206,11 @@ pub enum FrontendMessage {
     SaveReviewVariations { review_id: u32, request_id: u32, variations: ReviewVariations },
     RequestCloudEvaluation { fen: String, request_id: Option<u32>, review_id: Option<u32> },
     CancelCloudEvaluations { review_id: u32 },
+    RequestOpeningExplorer {
+        #[serde(flatten)]
+        request: OpeningExplorerRequest,
+    },
+    CancelOpeningExplorer { review_id: u32 },
     RequestAnalysisPosition { fen: String, request_id: Option<u32> },
     MakeAnalysisMove {
         fen: String,
@@ -402,6 +407,49 @@ pub struct CloudEvaluationLine {
     pub depth: u32,
     pub knodes: u64,
     pub best_line: Vec<String>,
+}
+
+// A typed database selects a fixed API route. A free-form path can leave the
+// expected host, and one database omits either master or rated-game statistics.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpeningDatabase {
+    Masters,
+    Lichess,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct OpeningExplorerRequest {
+    pub request_id: u32,
+    pub review_id: u32,
+    pub database: OpeningDatabase,
+    pub fen: String,
+    pub root_fen: String,
+    pub played_san: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OpeningExplorerName {
+    pub eco: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OpeningExplorerMove {
+    pub uci: String,
+    pub san: String,
+    pub white: u64,
+    pub draws: u64,
+    pub black: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OpeningExplorerData {
+    pub white: u64,
+    pub draws: u64,
+    pub black: u64,
+    pub opening: Option<OpeningExplorerName>,
+    pub moves: Vec<OpeningExplorerMove>,
 }
 
 // Optional matrices preserve the links if encoding fails. Rejecting the
@@ -740,6 +788,22 @@ pub enum BackendMessage {
         request_id: Option<u32>,
         requested_fen: String,
         message: String,
+    },
+    OpeningExplorer {
+        review_id: u32,
+        request_id: u32,
+        database: OpeningDatabase,
+        fen: String,
+        data: OpeningExplorerData,
+    },
+    OpeningExplorerFailed {
+        review_id: u32,
+        request_id: u32,
+        database: OpeningDatabase,
+        fen: String,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
     },
     AnalysisPosition {
         #[serde(skip_serializing_if = "Option::is_none")]

@@ -98,7 +98,7 @@ network analysis runs on request.
 
 | Game history | Replay | Board options |
 | --- | --- | --- |
-| <img src="docs/images/game-history.png" width="250" alt="Game history with rated, speed, and color filters"> | <img src="docs/images/review.png" width="250" alt="Reviewing a game at move 12 with the score sheet in sync"> | <img src="docs/images/review-menu.png" width="250" alt="Board options overlay with first, last, flip, and cloud evaluation"> |
+| <img src="docs/images/game-history.png" width="250" alt="Game history with rated, speed, and color filters"> | <img src="docs/images/review.png" width="250" alt="Reviewing a game at move 12 with the score sheet in sync"> | <img src="docs/images/review-menu.png" width="250" alt="Board options with cloud evaluation and opening explorer"> |
 
 | Cloud evaluation | Explore |
 | --- | --- |
@@ -111,6 +111,11 @@ position. **Lines** opens saved branches and the starting position. The app
 saves branches locally by account, game, and starting position. The score
 sheet keeps the archived moves available for choosing a different starting
 position.
+
+Choose **Menu → Opening explorer** to look up the displayed position in the
+Masters or Lichess rated database. The panel shows the opening name when
+available and the results for common continuations. Tap a move to try it in
+Explore. The rated database uses your Lichess sign-in.
 
 ### Settings
 
@@ -147,6 +152,7 @@ resign/abort guard.
   loaded on demand
 - Replay with tappable notation, first/previous/next/last, board flip
 - On-demand cached Lichess cloud evaluation with a SAN best line
+- On-demand master and rated-game opening statistics with playable moves
 - Explore mode with locally saved variation branches
 
 **Built for the device**
@@ -396,8 +402,8 @@ The constraints that shaped this app, and that changes should respect:
 | [`docs/DEVELOPER_HANDOFF.md`](docs/DEVELOPER_HANDOFF.md) | The fastest path to running, understanding, and extending the app |
 | [`docs/remarkable-appload-platform-notes.md`](docs/remarkable-appload-platform-notes.md) | AppLoad, XOVI, e-ink refresh, build, and deploy constraints |
 
-Known remaining work includes an on-demand opening explorer, PGN export, and a
-final real-device pass for ghosting, latency, and Paper Pro Move orientation.
+Known remaining work includes PGN export and a final real-device pass for
+ghosting, latency, and Paper Pro Move orientation.
 
 ---
 

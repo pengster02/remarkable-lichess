@@ -5,6 +5,7 @@ Rectangle {
     property bool darkMode: false
     property string title: ""
     property string subtitle: ""
+    property bool wrapSubtitle: false
     property string marker: ""
     property bool highlighted: false
     signal clicked
@@ -53,12 +54,14 @@ Rectangle {
         }
 
         Text {
+            objectName: "menuRowSubtitle"
             visible: menuRow.subtitle.length > 0
             width: parent.width
             text: menuRow.subtitle
             textFormat: Text.PlainText
             font.pixelSize: theme.fontSmall
-            elide: Text.ElideRight
+            wrapMode: menuRow.wrapSubtitle ? Text.WordWrap : Text.NoWrap
+            elide: menuRow.wrapSubtitle ? Text.ElideNone : Text.ElideRight
             color: mouseArea.pressed
                 ? theme.background
                 : (menuRow.highlighted ? theme.accentText : theme.textMuted)
