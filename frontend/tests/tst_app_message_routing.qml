@@ -1462,6 +1462,100 @@ TestCase {
         })
     }
 
+    function test_historyRateLimitHoldsInitialRetryAcrossFilterChanges() {
+        var requestId = applyHistoryFilters("rapid")
+        var history = screen.item
+        var retry = findChild(history, "retryGameHistoryButton")
+        var message = "Lichess limited game history requests."
+        endpoint.reply({type: "GameHistoryFailed", request_id: requestId,
+                        message: message, retry_after_ms: 1200})
+        var requestCount = historyRequests().length
+        compare(applyHistoryFilters("blitz"), 0)
+        verify(retry.visible && !retry.enabled)
+        compare(retry.text, "Retry available shortly")
+        compare(findChild(history, "historyHeader").detail, "")
+        verify(waitForRendering(retry))
+        mouseClick(retry, retry.width / 2, retry.height / 2)
+        compare(history.filterSummary(), "Rated · Blitz · Played Black")
+        compare(history.loadError, message)
+        verify(!history.loading && !retry.enabled)
+        compare(historyRequests().length, requestCount)
+
+        tryCompare(retry, "enabled", true)
+        compare(retry.text, "Retry")
+        compare(historyRequests().length, requestCount)
+        mouseClick(retry, retry.width / 2, retry.height / 2)
+        compare(historyRequests().length, requestCount + 1)
+        var retried = historyRequests().slice(-1)[0]
+        compare(retried, {type: "RequestGameHistory", request_id: retried.request_id,
+                          rated: true, speed: "blitz", color: "black"})
+        endpoint.reply({type: "GameHistory", request_id: retried.request_id,
+                        games: [{game_id: "blitz"}]})
+        compare(history.loadError, "")
+        compare(history.games[0].game_id, "blitz")
+        compare(findChild(history, "historyHeader").detail, "1 game loaded")
+    }
+
+    function test_historyRateLimitPreservesTheOlderPageThroughReview() {
+        var requestId = applyHistoryFilters("rapid")
+        var games = []
+        for (var index = 0; index < 20; index++) {
+            games.push({game_id: "limited-" + index, opponent_name: "Opponent " + index, result: "draw"})
+        }
+        var cursor = {until_ms: 1765526400001}
+        endpoint.reply({type: "GameHistory", request_id: requestId, games: games, next_cursor: cursor})
+        var history = screen.item
+        var pager = findChild(history, "historyList")
+        var older = findChild(history, "loadOlderGamesButton")
+        var next = findChild(pager, "pageDownButton")
+        verify(waitForRendering(pager))
+        for (var page = 1; page < pager.pageCount; page++) next.clicked()
+        verify(!next.enabled)
+        var offset = pager.contentY
+        verify(waitForRendering(older))
+        mouseClick(older, older.width / 2, older.height / 2)
+        var limited = historyRequests().slice(-1)[0]
+        compare(limited.cursor, cursor)
+        var requestCount = historyRequests().length
+        var message = "Lichess limited game history requests."
+        endpoint.reply({type: "GameHistoryFailed", request_id: limited.request_id,
+                        message: message, retry_after_ms: 1500})
+        verify(!older.enabled)
+        compare(older.title, "Retry available shortly")
+        compare(older.subtitle, message)
+        compare(pager.contentY, offset)
+        history.loadOlderGames()
+        compare(historyRequests().length, requestCount)
+        var deadline = history.historyRetryAt
+
+        var reviewRequest = choose(games[19].game_id)
+        replyWithMoves(reviewRequest, "e4")
+        findChild(screen.item, "reviewBackButton").clicked()
+        var returned = screen.item
+        var returnedPager = findChild(returned, "historyList")
+        var returnedOlder = findChild(returned, "loadOlderGamesButton")
+        compare(returned.historyRetryAt, deadline)
+        compare(returned.nextHistoryCursor, cursor)
+        compare(returned.games.length, 20)
+        compare(returnedOlder.subtitle, message)
+        verify(!returnedOlder.enabled)
+        tryCompare(returnedPager, "contentY", offset)
+
+        tryCompare(returnedOlder, "enabled", true)
+        compare(returnedOlder.title, "Retry loading older games")
+        compare(historyRequests().length, requestCount)
+        verify(returnedOlder.mapToItem(returnedPager, 0, returnedOlder.height).y <= returnedPager.pageHeight + 0.5)
+        mouseClick(returnedOlder, returnedOlder.width / 2, returnedOlder.height / 2)
+        compare(historyRequests().length, requestCount + 1)
+        var retried = historyRequests().slice(-1)[0]
+        compare(retried, Object.assign({}, limited, {request_id: retried.request_id}))
+        endpoint.reply({type: "GameHistory", request_id: retried.request_id,
+                        games: [{game_id: "oldest"}]})
+        compare(returned.games.length, 21)
+        compare(returned.games[20].game_id, "oldest")
+        verify(!returnedOlder.visible)
+    }
+
     function test_loadOlderGamesPreservesFiltersAndTheArchiveVisit() {
         var requestId = applyHistoryFilters("rapid")
         var games = []

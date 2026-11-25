@@ -677,7 +677,12 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         next_cursor: Option<HistoryCursor>,
     },
-    GameHistoryFailed { request_id: u32, message: String },
+    GameHistoryFailed {
+        request_id: u32,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
     OpenChallengeCreated {
         game_id: String,
         url: String,

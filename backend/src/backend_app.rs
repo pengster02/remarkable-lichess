@@ -31,6 +31,7 @@ const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const CLOUD_QUEUE_CAPACITY: usize = 4;
 const LICHESS_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. Try again shortly.";
+const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.";
 
 struct StreamReconnectDelay {
     next: Duration,
@@ -312,6 +313,9 @@ pub struct LichessBackend {
     home_ratings: Option<tokio::task::JoinHandle<()>>,
     home_games_retry_after: Arc<Mutex<Option<Instant>>>,
     history_load: Option<GameRequest>,
+    // Keep the export cooldown across screen visits. A QML-only timer misses
+    // reentry, while an API-wide gate could interrupt live play.
+    history_retry_after: Arc<Mutex<Option<Instant>>>,
     review_export: Option<GameRequest>,
     cloud_evaluations: Option<CloudEvaluationQueue>,
     cloud_retry_after: Arc<Mutex<Option<Instant>>>,
@@ -347,6 +351,7 @@ impl LichessBackend {
             home_ratings: None,
             home_games_retry_after: Arc::new(Mutex::new(None)),
             history_load: None,
+            history_retry_after: Arc::new(Mutex::new(None)),
             review_export: None,
             cloud_evaluations: None,
             cloud_retry_after: Arc::new(Mutex::new(None)),
@@ -631,7 +636,7 @@ impl LichessBackend {
         let (Some(client), Some(my_id)) = (self.client.clone(), self.my_id.clone()) else {
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameHistoryFailed {
-                    request_id, message: "Not signed in to Lichess".into(),
+                    request_id, message: "Not signed in to Lichess".into(), retry_after_ms: None,
                 },
                 None => BackendMessage::TokenInvalid { reason: "no token saved".into() },
             };
@@ -641,17 +646,31 @@ impl LichessBackend {
         stop_game_request(&mut self.history_load).await;
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
+        let retry_after = self.history_retry_after.clone();
         let task = tokio::spawn(async move {
+            let remaining = retry_after.lock().await
+                .and_then(|until| until.checked_duration_since(Instant::now()));
+            if let Some(remaining) = remaining {
+                let reply = history_rate_limit_reply(request_id, remaining);
+                send_locked(&replier, &write_lock, &reply);
+                return;
+            }
             let reply = match client.get_game_history_page(&my_id, &filters, cursor).await {
                 Ok((games, next_cursor)) => BackendMessage::GameHistory {
                     request_id,
                     games: games.into_iter().map(|g| history_game_to_summary(g, &my_id)).collect(),
                     next_cursor,
                 },
+                Err(error) if is_rate_limited(&error) => {
+                    *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+                    history_rate_limit_reply(request_id, LICHESS_RATE_LIMIT_DELAY)
+                }
                 Err(error) => {
                     let message = error.to_string();
                     match request_id {
-                        Some(request_id) => BackendMessage::GameHistoryFailed { request_id, message },
+                        Some(request_id) => BackendMessage::GameHistoryFailed {
+                            request_id, message, retry_after_ms: None,
+                        },
                         None => BackendMessage::ErrorMsg { message },
                     }
                 }
@@ -1347,6 +1366,18 @@ async fn send_pending_challenges(
         }
     };
     send_locked(replier, write_lock, &msg);
+}
+
+fn history_rate_limit_reply(request_id: Option<u32>, remaining: Duration) -> BackendMessage {
+    let message = HISTORY_RATE_LIMIT_MESSAGE.into();
+    match request_id {
+        Some(request_id) => BackendMessage::GameHistoryFailed {
+            request_id,
+            message,
+            retry_after_ms: Some(remaining.as_millis().max(1) as u32),
+        },
+        None => BackendMessage::ErrorMsg { message },
+    }
 }
 
 async fn refresh_home_games(

@@ -28,6 +28,8 @@ Rectangle {
     property string loadError: ""
     property string olderLoadError: ""
     property var nextHistoryCursor: null
+    property double historyRetryAt: 0
+    readonly property bool historyCoolingDown: historyRetryAt > 0
     property int pendingHistoryRequest: 0
     property bool loading: true
     readonly property bool loadingOlder: pendingHistoryRequest > 0 && !loading
@@ -41,6 +43,14 @@ Rectangle {
     // Indices preserve existing cards on append and keep nested analysis in games.
     // An array model rebuilds cards, while a full ListModel mirrors game data.
     ListModel { id: historyCardIndices }
+
+    // A one-shot deadline survives review. A local interval resets on return,
+    // while a ticking countdown redraws the e-ink screen.
+    Timer {
+        interval: Math.max(0, gameHistoryScreen.historyRetryAt - Date.now())
+        running: gameHistoryScreen.historyCoolingDown
+        onTriggered: gameHistoryScreen.historyRetryAt = 0
+    }
 
     onGamesChanged: syncHistoryCardIndices()
     onBackendSenderChanged: if (loading) requestFiltered()
@@ -77,6 +87,7 @@ Rectangle {
             loadError: loadError,
             olderLoadError: olderLoadError,
             nextHistoryCursor: nextHistoryCursor,
+            historyRetryAt: historyRetryAt,
             restoredPosition: captureHistoryPosition()
         }
     }
@@ -94,18 +105,19 @@ Rectangle {
 
     function requestFiltered() {
         if (!gameHistoryScreen.backendSender || !gameHistoryScreen.nextRequestId) return
-        gameHistoryScreen.loading = true
+        gameHistoryScreen.loading = !gameHistoryScreen.historyCoolingDown
         gameHistoryScreen.errorMessage = ""
-        gameHistoryScreen.loadError = ""
+        gameHistoryScreen.loadError = gameHistoryScreen.historyCoolingDown
+            ? gameHistoryScreen.olderLoadError || gameHistoryScreen.loadError : ""
         gameHistoryScreen.olderLoadError = ""
         gameHistoryScreen.nextHistoryCursor = null
         gameHistoryScreen.restoredPosition = null
         gameHistoryScreen.games = []
-        sendHistoryRequest(null)
+        if (!gameHistoryScreen.historyCoolingDown) sendHistoryRequest(null)
     }
 
     function loadOlderGames() {
-        if (!nextHistoryCursor || pendingHistoryRequest || openingReview) return
+        if (!nextHistoryCursor || pendingHistoryRequest || openingReview || historyCoolingDown) return
         olderLoadError = ""
         sendHistoryRequest(nextHistoryCursor)
     }
@@ -193,13 +205,15 @@ Rectangle {
         spacing: theme.spacingSmall
 
         AppPageHeader {
+            objectName: "historyHeader"
             width: parent.width
             darkMode: gameHistoryScreen.darkMode
             eyebrow: "Archive"
             title: "Game history"
             detail: gameHistoryScreen.openingReview ? "Opening game…"
-                : (gameHistoryScreen.loading ? "Loading your games"
-                   : gameHistoryScreen.games.length + " recent games")
+                : gameHistoryScreen.loading ? "Loading your games"
+                : gameHistoryScreen.games.length === 1 ? "1 game loaded"
+                : gameHistoryScreen.games.length > 1 ? gameHistoryScreen.games.length + " games loaded" : ""
         }
 
         // Drafting in a dialog avoids a network request on every tap; instant
@@ -230,10 +244,12 @@ Rectangle {
             width: parent.width
         }
         AppButton {
+            objectName: "retryGameHistoryButton"
             width: parent.width
             compact: true
             visible: gameHistoryScreen.loadError.length > 0
-            text: "Retry"
+            enabled: !gameHistoryScreen.historyCoolingDown
+            text: gameHistoryScreen.historyCoolingDown ? "Retry available shortly" : "Retry"
             onClicked: gameHistoryScreen.requestFiltered()
         }
     }
@@ -447,8 +463,10 @@ Rectangle {
                 height: theme.buttonMinHeight + theme.spacingSmall
                 visible: gameHistoryScreen.nextHistoryCursor !== null
                 darkMode: gameHistoryScreen.darkMode
-                enabled: !gameHistoryScreen.loadingOlder && !gameHistoryScreen.openingReview
+                enabled: !gameHistoryScreen.loadingOlder && !gameHistoryScreen.openingReview &&
+                         !gameHistoryScreen.historyCoolingDown
                 title: gameHistoryScreen.loadingOlder ? "Loading older games…"
+                    : gameHistoryScreen.historyCoolingDown ? "Retry available shortly"
                     : gameHistoryScreen.olderLoadError ? "Retry loading older games" : "Load older games"
                 subtitle: gameHistoryScreen.olderLoadError
                 onClicked: gameHistoryScreen.loadOlderGames()
@@ -536,10 +554,10 @@ Rectangle {
                 if (older) gameHistoryScreen.appendHistory(msg.games || [])
                 else gameHistoryScreen.games = msg.games || []
                 gameHistoryScreen.nextHistoryCursor = msg.next_cursor || null
-            } else if (older) {
-                gameHistoryScreen.olderLoadError = msg.message || "Lichess could not load older games."
             } else {
-                gameHistoryScreen.loadError = msg.message
+                if (msg.retry_after_ms > 0) gameHistoryScreen.historyRetryAt = Date.now() + msg.retry_after_ms
+                if (older) gameHistoryScreen.olderLoadError = msg.message || "Lichess could not load older games."
+                else gameHistoryScreen.loadError = msg.message || "Lichess could not load game history."
             }
         } else if (msg.type === "GameMovesFailed") {
             gameHistoryScreen.errorMessage = msg.message
