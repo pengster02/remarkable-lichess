@@ -1904,6 +1904,105 @@ TestCase {
         verify(review.requestExplorationMove("d2", "d4"))
     }
 
+    function test_explorePreservesSiblingLinesAndReopensTheSavedTree() {
+        var reviewId = choose("saved-branches")
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [startFen],
+                        variation_storage: true})
+        var review = screen.item
+        var explore = findChild(review, "beginExplorationButton")
+        compare(endpoint.sentMessages.slice(-1)[0], {type: "RequestReviewVariations", review_id: reviewId})
+        verify(!explore.enabled)
+        endpoint.reply({type: "ReviewVariations", review_id: reviewId + 1, variations: {positions: []}})
+        verify(!explore.enabled)
+        endpoint.reply({type: "ReviewVariations", review_id: reviewId, variations: {positions: []}})
+        verify(explore.enabled)
+        explore.clicked()
+
+        var e4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        var e5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        var d4 = "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"
+        var firstMoves = [{from: "e2", to: "e4"}, {from: "d2", to: "d4"}]
+        function position(fen, legal) {
+            endpoint.reply({type: "AnalysisPosition", request_id: review.pendingAnalysisRequestId,
+                            requested_fen: fen, fen: fen, legal_moves: legal})
+        }
+        function move(from, to, san, fen, legal) {
+            verify(review.requestExplorationMove(from, to))
+            endpoint.reply({type: "AnalysisMove", request_id: review.pendingAnalysisRequestId,
+                            from_fen: review.exploreFen, san: san, fen: fen, legal_moves: legal})
+            var saved = endpoint.sentMessages.slice(-1)[0]
+            compare(saved.type, "SaveReviewVariations")
+            return saved
+        }
+        position(startFen, firstMoves)
+        var first = move("e2", "e4", "e4", e4, [{from: "e7", to: "e5"}])
+        move("e7", "e5", "e5", e5, [])
+        var previous = findChild(review, "previousVariationPositionButton")
+        previous.clicked()
+        compare(review.variationMoves, ["e4"])
+        previous.clicked()
+        position(startFen, firstMoves)
+        var fork = move("d2", "d4", "d4", d4, [])
+        var snapshot = {positions: [{ply: 0, fen: startFen, nodes: [
+            {parent: null, san: "e4", fen: e4},
+            {parent: 0, san: "e5", fen: e5},
+            {parent: null, san: "d4", fen: d4}
+        ]}]}
+        compare(fork.variations, snapshot)
+        endpoint.reply({type: "ReviewVariationsSaveFailed", review_id: reviewId,
+                        request_id: fork.request_id, message: "Could not save variations."})
+        endpoint.reply({type: "ReviewVariationsSaved", review_id: reviewId, request_id: first.request_id})
+        compare(review.variationSaveError, "Could not save variations.")
+
+        var lines = findChild(review, "showVariationsButton")
+        verify(waitForRendering(lines))
+        mouseClick(lines, lines.width / 2, lines.height / 2)
+        var dialog = findChild(review, "variationDialog")
+        verify(dialog.visible)
+        var retry = findChild(dialog, "retrySavingVariationsButton")
+        verify(retry.visible && retry.enabled)
+        retry.clicked()
+        var retried = endpoint.sentMessages.slice(-1)[0]
+        compare(retried.variations, snapshot)
+        verify(retried.request_id > fork.request_id)
+        endpoint.reply({type: "ReviewVariationsSaved", review_id: reviewId, request_id: retried.request_id})
+        compare(review.variationSaveError, "")
+        var originalLine = findChild(dialog, "variationLine-1")
+        compare(originalLine.title, "e4 e5")
+        compare(findChild(dialog, "variationLine-2").title, "d4")
+        verify(waitForRendering(originalLine))
+        mouseClick(originalLine, originalLine.width / 2, originalLine.height / 2)
+        verify(!dialog.visible)
+        compare(review.currentFen(), e5)
+        compare(review.variationMoves, ["e4", "e5"])
+        compare(endpoint.sentMessages.slice(-1)[0].fen, e5)
+
+        review.stopExploration()
+        review.beginExploration()
+        position(startFen, firstMoves)
+        compare(review.currentFen(), startFen)
+        lines.clicked()
+        compare(findChild(dialog, "variationLine-1").title, "e4 e5")
+        compare(findChild(dialog, "variationLine-2").title, "d4")
+
+        var back = findChild(review, "reviewBackButton")
+        back.clicked()
+        reviewId = choose("saved-branches")
+        endpoint.reply({type: "GameMoves", request_id: reviewId, moves: [], fens: [startFen],
+                        variation_storage: true})
+        review = screen.item
+        compare(endpoint.sentMessages.slice(-1)[0], {type: "RequestReviewVariations", review_id: reviewId})
+        endpoint.reply({type: "ReviewVariations", review_id: reviewId, variations: snapshot})
+        review.beginExploration()
+        position(startFen, firstMoves)
+        findChild(review, "showVariationsButton").clicked()
+        var secondLine = findChild(review, "variationLine-2")
+        compare(secondLine.title, "d4")
+        secondLine.clicked()
+        compare(review.variationMoves, ["d4"])
+        compare(review.currentFen(), d4)
+    }
+
     function test_cancelExplorePromotionKeepsTheVariation() {
         var reviewId = choose("promotion-game")
         var fen = "7k/P7/8/8/8/8/8/4K3 w - - 0 1"

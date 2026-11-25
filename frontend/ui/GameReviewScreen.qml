@@ -1,4 +1,5 @@
 import QtQuick 2.9
+import "VariationTree.js" as VariationTree
 
 // Read-only replay of a finished game's move list, opened from
 // GameHistoryScreen.
@@ -72,10 +73,22 @@ Rectangle {
     property bool manualFlip: false
     property bool exploreMode: false
     property bool showReviewOptions: false
+    property bool showVariations: false
     property string exploreFen: ""
     property var exploreLegalMoves: []
     property var variationFens: []
     property var variationMoves: []
+    property var reviewVariations: ({positions: []})
+    property var activeVariationNode: null
+    property string exploreRootFen: ""
+    readonly property var activeVariation: VariationTree.position(
+        reviewVariations, currentIndex, fens[currentIndex] || "")
+    property string variationStoreState: ""
+    property string variationLoadError: ""
+    property string variationSaveError: ""
+    property bool variationSnapshotFull: false
+    readonly property string variationStorageError: variationLoadError || variationSaveError
+    property int pendingVariationSaveId: 0
     readonly property string variationStartFen: variationFens[0] || ""
     readonly property var candidateRows: chessDisplay.moveRows(variationMoves, [], [], variationStartFen)
     // A normalized FEN can still be the archived move, and hiding all Explore
@@ -361,11 +374,39 @@ Rectangle {
 
     function rebaseExploration() {
         if (!gameReviewScreen.exploreMode || gameReviewScreen.fens.length === 0) return
-        var base = gameReviewScreen.fens[gameReviewScreen.currentIndex]
-        gameReviewScreen.exploreFen = base
-        gameReviewScreen.variationFens = [base]
-        gameReviewScreen.variationMoves = []
+        gameReviewScreen.showVariations = false
+        gameReviewScreen.exploreRootFen = gameReviewScreen.fens[gameReviewScreen.currentIndex]
+        gameReviewScreen.selectVariationNode(null)
+    }
+
+    function applyVariationLine(nodeIndex) {
+        var line = VariationTree.line(activeVariation, nodeIndex, exploreRootFen)
+        activeVariationNode = nodeIndex
+        variationFens = line.fens
+        variationMoves = line.moves
+        exploreFen = line.fens[line.fens.length - 1]
+    }
+
+    function selectVariationNode(nodeIndex) {
+        applyVariationLine(nodeIndex)
         gameReviewScreen.loadExplorationPosition()
+    }
+
+    function loadSavedVariations() {
+        variationStoreState = "loading"
+        backendSender({type: "RequestReviewVariations", review_id: reviewRequestId})
+    }
+
+    function saveVariations() {
+        if (variationStoreState !== "ready" || variationSnapshotFull) return
+        if (JSON.stringify(reviewVariations).length > VariationTree.maximumSavedBytes) {
+            variationSnapshotFull = true
+            variationSaveError = "Saved variations are full for this game."
+            return
+        }
+        pendingVariationSaveId = nextRequestId()
+        backendSender({type: "SaveReviewVariations", review_id: reviewRequestId,
+                       request_id: pendingVariationSaveId, variations: reviewVariations})
     }
 
     function loadExplorationPosition() {
@@ -392,12 +433,15 @@ Rectangle {
     }
 
     function beginExploration() {
+        if (variationStoreState === "loading") return
         gameReviewScreen.exploreMode = true
         gameReviewScreen.rebaseExploration()
     }
 
     function stopExploration() {
         gameReviewScreen.exploreMode = false
+        gameReviewScreen.showVariations = false
+        gameReviewScreen.activeVariationNode = null
         gameReviewScreen.pendingAnalysisRequestId = 0
         gameReviewScreen.exploreFen = ""
         gameReviewScreen.exploreLegalMoves = []
@@ -412,19 +456,7 @@ Rectangle {
     }
 
     function undoExplorationMove() {
-        if (gameReviewScreen.variationFens.length <= 1) return
-        var nextFens = []
-        var nextMoves = []
-        for (var i = 0; i < gameReviewScreen.variationFens.length - 1; i++) {
-            nextFens.push(gameReviewScreen.variationFens[i])
-        }
-        for (var j = 0; j < gameReviewScreen.variationMoves.length - 1; j++) {
-            nextMoves.push(gameReviewScreen.variationMoves[j])
-        }
-        gameReviewScreen.variationFens = nextFens
-        gameReviewScreen.variationMoves = nextMoves
-        gameReviewScreen.exploreFen = nextFens[nextFens.length - 1]
-        gameReviewScreen.loadExplorationPosition()
+        if (activeVariationNode !== null) selectVariationNode(activeVariation.nodes[activeVariationNode].parent)
     }
 
     // `analysis` may be shorter than `moves` or empty.
@@ -621,7 +653,9 @@ Rectangle {
             Text {
                 objectName: "reviewPositionStatus"
                 text: gameReviewScreen.exploreMode
-                    ? gameReviewScreen.exploreStatus
+                    ? (gameReviewScreen.variationStorageError
+                       ? gameReviewScreen.variationStorageError + "\n" + gameReviewScreen.exploreStatus
+                       : gameReviewScreen.exploreStatus)
                     : (gameReviewScreen.currentIndex === 0
                         ? "Starting position"
                         : "Move " + gameReviewScreen.currentIndex + " of " +
@@ -821,8 +855,10 @@ Rectangle {
                 onClicked: gameReviewScreen.showReviewOptions = true
             }
             BoardToolButton {
+                objectName: "beginExplorationButton"
                 width: (parent.width - parent.spacing * 3) / 4
-                text: "Explore"
+                text: gameReviewScreen.variationStoreState === "loading" ? "Loading…" : "Explore"
+                enabled: gameReviewScreen.variationStoreState !== "loading"
                 onClicked: gameReviewScreen.beginExploration()
             }
             BoardToolButton {
@@ -856,19 +892,42 @@ Rectangle {
                 onClicked: gameReviewScreen.stopExploration()
             }
             BoardToolButton {
+                objectName: "previousVariationPositionButton"
                 width: (parent.width - parent.spacing * 3) / 4
-                text: "Undo"
+                text: "Previous"
                 enabled: gameReviewScreen.variationMoves.length > 0
                 onClicked: gameReviewScreen.undoExplorationMove()
             }
             BoardToolButton {
+                objectName: "showVariationsButton"
                 width: (parent.width - parent.spacing * 3) / 4
-                text: "Reset"
-                enabled: gameReviewScreen.variationMoves.length > 0
-                onClicked: gameReviewScreen.rebaseExploration()
+                text: "Lines"
+                enabled: gameReviewScreen.activeVariation.nodes.length > 0 ||
+                         gameReviewScreen.variationLoadError.length > 0
+                onClicked: gameReviewScreen.showVariations = true
             }
         }
 
+    }
+
+    // The paged dialog keeps the board fixed. Inline lines displace notation,
+    // while a separate screen loses the position being explored.
+    VariationDialog {
+        anchors.fill: parent
+        visible: gameReviewScreen.showVariations
+        darkMode: gameReviewScreen.darkMode
+        lines: visible ? VariationTree.tips(gameReviewScreen.activeVariation) : []
+        currentNode: gameReviewScreen.activeVariationNode
+        storageError: gameReviewScreen.variationStorageError
+        canRetrySave: gameReviewScreen.variationSaveError.length > 0 &&
+                      !gameReviewScreen.variationSnapshotFull &&
+                      gameReviewScreen.pendingVariationSaveId === 0
+        onSelected: (nodeIndex) => {
+            gameReviewScreen.showVariations = false
+            gameReviewScreen.selectVariationNode(nodeIndex)
+        }
+        onRetrySave: gameReviewScreen.saveVariations()
+        onDismissed: gameReviewScreen.showVariations = false
     }
 
     AppDialog {
@@ -1110,17 +1169,29 @@ Rectangle {
                 gameReviewScreen.game = Object.assign({}, gameReviewScreen.game,
                     {rating_diff: msg.rating_diff})
             }
+        } else if (msg.type === "ReviewVariations" || msg.type === "ReviewVariationsLoadFailed") {
+            if (msg.review_id !== reviewRequestId || variationStoreState !== "loading") return
+            if (msg.type === "ReviewVariations") {
+                reviewVariations = msg.variations
+                variationStoreState = "ready"
+            } else {
+                variationLoadError = msg.message
+                variationStoreState = "failed"
+            }
+        } else if (msg.type === "ReviewVariationsSaved" || msg.type === "ReviewVariationsSaveFailed") {
+            if (msg.review_id !== reviewRequestId || msg.request_id !== pendingVariationSaveId) return
+            pendingVariationSaveId = 0
+            if (!variationSnapshotFull) {
+                variationSaveError = msg.type === "ReviewVariationsSaveFailed" ? msg.message : ""
+            }
         } else if (msg.type === "AnalysisPosition") {
             if (!gameReviewScreen.exploreMode ||
                     msg.request_id !== gameReviewScreen.pendingAnalysisRequestId ||
                     msg.requested_fen !== gameReviewScreen.exploreFen) return
             gameReviewScreen.pendingAnalysisRequestId = 0
-            var normalized = []
-            for (var i = 0; i < gameReviewScreen.variationFens.length; i++) {
-                normalized.push(i === gameReviewScreen.variationFens.length - 1
-                    ? msg.fen
-                    : gameReviewScreen.variationFens[i])
-            }
+            if (activeVariationNode === null) exploreRootFen = msg.fen
+            var normalized = variationFens.slice()
+            normalized[normalized.length - 1] = msg.fen
             gameReviewScreen.variationFens = normalized
             gameReviewScreen.exploreFen = msg.fen
             gameReviewScreen.exploreLegalMoves = msg.legal_moves || []
@@ -1133,25 +1204,17 @@ Rectangle {
                     msg.request_id !== gameReviewScreen.pendingAnalysisRequestId ||
                     msg.from_fen !== gameReviewScreen.exploreFen) return
             gameReviewScreen.pendingAnalysisRequestId = 0
-            var nextFens = []
-            var nextMoves = []
-            for (var j = 0; j < gameReviewScreen.variationFens.length; j++) {
-                nextFens.push(gameReviewScreen.variationFens[j])
-            }
-            for (var k = 0; k < gameReviewScreen.variationMoves.length; k++) {
-                nextMoves.push(gameReviewScreen.variationMoves[k])
-            }
-            nextFens.push(msg.fen)
-            nextMoves.push(msg.san)
-            gameReviewScreen.variationFens = nextFens
-            gameReviewScreen.variationMoves = nextMoves
-            gameReviewScreen.exploreFen = msg.fen
+            var updated = VariationTree.addMove(reviewVariations, activeVariation, activeVariationNode, msg.san, msg.fen)
+            var added = updated.variations !== reviewVariations
+            reviewVariations = updated.variations
+            applyVariationLine(updated.nodeIndex)
             gameReviewScreen.exploreLegalMoves = msg.legal_moves || []
             gameReviewScreen.exploreInCheck = typeof msg.in_check === "boolean" ? msg.in_check : null
             gameReviewScreen.exploreStatusCode = msg.status || "playing"
             gameReviewScreen.selectedSquare = ""
             gameReviewScreen.exploreStatus = gameReviewScreen.explorationPrompt()
             gameReviewScreen.refreshBoard()
+            if (added) saveVariations()
         } else if (msg.type === "CloudEvaluation" || msg.type === "CloudEvaluationUnavailable" ||
                    msg.type === "CloudEvaluationFailed") {
             gameReviewScreen.handleCloudReply(msg)

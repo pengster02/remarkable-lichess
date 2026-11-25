@@ -1,4 +1,5 @@
 use crate::qr::QrMatrix;
+use crate::variations::ReviewVariations;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -201,6 +202,8 @@ pub enum FrontendMessage {
         request_id: Option<u32>,
     },
     CancelGameReview { request_id: u32 },
+    RequestReviewVariations { review_id: u32 },
+    SaveReviewVariations { review_id: u32, request_id: u32, variations: ReviewVariations },
     RequestCloudEvaluation { fen: String, request_id: Option<u32>, review_id: Option<u32> },
     CancelCloudEvaluations { review_id: u32 },
     RequestAnalysisPosition { fen: String, request_id: Option<u32> },
@@ -713,8 +716,14 @@ pub enum BackendMessage {
         // Waiting for that event can leave it blank, and a separate lookup adds latency.
         #[serde(skip_serializing_if = "Option::is_none")]
         rating_diff: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        variation_storage: Option<bool>,
     },
     GameMovesFailed { request_id: u32, message: String },
+    ReviewVariations { review_id: u32, variations: ReviewVariations },
+    ReviewVariationsLoadFailed { review_id: u32, message: String },
+    ReviewVariationsSaved { review_id: u32, request_id: u32 },
+    ReviewVariationsSaveFailed { review_id: u32, request_id: u32, message: String },
     CloudEvaluation {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
@@ -1147,6 +1156,7 @@ mod tests {
             clock_ms: vec![],
             analysis: vec![],
             rating_diff: Some(0),
+            variation_storage: None,
         })
         .unwrap();
         assert!(json.contains(r#""type":"GameMoves""#));
@@ -1171,6 +1181,7 @@ mod tests {
             moves: vec!["e4".into()],
             fens: vec!["startpos".into(), "after-e4".into()],
             initial_in_check: true,
+            variation_storage: None,
             clock_ms: vec![29900],
             analysis: vec![MoveAnalysis {
                 eval_cp: None,
