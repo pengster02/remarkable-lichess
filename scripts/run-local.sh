@@ -34,11 +34,19 @@ fi
 IMAGE="${IMAGE:-remarkable-lichess-local-pc}"
 PORT="${PORT:-6080}"
 NAME="${NAME:-remarkable-lichess-local}"
+CONFIG_ROOT="/var/lib/remarkable-lichess"
+CONFIG_DIR="${CONFIG_ROOT}/config"
+# A named volume follows the emulator name. A checkout bind follows the source tree.
+# Container-local storage disappears on replacement.
+CONFIG_VOLUME="${NAME}-config"
+CONFIG_MOUNT="type=volume,src=${CONFIG_VOLUME},dst=${CONFIG_ROOT},volume-nocopy"
 
 # Optional token: env LICHESS_TOKEN, or repo-local gitignored file.
 TOKEN_FILE="${TOKEN_FILE:-${ROOT}/.lichess-token}"
+TOKEN_IF_NEW=0
 if [ -z "${LICHESS_TOKEN:-}" ] && [ -f "${TOKEN_FILE}" ]; then
   LICHESS_TOKEN="$(tr -d ' \t\r\n' < "${TOKEN_FILE}")"
+  TOKEN_IF_NEW=1
 fi
 
 echo "Building local-pc image (first run is slow)..."
@@ -48,7 +56,62 @@ IMAGE_INFO="$(docker image inspect --format '{{.Architecture}} {{json .RootFS.La
 CACHE_PREFIX="${NAME}-${IMAGE_INFO%% *}"
 BUILD_KEY="$(printf '%s\n' "${ROOT}" "${APPLOAD_HOST}" "${XOVI_HOST}" "${IMAGE_INFO}" | cksum | cut -d ' ' -f 1)"
 
-docker rm -f "${NAME}" >/dev/null 2>&1 || true
+migrate_legacy_config() (
+  local previous_id="$1" legacy="/tmp/remarkable-lichess-config" backup copy_error
+  umask 077
+  backup="$(mktemp -d "${TMPDIR:-/tmp}/remarkable-lichess-config.XXXXXXXX")" || exit 1
+  trap 'rm -r -- "$backup"' EXIT
+  # Verify the copy before publishing it. Direct extraction can leave partial data.
+  # A streamed extractor can finish before the copy command reports failure.
+  if ! copy_error="$(docker cp "${previous_id}:${legacy}" - 2>&1 > "${backup}/config.tar")"; then
+    if [[ "$copy_error" == *"Could not find the file ${legacy} in container ${previous_id}" ]]; then
+      exit 0
+    fi
+    printf '%s\n' "$copy_error" >&2
+    exit 1
+  fi
+
+  docker run --rm --network none -i --mount "${CONFIG_MOUNT}" \
+    --entrypoint /bin/sh "${IMAGE}" -eu -c '
+      config="$1"
+      stage="$(mktemp -d "$2/.migrate.XXXXXXXX")"
+      trap '\''rm -rf -- "$stage"'\'' EXIT
+      tar -xf - -C "$stage"
+      source="$stage/$3"
+      chmod 0700 "$source"
+      if mv -Tn -- "$source" "$config" 2>/dev/null && [ ! -d "$source" ]; then
+        exit 0
+      fi
+      if [ -d "$config" ] && diff -qr --no-dereference -- "$source" "$config" >/dev/null; then
+        exit 0
+      fi
+      echo "Could not install emulator configuration. The volume may contain different data." >&2
+      exit 1
+    ' migrate "${CONFIG_DIR}" "${CONFIG_ROOT}" "${legacy##*/}" < "${backup}/config.tar"
+)
+
+PREVIOUS_ID="$(docker ps -a --no-trunc --format '{{.ID}} {{.Names}}' |
+  awk -v name="${NAME}" '$2 == name { print $1 }')"
+if [ -n "${PREVIOUS_ID}" ]; then
+  PREVIOUS_MOUNT="$(docker container inspect --format \
+    "{{range .Mounts}}{{if eq .Destination \"${CONFIG_ROOT}\"}}{{.Type}} {{.Name}}{{end}}{{end}}" \
+    "${PREVIOUS_ID}")"
+  if [ "${PREVIOUS_MOUNT}" != "volume ${CONFIG_VOLUME}" ]; then
+    PREVIOUS_RUNNING="$(docker container inspect --format '{{.State.Running}}' "${PREVIOUS_ID}")"
+    if [ "${PREVIOUS_RUNNING}" = true ]; then
+      docker stop "${PREVIOUS_ID}" >/dev/null
+    fi
+    if ! migrate_legacy_config "${PREVIOUS_ID}"; then
+      echo "Could not preserve configuration from ${NAME}. Its container is still available." >&2
+      if [ "${PREVIOUS_RUNNING}" = true ]; then
+        docker start "${PREVIOUS_ID}" >/dev/null ||
+          echo "Could not restart ${NAME}. Retry with docker start ${NAME}." >&2
+      fi
+      exit 1
+    fi
+  fi
+  docker rm -f "${PREVIOUS_ID}" >/dev/null
+fi
 
 RUN_ARGS=(
   -d --name "${NAME}"
@@ -56,6 +119,8 @@ RUN_ARGS=(
   -v "${ROOT}:/workspace/remarkable-lichess"
   -v "${APPLOAD_HOST}:/workspace/rm-appload"
   -v "${XOVI_HOST}:/workspace/xovi"
+  --mount "${CONFIG_MOUNT}"
+  -e "REMARKABLE_LICHESS_CONFIG_DIR=${CONFIG_DIR}"
   # Key compiled output by checkout and image. Host targets mix platforms, and
   # a shared build directory can reuse artifacts from the wrong checkout.
   -v "${CACHE_PREFIX}-${BUILD_KEY}-build:/tmp/remarkable-lichess-build"
@@ -67,10 +132,7 @@ RUN_ARGS=(
 )
 if [ -n "${LICHESS_TOKEN:-}" ]; then
   export LICHESS_TOKEN
-  RUN_ARGS+=(-e LICHESS_TOKEN)
-  echo "Seeding Lichess token into the emulator."
-else
-  echo "No LICHESS_TOKEN / .lichess-token yet — Setup screen will ask for one."
+  RUN_ARGS+=(-e LICHESS_TOKEN -e "LICHESS_TOKEN_IF_NEW=${TOKEN_IF_NEW}")
 fi
 
 echo "Starting emulator on http://localhost:${PORT}/vnc.html"
