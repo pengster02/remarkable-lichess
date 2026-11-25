@@ -2039,6 +2039,10 @@ TestCase {
         var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
         compare(request.type, "RequestGameMoves")
         replyWithMoves(request.request_id, "e4")
+        var leaves = endpoint.sentMessages.filter(function(message) {
+            return message.type === "LeaveGame"
+        })
+        compare(leaves, [{type: "LeaveGame", game_id: "finished"}])
 
         var count = historyRequests().length
         findChild(screen.item, "reviewBackButton").clicked()
@@ -3225,6 +3229,43 @@ TestCase {
         verify(String(screen.source).endsWith("HomeScreen.qml"))
         endpoint.reply(boardState("selected"))
         verify(String(screen.source).endsWith("HomeScreen.qml"))
+    }
+
+    function test_leavingAndReopeningBoardReleasesItsSelection_data() {
+        return [{tag: "loading", phase: "loading"},
+                {tag: "waiting for start", phase: "starting"},
+                {tag: "stream rejected", phase: "rejected"}]
+    }
+
+    function test_leavingAndReopeningBoardReleasesItsSelection(data) {
+        var before = endpoint.sentMessages.length
+        app.openGame("selected")
+        if (data.phase === "starting") {
+            var pending = boardState("selected")
+            pending.awaiting_game_start = true
+            endpoint.reply(pending)
+        } else if (data.phase === "rejected") {
+            endpoint.reply({type: "GameStreamFailed", game_id: "selected", message: "Game unavailable"})
+        }
+        var back = findChild(screen.item, "boardBackButton")
+        verify(back.visible && back.enabled)
+        back.clicked()
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+        endpoint.reply(boardState("selected"))
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+
+        app.openGame("selected")
+        verify(screen.item.awaitingBoard)
+        var commands = endpoint.sentMessages.slice(before).filter(function(message) {
+            return message.type === "ResumeGame" || message.type === "LeaveGame"
+        })
+        compare(commands, [
+            {type: "ResumeGame", game_id: "selected"},
+            {type: "LeaveGame", game_id: "selected"},
+            {type: "ResumeGame", game_id: "selected"}
+        ])
+        endpoint.reply(boardState("selected"))
+        verify(!screen.item.awaitingBoard)
     }
 
     function test_loadedBoardHidesBackUntilTheStreamIsRejected() {
