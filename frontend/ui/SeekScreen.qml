@@ -139,6 +139,12 @@ Rectangle {
         seekPager.showPageContaining(playerChallengeSection.y, playerChallengeSection.height)
     }
 
+    function revealOpenChallenge() {
+        if (!openChallengeShare.visible) return
+        seekColumn.forceLayout()
+        seekPager.showPageContaining(openChallengeShare.y, openChallengeShare.height)
+    }
+
     function submitChallenge() {
         if (!showingSetup || !canSubmit || !validateTimeControl(60)) return
         var username = usernameField.text.trim()
@@ -253,7 +259,17 @@ Rectangle {
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: seekColumn.height
         onPageNavigationRequested: seekScreen.dismissKeyboard()
-        pageStops: seekScreen.showingSetup ? [0, playerChallengeSection.y] : [0]
+        pageStops: {
+            if (!seekScreen.showingSetup) return [0]
+            var stops = [0, playerChallengeSection.y]
+            // A result anchor is needed only if the preceding page would
+            // clip the card. Always adding one repeats a page on larger screens.
+            if (openChallengeShare.visible && openChallengeShare.y + openChallengeShare.height >
+                    playerChallengeSection.y + seekPager.pageHeight + seekPager.positionTolerance) {
+                stops.push(openChallengeShare.y)
+            }
+            return stops
+        }
 
     Column {
         id: seekColumn
@@ -432,36 +448,13 @@ Rectangle {
             onClicked: seekScreen.submitOpenChallenge()
         }
 
-        Column {
-            visible: !seekScreen.seekEnded && seekScreen.openChallengeUrls !== null
+        OpenChallengeShare {
+            id: openChallengeShare
+            objectName: "openChallengeShare"
             width: parent.width
-            spacing: theme.spacingSmall
-
-            Text {
-                text: "Two players need to join. Use the color links to choose sides. Links expire after 24 hours."
-                font.pixelSize: theme.fontLabel
-                wrapMode: Text.WordWrap
-                width: parent.width
-                color: theme.text
-            }
-            TextEdit {
-                readOnly: true
-                selectByMouse: true
-                width: parent.width
-                wrapMode: Text.WrapAnywhere
-                font.pixelSize: theme.fontSmall
-                color: theme.text
-                text: "White: " + (seekScreen.openChallengeUrls ? seekScreen.openChallengeUrls.url_white : "")
-            }
-            TextEdit {
-                readOnly: true
-                selectByMouse: true
-                width: parent.width
-                wrapMode: Text.WrapAnywhere
-                font.pixelSize: theme.fontSmall
-                color: theme.text
-                text: "Black: " + (seekScreen.openChallengeUrls ? seekScreen.openChallengeUrls.url_black : "")
-            }
+            visible: seekScreen.showingSetup && seekScreen.openChallengeUrls !== null
+            links: seekScreen.openChallengeUrls
+            darkMode: seekScreen.darkMode
         }
 
         SectionCard {
@@ -573,6 +566,7 @@ Rectangle {
             seekScreen.clearWaiting()
             seekScreen.formError = ""
             seekScreen.openChallengeUrls = msg
+            Qt.callLater(seekScreen.revealOpenChallenge)
         } else if (msg.type === "MatchCreationFailed") {
             if (!seekScreen.creatingMatch || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""

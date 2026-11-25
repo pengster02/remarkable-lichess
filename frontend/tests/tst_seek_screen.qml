@@ -178,6 +178,10 @@ TestCase {
         compare(seek.pendingAction, "")
         compare(seek.formError, "")
         compare(seek.openChallengeUrls.url_white, "https://lichess.org/white")
+        compare(findChild(seek, "openChallengeUrl").text, "https://lichess.org/open")
+        verify(!findChild(seek, "openChallengeQr").visible)
+        findChild(seek, "openChallengeSide").selected("black")
+        compare(findChild(seek, "openChallengeUrl").text, "https://lichess.org/black")
     }
 
     function test_computerLevelIsValidatedBeforeSending() {

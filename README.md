@@ -60,6 +60,8 @@ saved sign-in or choose a different account.
 Your ratings and ongoing games on one screen. New games can be an auto-paired
 open seek, a direct challenge by username, a shareable open challenge link, or
 a game against Stockfish levels 1–8.
+For an open challenge, scan the QR code with your phone or share the link.
+Choose White or Black if you want the link to claim a specific side.
 
 | Home | New game | Challenges and computer |
 | --- | --- | --- |

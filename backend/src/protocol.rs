@@ -1,3 +1,4 @@
+use crate::qr::QrMatrix;
 use serde::{Deserialize, Serialize};
 
 pub const MSG_TYPE_FRONTEND_TO_BACKEND: u32 = 1;
@@ -388,6 +389,28 @@ pub struct CloudEvaluationLine {
     pub best_line: Vec<String>,
 }
 
+// Optional matrices preserve the links if encoding fails. Rejecting the
+// creation hides a usable invite, and encoding on demand adds an IPC round trip.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct OpenChallengeQrCodes {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join: Option<QrMatrix>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub white: Option<QrMatrix>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub black: Option<QrMatrix>,
+}
+
+impl OpenChallengeQrCodes {
+    pub fn from_links(join: &str, white: &str, black: &str) -> Self {
+        Self {
+            join: QrMatrix::encode(join).ok(),
+            white: QrMatrix::encode(white).ok(),
+            black: QrMatrix::encode(black).ok(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum BackendMessage {
@@ -641,15 +664,12 @@ pub enum BackendMessage {
         games: Vec<HistoryGameSummary>,
     },
     GameHistoryFailed { request_id: u32, message: String },
-    // Confirmed against lichess-org/api's ChallengeOpenJson.yaml -- `url` opens
-    // to a color-choice/random assignment, `url_white`/`url_black` claim that
-    // color outright. Shown as plain text on SeekScreen for the user to read/
-    // share manually (this app has no clipboard/share-sheet integration).
     OpenChallengeCreated {
         game_id: String,
         url: String,
         url_white: String,
         url_black: String,
+        qr_codes: Box<OpenChallengeQrCodes>,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },
@@ -1048,12 +1068,23 @@ mod tests {
             url: "https://lichess.org/abc".into(),
             url_white: "https://lichess.org/abc?color=white".into(),
             url_black: "https://lichess.org/abc?color=black".into(),
+            qr_codes: Box::new(OpenChallengeQrCodes::from_links(
+                "https://lichess.org/abc",
+                "https://lichess.org/abc?color=white",
+                &"x".repeat(5000),
+            )),
             request_id: Some(12),
         })
         .unwrap();
         assert!(json.contains(r#""type":"OpenChallengeCreated""#));
         assert!(json.contains("color=white"));
         assert!(json.contains(r#""request_id":12"#));
+        let qr_codes = &serde_json::from_str::<serde_json::Value>(&json).unwrap()["qr_codes"];
+        assert!(qr_codes["join"]["size"].as_u64().unwrap() > 0);
+        assert!(qr_codes["join"]["rows"].is_array());
+        assert!(qr_codes["white"]["rows"].is_array());
+        assert_ne!(qr_codes["join"], qr_codes["white"]);
+        assert!(qr_codes.get("black").is_none());
     }
 
     #[test]

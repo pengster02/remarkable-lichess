@@ -2567,6 +2567,61 @@ TestCase {
                 {type: "ResumeGame", game_id: "link"})
     }
 
+    function test_openChallengeQrFollowsTheSelectedLink_data() {
+        return [{tag: "Paper Pro Move", width: 954, height: 1696, nextPage: true},
+                {tag: "Paper Pro in dark mode", width: 1620, height: 2160, darkMode: true, nextPage: false}]
+    }
+
+    function test_openChallengeQrFollowsTheSelectedLink(data) {
+        width = data.width
+        height = data.height
+        app.darkMode = data.darkMode === true
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        var pager = findChild(seek, "seekFlickable")
+        var create = findChild(seek, "openChallengeButton")
+        verify(waitForRendering(seek))
+        pager.showPageContaining(create.y, create.height)
+        mouseClick(create, create.width / 2, create.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "CreateOpenChallenge")
+
+        var url = "https://lichess.org/ovdODEHx"
+        var matrices = {
+            join: {size: 2, rows: ["10", "10"]},
+            white: {size: 2, rows: ["01", "01"]},
+            black: {size: 2, rows: ["11", "00"]}
+        }
+        endpoint.reply({type: "OpenChallengeCreated", request_id: request.request_id,
+                        game_id: "ovdODEHx", url: url, qr_codes: matrices,
+                        url_white: url + "?color=white", url_black: url + "?color=black"})
+        var share = findChild(seek, "openChallengeShare")
+        var qr = findChild(share, "openChallengeQr")
+        var sides = findChild(share, "openChallengeSide")
+        var address = findChild(share, "openChallengeUrl")
+        verify(waitForRendering(share))
+        tryVerify(function() {
+            var top = share.mapToItem(pager, 0, 0).y
+            return top >= -0.5 && top + share.height <= pager.pageHeight + 0.5
+        })
+        verify(qr.visible)
+        compare(findChild(pager, "pageDownButton").enabled, data.nextPage)
+        compare(qr.lightColor, "#ffffff")
+        compare(qr.darkColor, "#000000")
+        compare(address.text, url)
+        compare(qr.rows, matrices.join.rows)
+
+        mouseClick(sides, sides.width / 2, sides.height / 2)
+        compare(address.text, url + "?color=white")
+        compare(qr.rows, matrices.white.rows)
+        mouseClick(sides, sides.width * 5 / 6, sides.height / 2)
+        compare(address.text, url + "?color=black")
+        compare(qr.rows, matrices.black.rows)
+        mouseClick(sides, sides.width / 6, sides.height / 2)
+        compare(address.text, url)
+        compare(qr.rows, matrices.join.rows)
+    }
+
     function test_matchCreationIsScopedAcrossVisits_data() {
         return [{tag: "computer", action: "computer", success: "ComputerGameCreated",
                  button: "computerGameButton", busyText: "Starting game…"},
