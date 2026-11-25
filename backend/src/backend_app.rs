@@ -37,7 +37,7 @@ const LICHESS_RATE_LIMIT_DELAY: Duration = Duration::from_secs(60);
 const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. Try again shortly.";
 const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.";
 const OPENING_RATE_LIMIT_MESSAGE: &str = "Lichess limited opening statistics requests.";
-const PGN_RATE_LIMIT_MESSAGE: &str = "Lichess limited PGN export requests.";
+const GAME_EXPORT_RATE_LIMIT_MESSAGE: &str = "Lichess limited game export requests.";
 
 struct StreamReconnectDelay {
     next: Duration,
@@ -354,7 +354,9 @@ pub struct LichessBackend {
     // reentry, while an API-wide gate could interrupt live play.
     history_retry_after: Arc<Mutex<Option<Instant>>>,
     pgn_export: Option<GameRequest>,
-    pgn_retry_after: Arc<Mutex<Option<Instant>>>,
+    // Serialize both formats of the same export route. Per-format gates allow
+    // bypasses, while an API-wide gate could interrupt live moves.
+    game_export_retry_after: Arc<Mutex<Option<Instant>>>,
     review_export: Option<GameRequest>,
     review_scope: Option<ReviewScope>,
     opening_explorer: Option<tokio::task::JoinHandle<()>>,
@@ -396,7 +398,7 @@ impl LichessBackend {
             history_load: None,
             history_retry_after: Arc::new(Mutex::new(None)),
             pgn_export: None,
-            pgn_retry_after: Arc::new(Mutex::new(None)),
+            game_export_retry_after: Arc::new(Mutex::new(None)),
             review_export: None,
             review_scope: None,
             opening_explorer: None,
@@ -753,7 +755,7 @@ impl LichessBackend {
         let config_dir = self.token_path.parent().unwrap_or_else(|| Path::new(".")).to_owned();
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
-        let retry_after = self.pgn_retry_after.clone();
+        let retry_after = self.game_export_retry_after.clone();
         let task = tokio::spawn(async move {
             let reply = export_pgn(&client, &config_dir, game_id, request_id, &retry_after).await;
             send_locked(&replier, &write_lock, &reply);
@@ -770,7 +772,7 @@ impl LichessBackend {
         let Some(client) = self.client.clone() else {
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameMovesFailed {
-                    request_id, message: "Not signed in to Lichess".into(),
+                    request_id, message: "Not signed in to Lichess".into(), retry_after_ms: None,
                 },
                 None => BackendMessage::TokenInvalid { reason: "no token saved".into() },
             };
@@ -786,7 +788,7 @@ impl LichessBackend {
         });
         let task = tokio::spawn(Self::fetch_game_review(
             client, self.my_id.clone(), replier.clone(), self.write_lock.clone(),
-            game_id, request_id,
+            game_id, request_id, self.game_export_retry_after.clone(),
         ));
         self.review_export = Some(GameRequest { request_id, task, completion: None });
     }
@@ -798,18 +800,25 @@ impl LichessBackend {
         write_lock: Arc<std::sync::Mutex<()>>,
         game_id: String,
         request_id: Option<u32>,
+        retry_after: Arc<Mutex<Option<Instant>>>,
     ) {
-        let fail = |message| {
+        let fail = |message, delay: Option<Duration>| {
             let reply = match request_id {
-                Some(request_id) => BackendMessage::GameMovesFailed { request_id, message },
+                Some(request_id) => BackendMessage::GameMovesFailed {
+                    request_id, message, retry_after_ms: delay.map(export_wait_ms),
+                },
                 None => BackendMessage::ErrorMsg { message },
             };
             send_locked(&replier, &write_lock, &reply);
         };
-        let export = match client.export_game(&game_id).await {
+        let export = match request_game_export(&retry_after, client.export_game(&game_id)).await {
             Ok(export) => export,
-            Err(e) => {
-                fail(e.to_string());
+            Err(GameExportFailure::RateLimited(remaining)) => {
+                fail(GAME_EXPORT_RATE_LIMIT_MESSAGE.into(), Some(remaining));
+                return;
+            }
+            Err(GameExportFailure::Request(error)) => {
+                fail(error.to_string(), None);
                 return;
             }
         };
@@ -826,7 +835,7 @@ impl LichessBackend {
         ) {
             Ok(replay) => replay,
             Err(e) => {
-                fail(format!("Could not replay this game: {e}"));
+                fail(format!("Could not replay this game: {e}"), None);
                 return;
             }
         };
@@ -1519,29 +1528,48 @@ async fn send_pending_challenges(
     send_locked(replier, write_lock, &msg);
 }
 
+enum GameExportFailure {
+    RateLimited(Duration),
+    Request(anyhow::Error),
+}
+
+async fn request_game_export<T>(
+    retry_after: &Mutex<Option<Instant>>, request: impl Future<Output = anyhow::Result<T>>,
+) -> Result<T, GameExportFailure> {
+    let mut deadline = retry_after.lock().await;
+    if let Some(remaining) = deadline.and_then(|until| until.checked_duration_since(Instant::now())) {
+        return Err(GameExportFailure::RateLimited(remaining));
+    }
+    match request.await {
+        Err(error) if is_rate_limited(&error) => {
+            *deadline = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+            Err(GameExportFailure::RateLimited(LICHESS_RATE_LIMIT_DELAY))
+        }
+        result => result.map_err(GameExportFailure::Request),
+    }
+}
+
+fn export_wait_ms(remaining: Duration) -> u32 {
+    remaining.as_millis().max(1) as u32
+}
+
 async fn export_pgn(
     client: &LichessClient, config_dir: &Path, game_id: String, request_id: u32,
     retry_after: &Mutex<Option<Instant>>,
 ) -> BackendMessage {
     let failed = |message: &str, delay: Option<Duration>| BackendMessage::PgnExportFailed {
         game_id: game_id.clone(), request_id, message: message.into(),
-        retry_after_ms: delay.map(|remaining| remaining.as_millis().max(1) as u32),
+        retry_after_ms: delay.map(export_wait_ms),
     };
     let Some(valid_id) = PgnGameId::parse(game_id.clone()) else {
         return failed("This game does not have a valid Lichess ID.", None);
     };
-    let remaining = retry_after.lock().await
-        .and_then(|until| until.checked_duration_since(Instant::now()));
-    if let Some(remaining) = remaining {
-        return failed(PGN_RATE_LIMIT_MESSAGE, Some(remaining));
-    }
-    let pgn = match client.export_pgn(valid_id).await {
+    let pgn = match request_game_export(retry_after, client.export_pgn(valid_id)).await {
         Ok(pgn) => pgn,
-        Err(error) if is_rate_limited(&error) => {
-            *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
-            return failed(PGN_RATE_LIMIT_MESSAGE, Some(LICHESS_RATE_LIMIT_DELAY));
+        Err(GameExportFailure::RateLimited(remaining)) => {
+            return failed(GAME_EXPORT_RATE_LIMIT_MESSAGE, Some(remaining));
         }
-        Err(error) => {
+        Err(GameExportFailure::Request(error)) => {
             log::warn!("could not download game PGN: {error}");
             return failed("Could not download the game's PGN from Lichess.", None);
         }
