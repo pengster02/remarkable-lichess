@@ -55,14 +55,25 @@ Rectangle {
     // ended, not just a bare, contextless board.
     property var reviewGame: null
     property int reviewRequestId: 0
-    // A screen timer would reset on navigation. A fixed UI delay would ignore the remaining backend wait.
-    property double cloudEvaluationRetryAt: 0
+    // Screen timers reset on navigation. A single shared deadline would pause unrelated features.
+    component RequestCooldown: Timer {
+        id: cooldown
+        property double retryAt: 0
+        running: cooldown.retryAt > 0
+        interval: Math.max(0, cooldown.retryAt - Date.now())
+        onTriggered: cooldown.retryAt = 0
 
-    Timer {
-        running: root.cloudEvaluationRetryAt > 0
-        interval: Math.max(0, root.cloudEvaluationRetryAt - Date.now())
-        onTriggered: root.cloudEvaluationRetryAt = 0
+        function extend(delay) {
+            if (delay > 0) cooldown.retryAt = Math.max(cooldown.retryAt, Date.now() + delay)
+        }
     }
+
+    RequestCooldown { id: cloudCooldown }
+    RequestCooldown { id: historyCooldown }
+    RequestCooldown { id: openingCooldown }
+    property alias cloudEvaluationRetryAt: cloudCooldown.retryAt
+    property alias historyRetryAt: historyCooldown.retryAt
+    property alias openingExplorerRetryAt: openingCooldown.retryAt
 
     // A shared sequence survives screen changes. Per-screen counters can repeat
     // IDs after navigation, and timestamps can collide across rapid requests.
@@ -480,6 +491,7 @@ Rectangle {
                        msg.type === "ChallengesLoadFailed" ||
                        msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
                 if (msg.type === "GameStarted" && !root.hasToken) return
+                if (msg.type === "GameHistoryFailed") historyCooldown.extend(msg.retry_after_ms)
                 if (root.hasToken && msg.type === "PendingChallenges" && root.resolvedChallengeIds.length > 0) {
                     var pending = msg.challenges || []
                     var ids = pending.map(function(challenge) { return challenge.id })
@@ -519,7 +531,10 @@ Rectangle {
                     screenLoader.setSource("GameReviewScreen.qml", {
                         pgnGameId: request.gameId,
                         cloudEvaluationCoolingDown: Qt.binding(function() {
-                            return root.cloudEvaluationRetryAt > 0
+                            return cloudCooldown.running
+                        }),
+                        openingExplorerCoolingDown: Qt.binding(function() {
+                            return openingCooldown.running
                         }),
                         returnToGameHistory: function() { root.returnToGameHistory(visit) }
                     })
@@ -534,9 +549,8 @@ Rectangle {
                        msg.type === "CloudEvaluation" ||
                        msg.type === "CloudEvaluationUnavailable" ||
                        msg.type === "CloudEvaluationFailed") {
-                if (msg.type === "CloudEvaluationFailed" && msg.retry_after_ms > 0) {
-                    root.cloudEvaluationRetryAt = Math.max(root.cloudEvaluationRetryAt, Date.now() + msg.retry_after_ms)
-                }
+                if (msg.type === "CloudEvaluationFailed") cloudCooldown.extend(msg.retry_after_ms)
+                if (msg.type === "OpeningExplorerFailed") openingCooldown.extend(msg.retry_after_ms)
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
@@ -618,6 +632,9 @@ Rectangle {
         onLoaded: {
             if (item.hasOwnProperty("qrSignInAvailable")) {
                 item.qrSignInAvailable = root.qrSignInAvailable
+            }
+            if (item.hasOwnProperty("historyRetryAt")) {
+                item.historyRetryAt = Qt.binding(function() { return root.historyRetryAt })
             }
             if (item.hasOwnProperty("backendSender")) {
                 item.backendSender = root.sendToBackend

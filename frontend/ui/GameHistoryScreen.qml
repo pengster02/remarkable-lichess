@@ -45,14 +45,6 @@ Rectangle {
     // An array model rebuilds cards, while a full ListModel mirrors game data.
     ListModel { id: historyCardIndices }
 
-    // A one-shot deadline survives review. A local interval resets on return,
-    // while a ticking countdown redraws the e-ink screen.
-    Timer {
-        interval: Math.max(0, gameHistoryScreen.historyRetryAt - Date.now())
-        running: gameHistoryScreen.historyCoolingDown
-        onTriggered: gameHistoryScreen.historyRetryAt = 0
-    }
-
     onGamesChanged: syncHistoryCardIndices()
     onBackendSenderChanged: if (loading) requestFiltered()
     onNextRequestIdChanged: if (loading) requestFiltered()
@@ -88,7 +80,6 @@ Rectangle {
             loadError: loadError,
             olderLoadError: olderLoadError,
             nextHistoryCursor: nextHistoryCursor,
-            historyRetryAt: historyRetryAt,
             restoredPosition: captureHistoryPosition()
         }
     }
@@ -109,7 +100,9 @@ Rectangle {
         gameHistoryScreen.loading = !gameHistoryScreen.historyCoolingDown
         gameHistoryScreen.errorMessage = ""
         gameHistoryScreen.loadError = gameHistoryScreen.historyCoolingDown
-            ? gameHistoryScreen.olderLoadError || gameHistoryScreen.loadError : ""
+            ? gameHistoryScreen.olderLoadError || gameHistoryScreen.loadError ||
+              "Lichess limited game history requests."
+            : ""
         gameHistoryScreen.olderLoadError = ""
         gameHistoryScreen.nextHistoryCursor = null
         gameHistoryScreen.restoredPosition = null
@@ -558,7 +551,6 @@ Rectangle {
                 else gameHistoryScreen.games = msg.games || []
                 gameHistoryScreen.nextHistoryCursor = msg.next_cursor || null
             } else {
-                if (msg.retry_after_ms > 0) gameHistoryScreen.historyRetryAt = Date.now() + msg.retry_after_ms
                 if (older) gameHistoryScreen.olderLoadError = msg.message || "Lichess could not load older games."
                 else gameHistoryScreen.loadError = msg.message || "Lichess could not load game history."
             }

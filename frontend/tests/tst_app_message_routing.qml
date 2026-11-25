@@ -1549,6 +1549,37 @@ TestCase {
         verify(String(screen.source).endsWith("LoginScreen.qml"))
     }
 
+    function test_historyCooldownSurvivesReturningThroughHome() {
+        var request = historyRequests().slice(-1)[0]
+        endpoint.reply({type: "GameHistoryFailed", request_id: request.request_id,
+                        message: "Lichess limited game history requests.", retry_after_ms: 60000})
+        var count = historyRequests().length
+        var deadline = screen.item.historyRetryAt
+        app.navigateTo("HomeScreen.qml")
+        app.navigateTo("GameHistoryScreen.qml")
+        compare(historyRequests().length, count, "opening history again should keep waiting")
+
+        var history = screen.item
+        var retry = findChild(history, "retryGameHistoryButton")
+        compare(history.historyRetryAt, deadline)
+        verify(!history.loading && retry.visible && !retry.enabled)
+        compare(history.loadError, "Lichess limited game history requests.")
+        endpoint.reply({type: "GameHistoryFailed", request_id: request.request_id,
+                        message: "Old reply", retry_after_ms: 1})
+        compare(history.historyRetryAt, deadline)
+        history.requestFiltered()
+        compare(historyRequests().length, count)
+
+        app.historyRetryAt = Date.now() + 50
+        tryCompare(retry, "enabled", true)
+        retry.clicked()
+        compare(historyRequests().length, count + 1)
+        var resumed = historyRequests().slice(-1)[0]
+        endpoint.reply({type: "GameHistory", request_id: resumed.request_id, games: [{game_id: "new"}]})
+        compare(history.games.length, 1)
+        compare(history.games[0].game_id, "new")
+    }
+
     function test_historyRateLimitHoldsInitialRetryAcrossFilterChanges() {
         var requestId = applyHistoryFilters("rapid")
         var history = screen.item
@@ -2160,6 +2191,42 @@ TestCase {
         recovered.clicked()
         compare(review.variationMoves, ["e4", "e5"])
         compare(review.currentFen(), e5)
+    }
+
+    function test_openingExplorerCooldownSurvivesAnotherReview() {
+        var reviewId = choose("limited-opening")
+        replyWithMoves(reviewId, "e4")
+        var review = screen.item
+        findChild(review, "openOpeningExplorerButton").clicked()
+        var request = endpoint.sentMessages.slice(-1)[0]
+        compare(request.type, "RequestOpeningExplorer")
+        endpoint.reply({type: "OpeningExplorerFailed", request_id: request.request_id,
+                        review_id: request.review_id, database: request.database, fen: request.fen,
+                        message: "Lichess limited opening statistics requests.", retry_after_ms: 60000})
+        findChild(review, "reviewBackButton").clicked()
+        reviewId = choose("new-opening")
+        replyWithMoves(reviewId, "d4")
+        review = screen.item
+        var count = endpoint.sentMessages.length
+        findChild(review, "openOpeningExplorerButton").clicked()
+        compare(endpoint.sentMessages.length, count, "another review should keep waiting")
+
+        var dialog = findChild(review, "openingExplorerDialog")
+        var retry = findChild(dialog, "openingExplorerRetry")
+        verify(dialog.visible && retry.visible && !retry.enabled)
+        compare(findChild(dialog, "openingExplorerStatus").text,
+                "Lichess limited opening statistics requests.")
+        verify(review.canRequestCloudEvaluation)
+        findChild(dialog, "openingDatabaseSelector").selected("lichess")
+        compare(endpoint.sentMessages.length, count)
+
+        app.openingExplorerRetryAt = Date.now() + 50
+        tryCompare(retry, "enabled", true)
+        retry.clicked()
+        var resumed = endpoint.sentMessages.slice(-1)[0]
+        compare(resumed.type, "RequestOpeningExplorer")
+        compare(resumed.review_id, reviewId)
+        compare(resumed.database, "lichess")
     }
 
     function test_openingExplorerLoadsOnDemandAndTriesAContinuation() {
