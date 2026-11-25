@@ -4,6 +4,7 @@ use crate::lichess::models::{
     PlayingResponse, UserStatus,
 };
 use crate::lichess::stream::parse_ndjson_line;
+use crate::protocol::HistoryCursor;
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 
@@ -16,6 +17,7 @@ pub struct LichessClient {
 }
 
 const ONE_SHOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const HISTORY_PAGE_SIZE: usize = 20;
 
 #[derive(Debug)]
 struct HttpResponseError {
@@ -260,15 +262,13 @@ impl LichessClient {
     /// streamed line-by-line like `stream_lines` -- this is a bounded, one-shot page
     /// of `max` games, not an open-ended live connection.
     ///
-    /// `filters` are the subset of this endpoint's real query params this app's
-    /// history screen actually exposes (confirmed against the endpoint's own
-    /// filtering options: rated/perfType/color, among others this app doesn't
-    /// surface like since/until/vs/analysed/sort).
+    /// The filters and exclusive creation-time cutoff are sent to Lichess.
     pub async fn get_game_history(
         &self,
         username: &str,
         max: u32,
         filters: &GameHistoryFilters,
+        until_ms: Option<i64>,
     ) -> Result<Vec<HistoryGame>> {
         // Get the card summaries in one read. Per-move evaluations add unused
         // data here, and exports for individual games require more requests.
@@ -287,6 +287,9 @@ impl LichessClient {
         if let Some(color) = &filters.color {
             query.push(("color".to_string(), color.clone()));
         }
+        if let Some(until_ms) = until_ms {
+            query.push(("until".to_string(), until_ms.to_string()));
+        }
         let resp = self
             .send_logged(
                 "get_game_history",
@@ -302,20 +305,52 @@ impl LichessClient {
             return Err(error_from_response("get_game_history", resp).await);
         }
         let body = resp.text().await?;
-        let games: Vec<HistoryGame> =
-            body.lines().filter_map(parse_ndjson_line::<HistoryGame>).collect();
-        // If Lichess fell back to PGN text (the exact bug the Accept header above is
-        // meant to prevent), every line fails to parse as JSON and `games` comes back
-        // silently empty even though real games exist -- surface that distinctly
-        // instead of reporting "no games played".
-        if games.is_empty() && !body.trim().is_empty() {
-            return Err(anyhow!(
+        // Dropping a broken row can hide the lookahead, while treating the
+        // response as empty can misreport an entire archive as exhausted.
+        body.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(parse_ndjson_line::<HistoryGame>)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| anyhow!(
                 "get_game_history: response body didn't parse as NDJSON (got {} bytes) -- \
                  Lichess may have ignored the Accept: application/x-ndjson header",
                 body.len()
-            ));
+            ))
+    }
+
+    pub async fn get_game_history_page(
+        &self,
+        username: &str,
+        filters: &GameHistoryFilters,
+        cursor: Option<HistoryCursor>,
+    ) -> Result<(Vec<HistoryGame>, Option<HistoryCursor>)> {
+        // Fetch one extra game to prove there is another page. Always showing
+        // a load button causes empty requests, and fetching the archive is unbounded.
+        let overlap = cursor.as_ref().map_or(0, |cursor| cursor.seen_at_cutoff.len());
+        let max = u32::try_from(HISTORY_PAGE_SIZE + 1 + overlap)?;
+        let until_ms = cursor.as_ref().map(|cursor| cursor.until_ms);
+        let mut games = self.get_game_history(username, max, filters, until_ms).await?;
+        if let Some(cursor) = &cursor {
+            games.retain(|game| !cursor.seen_at_cutoff.contains(&game.id));
         }
-        Ok(games)
+        let next_cursor = if let Some(lookahead) = games.get(HISTORY_PAGE_SIZE) {
+            let cutoff = lookahead.created_at
+                .ok_or_else(|| anyhow!("Lichess did not provide a date for the next history page"))?;
+            let until_ms = cutoff.checked_add(1)
+                .ok_or_else(|| anyhow!("Lichess provided an invalid history date"))?;
+            let mut seen_at_cutoff = match cursor {
+                Some(previous) if previous.until_ms == until_ms => previous.seen_at_cutoff,
+                _ => Default::default(),
+            };
+            seen_at_cutoff.extend(games[..HISTORY_PAGE_SIZE].iter()
+                .filter(|game| game.created_at == Some(cutoff))
+                .map(|game| game.id.clone()));
+            Some(HistoryCursor { until_ms, seen_at_cutoff })
+        } else {
+            None
+        };
+        games.truncate(HISTORY_PAGE_SIZE);
+        Ok((games, next_cursor))
     }
 
     /// GET /game/export/{id} defaults to PGN text -- same footgun
@@ -1011,7 +1046,7 @@ mod tests {
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let games = client.get_game_history("myuser", 20, &GameHistoryFilters::default()).await.unwrap();
+        let games = client.get_game_history("myuser", 20, &GameHistoryFilters::default(), None).await.unwrap();
         assert_eq!(games.len(), 2);
         assert_eq!(games[0].id, "abcd1234");
         assert_eq!(games[0].opening.as_ref().unwrap().name, "Ruy Lopez");
@@ -1045,7 +1080,7 @@ mod tests {
         // The mock only matches if all three query params were actually sent --
         // an unmatched request fails with a 404 from wiremock's default response,
         // which .unwrap() below would catch.
-        client.get_game_history("myuser", 20, &filters).await.unwrap();
+        client.get_game_history("myuser", 20, &filters, None).await.unwrap();
     }
 
     #[tokio::test]
@@ -1058,7 +1093,7 @@ mod tests {
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let games = client.get_game_history("newplayer", 20, &GameHistoryFilters::default()).await.unwrap();
+        let games = client.get_game_history("newplayer", 20, &GameHistoryFilters::default(), None).await.unwrap();
         assert!(games.is_empty());
     }
 
@@ -1076,7 +1111,7 @@ mod tests {
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let err = client.get_game_history("myuser", 20, &GameHistoryFilters::default()).await.unwrap_err();
+        let err = client.get_game_history("myuser", 20, &GameHistoryFilters::default(), None).await.unwrap_err();
         assert!(err.to_string().contains("didn't parse as NDJSON"));
     }
 
@@ -1092,8 +1127,92 @@ mod tests {
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let err = client.get_game_history("myuser", 20, &GameHistoryFilters::default()).await.unwrap_err();
+        let err = client.get_game_history("myuser", 20, &GameHistoryFilters::default(), None).await.unwrap_err();
         assert!(err.to_string().contains("No such user"));
+    }
+
+    #[tokio::test]
+    async fn history_pages_keep_tied_games_even_when_the_server_reorders_them() {
+        use std::collections::BTreeSet;
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let cutoff = 1_765_526_400_000_i64;
+        let until = (cutoff + 1).to_string();
+        let body = |ids: Vec<usize>| {
+            ids.into_iter().map(|number| serde_json::json!({
+                "id": format!("arch{number:04}"),
+                "createdAt": if number < 43 { cutoff } else { cutoff - 1 },
+                "players": { "white": {}, "black": {} },
+            }).to_string()).collect::<Vec<_>>().join("\n")
+        };
+        for (max, ids) in [
+            (21, (0..21).collect()),
+            (41, (0..41).rev().collect()),
+            (61, (0..43).rev().chain(43..45).collect()),
+        ] {
+            let mut mock = Mock::given(method("GET"))
+                .and(path("/api/games/user/myuser"))
+                .and(query_param("max", max.to_string()))
+                .and(query_param("rated", "true"))
+                .and(query_param("perfType", "rapid"))
+                .and(query_param("color", "black"));
+            if max > 21 {
+                mock = mock.and(query_param("until", until.clone()));
+            }
+            mock.respond_with(ResponseTemplate::new(200).set_body_string(body(ids)))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let filters = GameHistoryFilters {
+            rated: Some(true), speed: Some("rapid".into()), color: Some("black".into()),
+        };
+        let mut cursor = None;
+        let mut received = BTreeSet::new();
+        for expected in [20, 20, 5] {
+            let (games, older) = client.get_game_history_page("myuser", &filters, cursor).await.unwrap();
+            assert_eq!(games.len(), expected);
+            for game in games {
+                assert!(received.insert(game.id));
+            }
+            if let Some(page) = &older {
+                assert_eq!(page.until_ms, cutoff + 1);
+                assert_eq!(page.seen_at_cutoff, received);
+            }
+            cursor = older;
+        }
+        assert!(cursor.is_none());
+        assert_eq!(received, (0..45).map(|i| format!("arch{i:04}")).collect());
+    }
+
+    #[tokio::test]
+    async fn damaged_history_lookahead_is_an_error_instead_of_the_end_of_the_archive() {
+        let server = MockServer::start().await;
+        let first_twenty = (0..20).map(|number| serde_json::json!({
+            "id": format!("arch{number:04}"), "createdAt": 1_765_526_400_000_i64 - number,
+            "players": { "white": {}, "black": {} },
+        }).to_string()).collect::<Vec<_>>().join("\n");
+        for (endpoint, lookahead) in [
+            ("truncated", r#"{"id":"bad"#),
+            ("undated", r#"{"id":"arch0020","players":{"white":{},"black":{}}}"#),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/games/user/{endpoint}")))
+                .respond_with(ResponseTemplate::new(200)
+                    .set_body_string(format!("{first_twenty}\n{lookahead}\n")))
+                .mount(&server)
+                .await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for (endpoint, expected) in [("truncated", "didn't parse as NDJSON"),
+            ("undated", "did not provide a date")] {
+            let error = client.get_game_history_page(endpoint, &GameHistoryFilters::default(), None)
+                .await.unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[tokio::test]

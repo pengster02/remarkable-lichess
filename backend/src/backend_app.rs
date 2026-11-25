@@ -9,7 +9,7 @@ use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::protocol::{
     BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
-    GameAction, GameActionRequest, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
+    GameAction, GameActionRequest, HistoryCursor, HistoryGameSummary, MoveAnalysis, OngoingGameSummary, RatingSummary,
     MoveRequest, OfferRequest, OpenChallengeQrCodes, OpponentDeparture, PlayerStatusSummary,
     MSG_TYPE_BACKEND_TO_FRONTEND,
 };
@@ -626,6 +626,7 @@ impl LichessBackend {
         replier: &BackendReplier<Self>,
         request_id: Option<u32>,
         filters: GameHistoryFilters,
+        cursor: Option<HistoryCursor>,
     ) {
         let (Some(client), Some(my_id)) = (self.client.clone(), self.my_id.clone()) else {
             let reply = match request_id {
@@ -641,10 +642,11 @@ impl LichessBackend {
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
         let task = tokio::spawn(async move {
-            let reply = match client.get_game_history(&my_id, 20, &filters).await {
-                Ok(games) => BackendMessage::GameHistory {
+            let reply = match client.get_game_history_page(&my_id, &filters, cursor).await {
+                Ok((games, next_cursor)) => BackendMessage::GameHistory {
                     request_id,
                     games: games.into_iter().map(|g| history_game_to_summary(g, &my_id)).collect(),
+                    next_cursor,
                 },
                 Err(error) => {
                     let message = error.to_string();
@@ -2041,8 +2043,8 @@ impl AppLoadBackend for LichessBackend {
                 )
             }
             FrontendMessage::LogOut => self.handle_log_out(replier).await,
-            FrontendMessage::RequestGameHistory { request_id, rated, speed, color } => {
-                self.start_game_history(replier, request_id, GameHistoryFilters { rated, speed, color }).await
+            FrontendMessage::RequestGameHistory { request_id, rated, speed, color, cursor } => {
+                self.start_game_history(replier, request_id, GameHistoryFilters { rated, speed, color }, cursor).await
             }
             FrontendMessage::CancelGameHistory { request_id } => {
                 cancel_game_request(&mut self.history_load, request_id).await;

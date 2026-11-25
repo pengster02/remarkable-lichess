@@ -1462,6 +1462,105 @@ TestCase {
         })
     }
 
+    function test_loadOlderGamesPreservesFiltersAndTheArchiveVisit() {
+        var requestId = applyHistoryFilters("rapid")
+        var games = []
+        for (var i = 0; i < 20; i++) {
+            games.push({game_id: "archive-" + i, opponent_name: "Opponent " + i,
+                        result: "draw", speed: "rapid", rated: true})
+        }
+        var cursor = {until_ms: 1765526400001, seen_at_cutoff: ["archive-19"]}
+        endpoint.reply({type: "GameHistory", request_id: requestId, games: games, next_cursor: cursor})
+        var history = screen.item
+        var pager = findChild(history, "historyList")
+        var next = findChild(pager, "pageDownButton")
+        var older = findChild(history, "loadOlderGamesButton")
+        verify(waitForRendering(pager))
+        for (var page = 1; page < pager.pageCount; page++) mouseClick(next, next.width / 2, next.height / 2)
+        verify(!next.enabled)
+        var oldOffset = pager.contentY
+        var rowBottom = older.mapToItem(pager, 0, older.height).y
+        verify(rowBottom >= older.height && rowBottom <= pager.pageHeight + 0.5)
+
+        mouseClick(older, older.width / 2, older.height / 2)
+        var first = historyRequests().slice(-1)[0]
+        compare(first, {type: "RequestGameHistory", request_id: first.request_id,
+                        rated: true, speed: "rapid", color: "black", cursor: cursor})
+        compare(older.title, "Loading older games…")
+        verify(history.loadingOlder && !older.enabled)
+        history.loadOlderGames()
+        compare(historyRequests().slice(-1)[0].request_id, first.request_id)
+        endpoint.reply({type: "GameHistoryFailed", request_id: first.request_id, message: "Try again later"})
+        compare(history.games.length, 20)
+        compare(history.olderLoadError, "Try again later")
+        compare(older.title, "Retry loading older games")
+        compare(older.subtitle, "Try again later")
+        verify(!next.enabled)
+        compare(pager.contentY, oldOffset)
+        verify(waitForRendering(older))
+        mouseClick(older, older.width / 2, older.height / 2)
+        var retry = historyRequests().slice(-1)[0]
+        verify(retry.request_id > first.request_id)
+        compare(retry, Object.assign({}, first, {request_id: retry.request_id}))
+
+        var olderGame = {game_id: "older-0", opponent_name: "Earlier opponent", review_supported: true}
+        var nextCursor = {until_ms: 1765526398001}
+        endpoint.reply({type: "GameHistory", request_id: first.request_id, games: [{game_id: "stale"}]})
+        verify(history.loadingOlder)
+        endpoint.reply({type: "GameHistory", request_id: retry.request_id,
+                        games: [games[19], olderGame], next_cursor: nextCursor})
+        compare(history.games.length, 21)
+        compare(history.games[20].game_id, "older-0")
+        compare(history.olderLoadError, "")
+        tryVerify(function() { return next.enabled })
+        tryCompare(pager, "contentY", oldOffset)
+
+        var card = archiveRows(history)[20]
+        pager.showPageContaining(card.y, card.height)
+        verify(waitForRendering(card))
+        mouseClick(card, card.width / 2, card.height / 2)
+        var review = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(review.type, "RequestGameMoves")
+        compare(review.game_id, olderGame.game_id)
+        var requestCount = historyRequests().length
+        replyWithMoves(review.request_id, "e4")
+        findChild(screen.item, "reviewBackButton").clicked()
+        var returned = screen.item
+        compare(historyRequests().length, requestCount)
+        compare(returned.games.length, 21)
+        compare(returned.nextHistoryCursor, nextCursor)
+        compare(returned.filterSummary(), "Rated · Rapid · Played Black")
+        returned.loadOlderGames()
+        var last = historyRequests().slice(-1)[0]
+        compare(last.cursor, nextCursor)
+        endpoint.reply({type: "GameHistory", request_id: last.request_id, games: [{game_id: "oldest"}]})
+        compare(returned.games.length, 22)
+        verify(!findChild(returned, "loadOlderGamesButton").visible)
+    }
+
+    function test_filterChangesSupersedeAnOlderGamesRequest() {
+        var first = applyHistoryFilters("rapid")
+        var cursor = {until_ms: 1765526400001}
+        var history = screen.item
+        endpoint.reply({type: "GameHistory", request_id: first,
+                        games: [{game_id: "rapid"}], next_cursor: cursor})
+        history.loadOlderGames()
+        var older = history.pendingHistoryRequest
+        verify(older > first)
+        var filtered = applyHistoryFilters("blitz")
+        verify(filtered > older)
+        verify(historyRequests().slice(-1)[0].cursor === undefined)
+        endpoint.reply({type: "GameHistoryFailed", request_id: older, message: "Stale error"})
+        endpoint.reply({type: "GameHistory", request_id: older,
+                        games: [{game_id: "stale"}], next_cursor: cursor})
+        verify(history.loading)
+        compare(history.games.length, 0)
+        compare(history.olderLoadError, "")
+        endpoint.reply({type: "GameHistory", request_id: filtered, games: [{game_id: "blitz"}]})
+        compare(history.games[0].game_id, "blitz")
+        verify(!findChild(history, "loadOlderGamesButton").visible)
+    }
+
     function openReviewFromPagedArchive(lastPage) {
         var requestId = applyHistoryFilters("rapid")
         var games = []

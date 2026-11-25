@@ -141,7 +141,8 @@ resign/abort guard.
 - Reconnect and game-over handling
 
 **Review**
-- Filterable game history (rated/casual, speed, color played)
+- Filterable game history (rated/casual, speed, color played) with older games
+  loaded on demand
 - Replay with tappable notation, first/previous/next/last, board flip
 - On-demand cached Lichess cloud evaluation with a SAN best line
 - Explore mode for linear candidate lines, with Undo and Reset

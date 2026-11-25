@@ -26,8 +26,11 @@ Rectangle {
     property string filterColor: "all"
     property string errorMessage: ""
     property string loadError: ""
+    property string olderLoadError: ""
+    property var nextHistoryCursor: null
     property int pendingHistoryRequest: 0
     property bool loading: true
+    readonly property bool loadingOlder: pendingHistoryRequest > 0 && !loading
     property bool openingReview: false
     property bool showFilters: false
     property string draftRated: "all"
@@ -44,18 +47,20 @@ Rectangle {
         }
     }
 
-    function captureHistoryVisit() {
-        var position = null
+    function captureHistoryPosition() {
         if (historyList.contentY > 0) {
             historyColumn.forceLayout()
             for (var index = 0; index < historyRows.count; index++) {
                 var row = historyRows.itemAt(index)
                 if (row && row.y + row.height > historyList.contentY) {
-                    position = {index: index, inset: historyList.contentY - row.y}
-                    break
+                    return {index: index, inset: historyList.contentY - row.y}
                 }
             }
         }
+        return null
+    }
+
+    function captureHistoryVisit() {
         // Keep the loaded visit and a row-relative position. Refetching can reorder
         // the list, and keeping the whole screen alive leaves its UI mounted.
         return {
@@ -65,7 +70,9 @@ Rectangle {
             games: games,
             loading: loading,
             loadError: loadError,
-            restoredPosition: position
+            olderLoadError: olderLoadError,
+            nextHistoryCursor: nextHistoryCursor,
+            restoredPosition: captureHistoryPosition()
         }
     }
 
@@ -85,16 +92,42 @@ Rectangle {
         gameHistoryScreen.loading = true
         gameHistoryScreen.errorMessage = ""
         gameHistoryScreen.loadError = ""
+        gameHistoryScreen.olderLoadError = ""
+        gameHistoryScreen.nextHistoryCursor = null
         gameHistoryScreen.restoredPosition = null
         gameHistoryScreen.games = []
+        sendHistoryRequest(null)
+    }
+
+    function loadOlderGames() {
+        if (!nextHistoryCursor || pendingHistoryRequest || openingReview) return
+        olderLoadError = ""
+        sendHistoryRequest(nextHistoryCursor)
+    }
+
+    function sendHistoryRequest(cursor) {
         gameHistoryScreen.pendingHistoryRequest = gameHistoryScreen.nextRequestId()
-        gameHistoryScreen.backendSender({
+        var request = {
             type: "RequestGameHistory",
             request_id: gameHistoryScreen.pendingHistoryRequest,
             rated: gameHistoryScreen.filterRated === "all" ? null : gameHistoryScreen.filterRated === "rated",
             speed: gameHistoryScreen.filterSpeed === "all" ? null : gameHistoryScreen.filterSpeed,
             color: gameHistoryScreen.filterColor === "all" ? null : gameHistoryScreen.filterColor
+        }
+        if (cursor) request.cursor = cursor
+        gameHistoryScreen.backendSender(request)
+    }
+
+    function appendHistory(newGames) {
+        var seen = new Set(games.map(function(game) { return game.game_id }))
+        var added = newGames.filter(function(game) {
+            if (seen.has(game.game_id)) return false
+            seen.add(game.game_id)
+            return true
         })
+        if (!added.length) return
+        restoredPosition = captureHistoryPosition()
+        games = games.concat(added)
     }
 
     function capitalized(value) {
@@ -385,6 +418,21 @@ Rectangle {
                 }
                 }
             }
+
+            // Load on demand at the end of the list. Automatic loads fetch
+            // unrequested games, and a pinned footer takes space on every page.
+            MenuRow {
+                objectName: "loadOlderGamesButton"
+                width: historyColumn.width
+                height: theme.buttonMinHeight + theme.spacingSmall
+                visible: gameHistoryScreen.nextHistoryCursor !== null
+                darkMode: gameHistoryScreen.darkMode
+                enabled: !gameHistoryScreen.loadingOlder && !gameHistoryScreen.openingReview
+                title: gameHistoryScreen.loadingOlder ? "Loading older games…"
+                    : gameHistoryScreen.olderLoadError ? "Retry loading older games" : "Load older games"
+                subtitle: gameHistoryScreen.olderLoadError
+                onClicked: gameHistoryScreen.loadOlderGames()
+            }
         }
     }
 
@@ -461,12 +509,18 @@ Rectangle {
     function handleMessage(msg) {
         if (msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
             if (msg.request_id !== gameHistoryScreen.pendingHistoryRequest) return
+            var older = gameHistoryScreen.loadingOlder
             gameHistoryScreen.pendingHistoryRequest = 0
             gameHistoryScreen.loading = false
-            if (msg.type === "GameHistory")
-                gameHistoryScreen.games = msg.games || []
-            else
+            if (msg.type === "GameHistory") {
+                if (older) gameHistoryScreen.appendHistory(msg.games || [])
+                else gameHistoryScreen.games = msg.games || []
+                gameHistoryScreen.nextHistoryCursor = msg.next_cursor || null
+            } else if (older) {
+                gameHistoryScreen.olderLoadError = msg.message || "Lichess could not load older games."
+            } else {
                 gameHistoryScreen.loadError = msg.message
+            }
         } else if (msg.type === "GameMovesFailed") {
             gameHistoryScreen.errorMessage = msg.message
         }
