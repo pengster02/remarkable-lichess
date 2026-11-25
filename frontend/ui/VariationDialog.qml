@@ -8,8 +8,11 @@ AppDialog {
     property var lines: []
     property var currentNode: null
     property string storageError: ""
+    property bool showRetryLoad: false
+    property bool loadingSaved: false
     property bool canRetrySave: false
     signal selected(var nodeIndex)
+    signal retryLoad()
     signal retrySave()
 
     Theme { id: theme; darkMode: dialog.darkMode }
@@ -21,6 +24,15 @@ AppDialog {
         font.pixelSize: theme.fontSmall
         color: theme.errorText
         wrapMode: Text.WordWrap
+    }
+
+    AppButton {
+        objectName: "retryLoadingVariationsButton"
+        text: dialog.loadingSaved ? "Loading…" : "Retry loading"
+        width: parent.width
+        visible: dialog.showRetryLoad
+        enabled: !dialog.loadingSaved
+        onClicked: dialog.retryLoad()
     }
 
     AppButton {

@@ -96,7 +96,8 @@ Rectangle {
     property string variationLoadError: ""
     property string variationSaveError: ""
     property bool variationSnapshotFull: false
-    readonly property string variationStorageError: variationLoadError || variationSaveError
+    readonly property string variationStorageError: variationStoreState === "loading"
+        ? "" : variationLoadError || variationSaveError
     property int pendingVariationSaveId: 0
     readonly property string variationStartFen: variationFens[0] || ""
     readonly property var candidateRows: chessDisplay.moveRows(variationMoves, [], [], variationStartFen)
@@ -417,6 +418,7 @@ Rectangle {
     }
 
     function loadSavedVariations() {
+        if (variationStoreState === "loading") return
         variationStoreState = "loading"
         backendSender({type: "RequestReviewVariations", review_id: reviewRequestId})
     }
@@ -992,6 +994,8 @@ Rectangle {
         lines: visible ? VariationTree.tips(gameReviewScreen.activeVariation) : []
         currentNode: gameReviewScreen.activeVariationNode
         storageError: gameReviewScreen.variationStorageError
+        showRetryLoad: gameReviewScreen.variationLoadError.length > 0
+        loadingSaved: gameReviewScreen.variationStoreState === "loading"
         canRetrySave: gameReviewScreen.variationSaveError.length > 0 &&
                       !gameReviewScreen.variationSnapshotFull &&
                       gameReviewScreen.pendingVariationSaveId === 0
@@ -999,6 +1003,7 @@ Rectangle {
             gameReviewScreen.showVariations = false
             gameReviewScreen.selectVariationNode(nodeIndex)
         }
+        onRetryLoad: gameReviewScreen.loadSavedVariations()
         onRetrySave: gameReviewScreen.saveVariations()
         onDismissed: gameReviewScreen.showVariations = false
     }
@@ -1283,8 +1288,11 @@ Rectangle {
         } else if (msg.type === "ReviewVariations" || msg.type === "ReviewVariationsLoadFailed") {
             if (msg.review_id !== reviewRequestId || variationStoreState !== "loading") return
             if (msg.type === "ReviewVariations") {
-                reviewVariations = msg.variations
+                var hasUnsavedMoves = reviewVariations.positions.length > 0
+                reviewVariations = VariationTree.mergeSaved(reviewVariations, msg.variations)
                 variationStoreState = "ready"
+                variationLoadError = ""
+                if (hasUnsavedMoves) saveVariations()
             } else {
                 variationLoadError = msg.message
                 variationStoreState = "failed"
