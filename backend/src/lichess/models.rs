@@ -207,6 +207,8 @@ pub struct EventGame {
     pub id: String,
     pub source: Option<String>,
     pub speed: Option<String>,
+    pub rated: Option<bool>,
+    pub color: Option<String>,
     pub variant: Option<Variant>,
     pub opponent: Option<PlayingOpponent>,
     pub compat: Option<GameCompatibility>,
@@ -526,13 +528,15 @@ mod tests {
 
     #[test]
     fn parses_game_start_event() {
-        let json = r#"{"type":"gameStart","game":{"id":"abcd1234","gameId":"abcd1234","source":"pool","speed":"blitz","variant":{"key":"standard","name":"Standard"},"compat":{"board":false,"bot":false}}}"#;
+        let json = r#"{"type":"gameStart","game":{"id":"abcd1234","gameId":"abcd1234","source":"lobby","speed":"blitz","rated":false,"color":"white","variant":{"key":"standard","name":"Standard"},"compat":{"board":false,"bot":false}}}"#;
         let msg: EventStreamMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg, EventStreamMessage::GameStart {
             game: EventGame {
                 id: "abcd1234".into(),
-                source: Some("pool".into()),
+                source: Some("lobby".into()),
                 speed: Some("blitz".into()),
+                rated: Some(false),
+                color: Some("white".into()),
                 variant: Some(Variant { key: "standard".into(), name: "Standard".into() }),
                 opponent: None,
                 compat: Some(GameCompatibility { board: Some(false) }),

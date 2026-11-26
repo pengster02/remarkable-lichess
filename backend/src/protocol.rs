@@ -613,6 +613,12 @@ pub enum BackendMessage {
         from_realtime_lobby: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         board_supported: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        speed: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rated: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
     },
     GameFinished { game_id: String },
     AccountEventsResumed,
