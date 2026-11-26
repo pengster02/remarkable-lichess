@@ -531,7 +531,7 @@ Rectangle {
                     root.reviewAnalysis = msg.analysis || []
                     var sourceScreen = screenLoader.item
                     var visit = sourceScreen && sourceScreen.captureHistoryVisit
-                        ? sourceScreen.captureHistoryVisit() : null
+                        ? sourceScreen.captureHistoryVisit(request.gameId) : null
                     // Scope the return data to this replay. A root cache can reach
                     // later visits, while saved settings would outlive sign-out.
                     screenLoader.setSource("GameReviewScreen.qml", {

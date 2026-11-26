@@ -1912,7 +1912,6 @@ TestCase {
         compare(history.games.length, 21)
         compare(history.games[20].game_id, "older-0")
         compare(history.olderLoadError, "")
-        tryVerify(function() { return next.enabled })
         tryCompare(pager, "contentY", oldOffset)
 
         var appendedCards = archiveRows(history)
@@ -1975,7 +1974,7 @@ TestCase {
         verify(!findChild(history, "loadOlderGamesButton").visible)
     }
 
-    function openReviewFromPagedArchive(lastPage) {
+    function openReviewFromPagedArchive(lastPage, nearBottom) {
         var requestId = applyHistoryFilters("rapid")
         var games = []
         for (var i = 0; i < 30; i++) {
@@ -1994,9 +1993,11 @@ TestCase {
             for (var page = 1; page < pager.pageCount && next.enabled; page++) next.clicked()
             verify(!next.enabled)
         }
-        var row = archiveRows(history).find(function(card) {
-            return card.y >= pager.contentY
+        var visibleRows = archiveRows(history).filter(function(card) {
+            return card.y >= pager.contentY &&
+                card.y + card.height <= pager.contentY + pager.visiblePageHeight
         })
+        var row = nearBottom ? visibleRows[visibleRows.length - 1] : visibleRows[0]
         verify(row && waitForRendering(row))
         mouseClick(row, row.width / 2, row.height / 2)
         var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
@@ -2012,7 +2013,8 @@ TestCase {
     }
 
     function test_backFromArchiveReviewRestoresTheLoadedPage(data) {
-        var request = openReviewFromPagedArchive(data.lastPage)
+        var request = openReviewFromPagedArchive(data.lastPage, data.width !== 954)
+        var selected = endpoint.sentMessages[endpoint.sentMessages.length - 1].game_id
         var archive = screen.item
         var pager = findChild(archive, "historyList")
         var before = pager.contentY
@@ -2020,7 +2022,6 @@ TestCase {
             return row.y + row.height > before
         })
         verify(anchorIndex > 0)
-        var inset = before - archiveRows(archive)[anchorIndex].y
         var requestsBefore = historyRequests().length
         replyWithMoves(request, "e4")
         width = data.width
@@ -2033,16 +2034,20 @@ TestCase {
         verify(!returned.loading)
         compare(historyRequests().length, requestsBefore)
         var restoredPager = findChild(returned, "historyList")
-        tryVerify(function() { return restoredPager.contentY > 0 })
-        var expected = archiveRows(returned)[anchorIndex].y + inset
-        fuzzyCompare(restoredPager.contentY, expected, 0.01)
+        var selectedRow = archiveRows(returned).find(function(row) { return row.modelData.game_id === selected })
+        tryVerify(function() {
+            return restoredPager.contentY > 0 && selectedRow.y >= restoredPager.contentY &&
+                selectedRow.y + selectedRow.height <= restoredPager.contentY + restoredPager.visiblePageHeight
+        })
+        var restoredOffset = restoredPager.contentY
+        fuzzyCompare(restoredOffset, restoredPager.effectivePageStops[restoredPager.currentPage - 1], 0.01)
         if (data.width === 954) fuzzyCompare(restoredPager.contentY, before, 0.01)
-        else verify(Math.abs(restoredPager.contentY - before) > 0.01)
+        else verify(Math.abs(restoredOffset - before) > 0.01)
 
         var previous = findChild(restoredPager, "pageUpButton")
         verify(previous.enabled)
         previous.clicked()
-        verify(restoredPager.contentY < expected)
+        verify(restoredPager.contentY < restoredOffset)
     }
 
     function test_backFromReviewRestartsOnlyAnUnfinishedHistoryRead() {

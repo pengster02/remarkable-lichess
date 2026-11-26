@@ -56,20 +56,28 @@ Rectangle {
         }
     }
 
-    function captureHistoryPosition() {
-        if (historyList.contentY > 0) {
+    function captureHistoryPosition(reviewedGameId) {
+        var reviewedIndex = reviewedGameId ? games.findIndex(function(game) {
+            return game.game_id === reviewedGameId
+        }) : -1
+        if (historyList.contentY > 0 || reviewedIndex >= 0) {
             historyColumn.forceLayout()
-            for (var index = 0; index < historyRows.count; index++) {
+            var index = 0
+            for (; index < historyRows.count; index++) {
                 var row = historyRows.itemAt(index)
-                if (row && row.y + row.height > historyList.contentY) {
-                    return {index: index, inset: historyList.contentY - row.y}
-                }
+                if (row && row.y + row.height > historyList.contentY) break
+            }
+            var anchor = historyRows.itemAt(index) || olderGamesButton
+            if (anchor.visible) {
+                return {index: index, inset: Math.max(0, historyList.contentY - anchor.y),
+                        reviewedIndex: reviewedIndex, width: historyList.width,
+                        pageHeight: historyList.pageHeight}
             }
         }
         return null
     }
 
-    function captureHistoryVisit() {
+    function captureHistoryVisit(reviewedGameId) {
         // Keep the loaded visit and a row-relative position. Refetching can reorder
         // the list, and keeping the whole screen alive leaves its UI mounted.
         return {
@@ -81,19 +89,33 @@ Rectangle {
             loadError: loadError,
             olderLoadError: olderLoadError,
             nextHistoryCursor: nextHistoryCursor,
-            restoredPosition: captureHistoryPosition()
+            restoredPosition: captureHistoryPosition(reviewedGameId)
         }
     }
 
     function restorePosition() {
         var position = restoredPosition
         if (!position) return
-        var row = historyRows.itemAt(position.index)
-        if (row) historyList.moveTo(row.y + Math.min(position.inset, row.height - 1))
+        // On resize, the reviewed game can move off the old page. Retaining the
+        // old pixel offset or page number would both lose the selected card.
+        if (position.reviewedIndex >= 0 &&
+                (position.width !== historyList.width || position.pageHeight !== historyList.pageHeight)) {
+            var reviewed = historyRows.itemAt(position.reviewedIndex)
+            if (reviewed) {
+                historyList.moveTo(reviewed.y)
+                return
+            }
+        }
+        // A footer-only page uses the first index past the games. After append,
+        // that index is the first older game, which belongs at this position.
+        var row = historyRows.itemAt(position.index) || olderGamesButton
+        if (row.visible) historyList.moveTo(row.y + Math.min(position.inset, row.height - 1))
     }
 
     function updateHistoryPageStops() {
-        if (historyColumn) historyList.pageStops = historyList.rowPageStops(historyColumn.children)
+        if (!historyColumn) return
+        historyList.pageStops = historyList.rowPageStops(historyColumn.children)
+        restorePosition()
     }
 
     function requestFiltered() {
@@ -277,8 +299,8 @@ Rectangle {
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
         contentHeight: historyColumn.height
+        keepRowsTogether: true
         onPageHeightChanged: gameHistoryScreen.updateHistoryPageStops()
-        onMaximumContentYChanged: gameHistoryScreen.restorePosition()
         onPageNavigationRequested: gameHistoryScreen.restoredPosition = null
 
         Column {
@@ -286,10 +308,7 @@ Rectangle {
             width: parent.width
             spacing: theme.spacingSmall
             // Nested rows can reflow after their first layout at the Loader's width.
-            onPositioningComplete: {
-                gameHistoryScreen.updateHistoryPageStops()
-                gameHistoryScreen.restorePosition()
-            }
+            onPositioningComplete: gameHistoryScreen.updateHistoryPageStops()
 
             Repeater {
                 id: historyRows
@@ -304,6 +323,9 @@ Rectangle {
                 readonly property bool canReview: modelData.review_supported !== false
                 readonly property bool canExport: !!gameHistoryScreen.openPgnExport && !!modelData.game_id
                 readonly property string variantLabel: chessDisplay.variantLabel(modelData.variant)
+                readonly property real headingTop: y + rowContent.y + gameHeading.y - historyList.contentY
+                readonly property bool headingOnPage: headingTop >= -historyList.positionTolerance &&
+                    headingTop + gameHeading.height <= historyList.visiblePageHeight + historyList.positionTolerance
                 width: parent.width
                 // Never thinner than the shared list-row touch floor, however
                 // little text a row happens to have.
@@ -324,7 +346,8 @@ Rectangle {
 
                 MouseArea {
                     anchors.fill: parent
-                    enabled: gameCard.canReview ? !gameHistoryScreen.gameExportCoolingDown : gameCard.canExport
+                    enabled: gameCard.headingOnPage &&
+                        (gameCard.canReview ? !gameHistoryScreen.gameExportCoolingDown : gameCard.canExport)
                     onClicked: {
                         gameHistoryScreen.errorMessage = ""
                         if (gameCard.canReview) gameHistoryScreen.selectGameForReview(modelData)
@@ -456,6 +479,7 @@ Rectangle {
             // Load on demand at the end of the list. Automatic loads fetch
             // unrequested games, and a pinned footer takes space on every page.
             MenuRow {
+                id: olderGamesButton
                 objectName: "loadOlderGamesButton"
                 width: historyColumn.width
                 height: theme.buttonMinHeight + theme.spacingSmall

@@ -19,6 +19,7 @@ Item {
     readonly property bool pagingNeeded: contentHost.height > pager.height + 1
     readonly property bool continuousScrollingEnabled: viewport.interactive
     readonly property real pageHeight: keepRowsTogether ? pageViewport.height : viewport.height
+    readonly property real visiblePageHeight: viewport.height
     readonly property real pageControlsHeight: pageBar.height + theme.spacingXs
     readonly property real pageStep: Math.max(1, (keepRowsTogether ? pageHeight : viewport.height) - theme.spacingSmall)
     readonly property real maximumContentY: Math.max(
@@ -76,9 +77,15 @@ Item {
             if (!row.visible || row.height <= 0 || row.y + row.height <= origin + pager.pageHeight) continue
             // A bottom-aligned last page can start inside a row. Keeping its start
             // may leave blank space, while overlapping pages can repeat actions.
-            var nextOrigin = Math.min(row.y, keepRowsTogether ? origin + pager.pageHeight : lastOrigin)
+            var nextOrigin = keepRowsTogether ? row.y : Math.min(row.y, lastOrigin)
             if (nextOrigin > origin) {
                 origin = nextOrigin
+                stops.push(origin)
+            }
+            // Only an oversized row needs an internal page break. Split at full
+            // heights to retain its details without overlapping or truncating them.
+            while (keepRowsTogether && row.y + row.height > origin + pager.pageHeight + positionTolerance) {
+                origin += pager.pageHeight
                 stops.push(origin)
             }
         }
@@ -111,7 +118,10 @@ Item {
         if (last > pager.requestedLastStop) targets.push(last)
         // Preserve section starts when the gap fits. Fixed steps everywhere
         // would move those starts, while jumping straight there can miss rows.
-        var maxGap = pager.requestedPageStops.length > 1 ? pager.pageHeight : pager.pageStep
+        // Measured rows already supply internal breaks. A larger gap between
+        // their starts can be spacing, where adding a page leaves it empty.
+        var maxGap = keepRowsTogether ? Infinity
+            : pager.requestedPageStops.length > 1 ? pager.pageHeight : pager.pageStep
         var origin = 0
         for (var i = 0; i < targets.length; ++i) {
             var target = targets[i]

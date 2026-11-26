@@ -248,35 +248,75 @@ TestCase {
         })
         compare(rows.length, 20)
         var pager = findChild(history, "historyList")
+        var viewport = findChild(pager, "pagedViewport")
         var next = findChild(pager, "pageDownButton")
         var previous = findChild(pager, "pageUpButton")
         var number = findChild(pager, "pageNumber")
+        pager.moveTo(0)
         verify(next.visible && next.enabled)
         if (data.mixed) verify(rows[1].height > rows[0].height)
         compare(rows.some(function(row) { return row.height > pager.pageHeight }), data.oversized)
 
         var stops = [0]
+        var ends = [viewport.height]
         for (var page = 1; page < pager.pageCount; page++) {
             verify(next.enabled)
             next.clicked()
             verify(pager.contentY > stops[page - 1])
-            verify(pager.contentY - stops[page - 1] <= pager.pageHeight + 0.01)
             stops.push(pager.contentY)
+            ends.push(pager.contentY + viewport.height)
             compare(number.text, (page + 1) + " / " + pager.pageCount)
         }
         verify(!next.enabled)
         fuzzyCompare(pager.contentY, pager.maximumContentY, 0.01)
         for (var row of rows) {
-            if (row.height > pager.pageHeight) continue
-            verify(stops.some(function(y) {
-                return row.y >= y - 0.01 && row.y + row.height <= y + pager.pageHeight + 0.01
-            }), row.modelData.game_id + " is clipped on every page")
+            var visiblePages = []
+            var bottom = row.y + row.height
+            for (var index = 0; index < stops.length; ++index) {
+                if (row.y < ends[index] - 0.01 && bottom > stops[index] + 0.01) visiblePages.push(index)
+            }
+            verify(visiblePages.length > 0)
+            if (row.height <= pager.pageHeight) {
+                compare(visiblePages.length, 1, row.modelData.game_id + " is split across pages")
+                verify(row.y >= stops[visiblePages[0]] - 0.01 && bottom <= ends[visiblePages[0]] + 0.01)
+            } else {
+                verify(row.y >= stops[visiblePages[0]] - 0.01 && bottom <= ends[visiblePages[visiblePages.length - 1]] + 0.01)
+                for (var fragment = 1; fragment < visiblePages.length; ++fragment) {
+                    var before = visiblePages[fragment - 1]
+                    fuzzyCompare(ends[before], stops[visiblePages[fragment]], 0.01)
+                }
+            }
         }
         for (var index = stops.length - 2; index >= 0; index--) {
             previous.clicked()
             fuzzyCompare(pager.contentY, stops[index], 0.01)
         }
         verify(!previous.enabled)
+    }
+
+    function test_oversizedCardOnlyOpensFromThePageWithItsHeading() {
+        width = 620
+        height = 1380
+        loadGames(gamesForPaging(20, true, true))
+        var pager = findChild(history, "historyList")
+        var first = findChild(history, "historyGameRow")
+        verify(first && waitForRendering(pager))
+        var rows = Array.prototype.filter.call(first.parent.children, function(child) {
+            return child.objectName === "historyGameRow"
+        })
+        var oversized = rows[4]
+        var heading = findChild(oversized, "historyOpponentName")
+        pager.showPageContaining(oversized.y, oversized.height)
+        mouseClick(heading, heading.width / 2, heading.height / 2)
+        compare(selectedGame.game_id, "archive-4")
+        selectedGame = null
+
+        pager.pageDown()
+        var top = pager.contentY - oversized.y
+        verify(top > heading.mapToItem(oversized, 0, heading.height).y)
+        verify(top + 50 < oversized.height)
+        mouseClick(oversized, oversized.width / 2, top + 50)
+        compare(selectedGame, null)
     }
 
     function test_shorterResultsRemoveOldPageStops() {
