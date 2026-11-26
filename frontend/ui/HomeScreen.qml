@@ -155,6 +155,35 @@ Rectangle {
         return "Offline — Lichess unreachable"
     }
 
+    function pageRows() {
+        var rows = []
+        for (var index = 0; index < contentColumn.children.length; ++index) {
+            var item = contentColumn.children[index]
+            if (!item.visible) continue
+            if (item !== challengesCard && item !== gamesCard) {
+                rows.push(item)
+                continue
+            }
+
+            // Keep the heading with the first row and include the card padding
+            // on the last row. Whole-card or fixed-count paging splits long lists.
+            var first = rows.length
+            var top = item.y
+            for (var childIndex = 0; childIndex < item.content.length; ++childIndex) {
+                var child = item.content[childIndex]
+                if (!child.visible || child.height <= 0) continue
+                var childTop = item.y + item.contentTop + child.y
+                if (rows.length > first) top = childTop
+                rows.push({y: top, height: childTop + child.height - top, visible: true})
+            }
+            if (rows.length > first) {
+                var last = rows[rows.length - 1]
+                last.height = item.y + item.height - last.y
+            }
+        }
+        return rows
+    }
+
     // Keep destinations reachable from every page. A first-page menu requires
     // paging back, and a separate menu adds a tap to every visit.
     Row {
@@ -196,6 +225,8 @@ Rectangle {
         anchors.rightMargin: theme.pageSideMargin
         anchors.bottomMargin: theme.pageSideMargin
         contentHeight: contentColumn.height
+        keepRowsTogether: true
+        pageStops: rowPageStops(homeScreen.pageRows())
 
         Column {
             id: contentColumn
@@ -262,6 +293,7 @@ Rectangle {
             // Show invitations before the long game list so their actions are reachable
             // immediately. A banner or a separate screen would add another step.
             SectionCard {
+                id: challengesCard
                 darkMode: homeScreen.darkMode
                 title: "Challenges"
                 visible: homeScreen.pendingChallenges.length > 0 || homeScreen.pendingInvitation !== null
@@ -327,6 +359,7 @@ Rectangle {
             }
 
             SectionCard {
+                id: gamesCard
                 darkMode: homeScreen.darkMode
                 title: "Your games"
                 visible: homeScreen.loadedOnce || homeScreen.ongoingGames.length > 0
