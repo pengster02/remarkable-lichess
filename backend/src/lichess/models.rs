@@ -272,20 +272,30 @@ pub struct ChallengeTimeControl {
     pub days_per_turn: Option<i64>,
 }
 
+// The list and detail endpoints expose the same terms. Duplicating the fields
+// can drift, while using a whole incoming row requires a challenger on details.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ChallengeTerms {
+    #[serde(rename = "timeControl")]
+    pub time_control: Option<ChallengeTimeControl>,
+    pub variant: Option<Variant>,
+    pub speed: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct IncomingChallenge {
     pub id: String,
     pub challenger: ChallengeUser,
-    #[serde(rename = "timeControl")]
-    pub time_control: Option<ChallengeTimeControl>,
-    pub variant: Option<Variant>,
+    #[serde(flatten)]
+    pub terms: ChallengeTerms,
     pub rated: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ChallengeVariantResponse {
+pub struct ChallengeDetails {
     pub id: String,
-    pub variant: Variant,
+    #[serde(flatten)]
+    pub terms: ChallengeTerms,
 }
 
 // GET /api/challenge's real response shape: {"in": [...], "out": [...]} -- only

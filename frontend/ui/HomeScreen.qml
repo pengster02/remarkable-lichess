@@ -382,7 +382,8 @@ Rectangle {
                         Text {
                             objectName: "homeUnsupportedChallenge"
                             visible: !invitationRow.canAccept
-                            text: "This variant cannot be played on the tablet."
+                            text: modelData.board_unavailable_reason || "This variant cannot be played on the tablet."
+                            textFormat: Text.PlainText
                             width: parent.width
                             wrapMode: Text.WordWrap
                             font.pixelSize: theme.fontSmall

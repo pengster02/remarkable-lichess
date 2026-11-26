@@ -5,7 +5,7 @@ use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history, supports_variant};
 use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
 use crate::lichess::oauth;
-use crate::lichess::models::{ChallengeResolution, ChallengeResult, EventStreamMessage, GameStreamMessage, Variant};
+use crate::lichess::models::{ChallengeResolution, ChallengeResult, ChallengeTerms, EventStreamMessage, GameStreamMessage};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::pgn_export::PgnGameId;
@@ -106,7 +106,16 @@ impl GameStreamReadiness {
 struct AccountStream {
     task: tokio::task::JoinHandle<()>,
     challenge_refresh: mpsc::Sender<()>,
-    challenge_variants: Arc<Mutex<HashMap<String, Variant>>>,
+    challenge_support: Arc<Mutex<HashMap<String, ChallengeBoardSupport>>>,
+}
+
+// Preserve the reason for both Home and the preflight reply. A bool loses the
+// reason, while treating incomplete terms as a rejection would bypass lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ChallengeBoardSupport {
+    Playable,
+    Unavailable(String),
+    Unknown,
 }
 
 // Inline waits delay unrelated requests. Detached tasks can outlive the account
@@ -1365,18 +1374,18 @@ impl LichessBackend {
         // stream blocked game events, and spawning per event overlaps requests.
         let (challenge_refresh, mut refreshes) = mpsc::channel(1);
         let event_refresh = challenge_refresh.clone();
-        let challenge_variants = Arc::new(Mutex::new(HashMap::new()));
-        let variants = challenge_variants.clone();
+        let challenge_support = Arc::new(Mutex::new(HashMap::new()));
+        let support = challenge_support.clone();
         let task = tokio::spawn(async move {
             // Both futures drop together when the account is replaced or signed out.
             let refresh = async {
                 while refreshes.recv().await.is_some() {
-                    send_pending_challenges(&client, &replier, &write_lock, &variants).await;
+                    send_pending_challenges(&client, &replier, &write_lock, &support).await;
                 }
             };
             tokio::join!(read_account_events(&client, &replier, &write_lock, &event_refresh), refresh);
         });
-        self.account_stream = Some(AccountStream { task, challenge_refresh, challenge_variants });
+        self.account_stream = Some(AccountStream { task, challenge_refresh, challenge_support });
     }
 
     fn queue_challenge_refresh(&self) {
@@ -1408,12 +1417,12 @@ impl LichessBackend {
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
         let refresh = self.account_stream.as_ref().map(|account| account.challenge_refresh.clone());
-        let variants = self.account_stream.as_ref().map(|account| account.challenge_variants.clone());
+        let support = self.account_stream.as_ref().map(|account| account.challenge_support.clone());
         let (done, completion) = oneshot::channel();
         let task = tokio::spawn(async move {
             let result = match request.action {
                 ChallengeAction::Accept => {
-                    accept_playable_challenge(&client, variants.as_deref(), &request.challenge_id).await
+                    accept_playable_challenge(&client, support.as_deref(), &request.challenge_id).await
                 }
                 ChallengeAction::Decline => client.decline_challenge(&request.challenge_id).await,
             };
@@ -1439,22 +1448,90 @@ impl LichessBackend {
 
 async fn accept_playable_challenge(
     client: &LichessClient,
-    variants: Option<&Mutex<HashMap<String, Variant>>>,
+    support: Option<&Mutex<HashMap<String, ChallengeBoardSupport>>>,
     id: &str,
 ) -> anyhow::Result<()> {
-    // Challenge IDs keep their variant. Reading each invite again adds latency,
+    // Challenge IDs keep their terms. Reading every invite again adds latency,
     // while trusting the frontend can accept a game the board cannot open.
-    let cached = match variants {
-        Some(variants) => variants.lock().await.get(id).cloned(),
+    let cached = match support {
+        Some(support) => support.lock().await.get(id).cloned(),
         None => None,
     };
-    let variant = match cached {
-        Some(variant) => variant,
-        None => client.get_challenge_variant(id).await
-            .map_err(|error| anyhow::anyhow!("Couldn't verify the challenge variant: {error}"))?,
+    let board_support = match cached {
+        Some(support) => support,
+        None => {
+            let terms = client.get_challenge_terms(id).await
+                .map_err(|error| anyhow::anyhow!("Couldn't verify the challenge details: {error}"))?;
+            challenge_board_support(&terms)
+        }
     };
-    anyhow::ensure!(supports_variant(&variant.key), "{} games are not supported on this board.", variant.name);
-    client.accept_challenge(id).await
+    match board_support {
+        ChallengeBoardSupport::Playable => client.accept_challenge(id).await,
+        ChallengeBoardSupport::Unavailable(reason) => Err(anyhow::anyhow!(reason)),
+        ChallengeBoardSupport::Unknown => {
+            Err(anyhow::anyhow!("Couldn't verify that this invitation can be played on the tablet."))
+        }
+    }
+}
+
+fn challenge_board_support(terms: &ChallengeTerms) -> ChallengeBoardSupport {
+    if let Some(variant) = terms.variant.as_ref().filter(|variant| !supports_variant(&variant.key)) {
+        return ChallengeBoardSupport::Unavailable(format!("{} games are not supported on this board.", variant.name));
+    }
+    let from_clock = terms.time_control.as_ref().and_then(|time_control| {
+        match time_control.kind.as_deref() {
+            Some("correspondence" | "unlimited") => Some(true),
+            Some("clock") | None => time_control.limit.zip(time_control.increment).map(|(limit, increment)| {
+                // Lila's Friend games require Blitz (180 estimated seconds).
+                // Base time alone rejects valid increments, and Rapid is for general seeks.
+                u64::from(limit) + 40 * u64::from(increment) >= 180
+            }),
+            _ => None,
+        }
+    });
+    let clock_supported = from_clock.or(match terms.speed.as_deref() {
+        Some("ultraBullet" | "bullet") => Some(false),
+        Some("blitz" | "rapid" | "classical" | "correspondence") => Some(true),
+        _ => None,
+    });
+    match (terms.variant.is_some(), clock_supported) {
+        (_, Some(false)) => ChallengeBoardSupport::Unavailable(
+            "Lichess allows Blitz or slower for invitations played on the tablet.".into(),
+        ),
+        (true, Some(true)) => ChallengeBoardSupport::Playable,
+        _ => ChallengeBoardSupport::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod challenge_board_support_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn invitation_eligibility_uses_the_friend_clock_and_preserves_unknown_terms() {
+        use ChallengeBoardSupport::{Playable, Unavailable, Unknown};
+        let standard = json!({"key": "standard", "name": "Standard"});
+        let atomic = json!({"key": "atomic", "name": "Atomic"});
+        let too_fast = Unavailable("Lichess allows Blitz or slower for invitations played on the tablet.".into());
+        for (terms, expected) in [
+            (json!({"variant": standard, "timeControl": {"type": "clock", "limit": 99, "increment": 2}}), too_fast.clone()),
+            (json!({"variant": standard, "timeControl": {"limit": 100, "increment": 2}}), Playable),
+            (json!({"variant": standard, "timeControl": {"type": "clock", "limit": 0, "increment": 5}}), Playable),
+            (json!({"variant": standard, "speed": "ultraBullet"}), too_fast.clone()),
+            (json!({"speed": "bullet"}), too_fast),
+            (json!({"variant": standard, "speed": "blitz", "timeControl": {"type": "clock", "limit": 60}}), Playable),
+            (json!({"variant": standard, "timeControl": {"type": "unlimited"}}), Playable),
+            (json!({"variant": standard, "timeControl": {"type": "correspondence", "daysPerTurn": 3}}), Playable),
+            (json!({"variant": standard, "speed": "newSpeed"}), Unknown),
+            (json!({"variant": standard, "timeControl": {"type": "future", "limit": 600, "increment": 0}}), Unknown),
+            (json!({"speed": "rapid"}), Unknown),
+            (json!({"variant": atomic}), Unavailable("Atomic games are not supported on this board.".into())),
+        ] {
+            let actual = challenge_board_support(&serde_json::from_value(terms.clone()).unwrap());
+            assert_eq!(actual, expected, "{terms}");
+        }
+    }
 }
 
 async fn verify_sign_in(token: String) -> Result<VerifiedSignIn, SignInError> {
@@ -1544,18 +1621,25 @@ async fn send_pending_challenges(
     client: &LichessClient,
     replier: &BackendReplier<LichessBackend>,
     write_lock: &Arc<std::sync::Mutex<()>>,
-    variants: &Mutex<HashMap<String, Variant>>,
+    support: &Mutex<HashMap<String, ChallengeBoardSupport>>,
 ) {
     use crate::protocol::{ChallengeInfo, ChallengeTimeControlKind};
     let msg = match client.get_challenges().await {
         Ok(challenges) => {
-            *variants.lock().await = challenges.iter()
-                .filter_map(|challenge| Some((challenge.id.clone(), challenge.variant.clone()?)))
-                .collect();
+            let mut known_support = HashMap::new();
             let challenges = challenges
                 .into_iter()
                 .map(|c| {
-                    let clock = c.time_control.unwrap_or_default();
+                    let decision = challenge_board_support(&c.terms);
+                    let (board_supported, board_unavailable_reason) = match &decision {
+                        ChallengeBoardSupport::Playable => (Some(true), None),
+                        ChallengeBoardSupport::Unavailable(reason) => (Some(false), Some(reason.clone())),
+                        ChallengeBoardSupport::Unknown => (None, None),
+                    };
+                    if board_supported.is_some() {
+                        known_support.insert(c.id.clone(), decision);
+                    }
+                    let clock = c.terms.time_control.unwrap_or_default();
                     let time_control = match clock.kind.as_deref() {
                         Some("clock") => ChallengeTimeControlKind::Clock,
                         Some("correspondence") => ChallengeTimeControlKind::Correspondence,
@@ -1569,8 +1653,7 @@ async fn send_pending_challenges(
                         .filter(|_| time_control == ChallengeTimeControlKind::Correspondence)
                         .and_then(|days| u32::try_from(days).ok())
                         .filter(|days| *days > 0);
-                    let variant = c.variant.map(|variant| variant.key);
-                    let board_supported = variant.as_deref().map(supports_variant);
+                    let variant = c.terms.variant.map(|variant| variant.key);
                     ChallengeInfo {
                         id: c.id,
                         challenger: c.challenger.name,
@@ -1581,9 +1664,11 @@ async fn send_pending_challenges(
                         variant,
                         rated: c.rated,
                         board_supported,
+                        board_unavailable_reason,
                     }
                 })
                 .collect();
+            *support.lock().await = known_support;
             BackendMessage::PendingChallenges { challenges }
         }
         Err(e) => {
