@@ -309,6 +309,8 @@ pub struct OngoingGameSummary {
     pub variant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board_supported: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_unavailable_reason: Option<String>,
 }
 
 // Boxed inside BoardState so rich identity stays one typed value without making

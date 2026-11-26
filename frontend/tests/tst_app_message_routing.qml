@@ -3408,6 +3408,43 @@ TestCase {
         verify(String(screen.source).endsWith("BoardScreen.qml"))
     }
 
+    function test_homeExplainsClockRestrictionsAndKeepsPlayableBlitz() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var games = [
+            {game_id: "pool", opponent_name: "PoolPlayer", variant: "standard", is_my_turn: true,
+             board_supported: false},
+            {game_id: "friend", opponent_name: "Friend", variant: "standard", is_my_turn: true,
+             board_supported: true}
+        ]
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
+        compare(findChild(home, "homeUnsupportedGame").text, "This variant is unavailable on the tablet.")
+
+        home.refreshGames(true)
+        games[0].board_unavailable_reason = "Lichess requires Rapid or slower to play this Blitz game on the tablet."
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
+        var reason = findChild(home, "homeUnsupportedGame")
+        var pager = findChild(home, "homePager")
+        verify(reason && pager && waitForRendering(pager))
+        verify(reason.visible && !reason.truncated)
+        compare(reason.text, games[0].board_unavailable_reason)
+        compare(findChild(reason.parent, "homeGameSummary").text, "PoolPlayer — your move")
+        verify(!findChild(reason.parent, "homeResumeButton").visible)
+        var sent = endpoint.sentMessages.length
+        mouseClick(reason, reason.width / 2, reason.height / 2)
+        compare(endpoint.sentMessages.length, sent)
+        compare(screen.item, home)
+
+        var rows = Array.prototype.filter.call(reason.parent.parent.children, function(row) {
+            return row.modelData && row.modelData.game_id
+        })
+        compare(rows.length, 2)
+        var resume = findChild(rows[1], "homeResumeButton")
+        verify(resume.visible && resume.enabled)
+        mouseClick(resume, resume.width / 2, resume.height / 2)
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1], {type: "ResumeGame", game_id: "friend"})
+    }
+
     function openHomeWithFiftyGames(mixedRows) {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
@@ -3418,8 +3455,13 @@ TestCase {
                         opponent_rating: timed ? 1802 : undefined, is_my_turn: timed || i === 50,
                         correspondence_seconds_left: i === 50 ? 0 : timed ? 90061 : undefined}
             if (mixedRows && i % 3 === 0) {
-                game.variant = "atomic"
                 game.board_supported = false
+                if (i % 2 === 0) {
+                    game.variant = "standard"
+                    game.board_unavailable_reason = "Lichess requires Rapid or slower to play this Blitz game on the tablet."
+                } else {
+                    game.variant = "atomic"
+                }
             }
             games.push(game)
         }
