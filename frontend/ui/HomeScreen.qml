@@ -188,6 +188,13 @@ Rectangle {
         return (minutes > 0 ? minutes + "m " : "") + seconds + "s + " + increment + "s"
     }
 
+    function invitationDetails(challenge) {
+        var details = [homeScreen.invitationTimeText(challenge)]
+        if (typeof challenge.rated === "boolean") details.push(challenge.rated ? "Rated" : "Casual")
+        if (challenge.variant) details.push(chessDisplay.variantLabel(challenge.variant) || "Standard")
+        return details.join(" · ")
+    }
+
     function connectivityLabel() {
         if (!homeScreen.connectivityKnown) return "Checking connection..."
         if (homeScreen.online) return "Online"
@@ -358,17 +365,28 @@ Rectangle {
                     // device's ~400px content width, and a fixed-width Column
                     // won't wrap an overflowing Row, it'll just clip.
                     Column {
+                        id: invitationRow
                         required property var modelData
+                        readonly property bool canAccept: modelData.board_supported !== false
                         width: parent.width
                         spacing: theme.spacingXs
 
                         Text {
-                            text: modelData.challenger + " challenges you (" + homeScreen.invitationTimeText(modelData) + ")"
+                            text: modelData.challenger + " challenges you (" + homeScreen.invitationDetails(modelData) + ")"
                             font.pixelSize: theme.fontLabel
                             wrapMode: Text.WordWrap
                             textFormat: Text.PlainText
                             width: parent.width
                             color: theme.text
+                        }
+                        Text {
+                            objectName: "homeUnsupportedChallenge"
+                            visible: !invitationRow.canAccept
+                            text: "This variant cannot be played on the tablet."
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: theme.fontSmall
+                            color: theme.textMuted
                         }
                         Row {
                             width: parent.width
@@ -376,13 +394,14 @@ Rectangle {
                             // Two half-width targets filling the row -- Accept
                             // gets the accent treatment as the primary action.
                             AppButton {
+                                objectName: "homeAcceptChallenge"
                                 width: (parent.width - theme.spacingSmall) / 2
                                 text: homeScreen.pendingChallengeId === modelData.id &&
                                     homeScreen.pendingChallengeAction === "accept"
                                     ? "Accepting…"
                                     : "Accept"
                                 highlighted: true
-                                enabled: homeScreen.pendingChallengeId.length === 0
+                                enabled: invitationRow.canAccept && homeScreen.pendingChallengeId.length === 0
                                 onClicked: homeScreen.submitChallengeAction("accept", modelData.id)
                             }
                             AppButton {

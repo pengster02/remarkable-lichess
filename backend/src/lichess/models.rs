@@ -277,6 +277,14 @@ pub struct IncomingChallenge {
     pub challenger: ChallengeUser,
     #[serde(rename = "timeControl")]
     pub time_control: Option<ChallengeTimeControl>,
+    pub variant: Option<Variant>,
+    pub rated: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChallengeVariantResponse {
+    pub id: String,
+    pub variant: Variant,
 }
 
 // GET /api/challenge's real response shape: {"in": [...], "out": [...]} -- only

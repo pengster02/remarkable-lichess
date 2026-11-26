@@ -1,7 +1,7 @@
 use crate::lichess::models::{
-    Account, ChallengeListResponse, ChallengeOpenJson, CloudEvaluation, CreatedGame, GameExport,
+    Account, ChallengeListResponse, ChallengeOpenJson, ChallengeVariantResponse, CloudEvaluation, CreatedGame, GameExport,
     GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame,
-    PlayingResponse, UserStatus,
+    PlayingResponse, UserStatus, Variant,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use crate::pgn_export::{PgnExport, PgnGameId};
@@ -595,6 +595,19 @@ impl LichessClient {
         }
         let parsed = resp.json::<ChallengeListResponse>().await?;
         Ok(parsed.incoming)
+    }
+
+    pub async fn get_challenge_variant(&self, id: &str) -> Result<Variant> {
+        let mut url = reqwest::Url::parse(&self.base_url)?;
+        url.path_segments_mut().map_err(|_| anyhow!("Invalid Lichess URL"))?
+            .pop_if_empty().extend(["api", "challenge", id, "show"]);
+        let resp = self.send_logged("get_challenge_variant", self.bearer(self.http.get(url))).await?;
+        if !resp.status().is_success() {
+            return Err(error_from_response("get_challenge_variant", resp).await);
+        }
+        let detail = resp.json::<ChallengeVariantResponse>().await?;
+        anyhow::ensure!(detail.id == id, "Lichess returned details for another challenge");
+        Ok(detail.variant)
     }
 
     pub async fn accept_challenge(&self, id: &str) -> Result<()> {
@@ -1832,6 +1845,24 @@ mod tests {
         assert_eq!(clocks[2].kind.as_deref(), Some("unlimited"));
         assert_eq!(clocks[3].kind.as_deref(), Some("future"));
         assert_eq!(challenges[4].time_control, None);
+    }
+
+    #[tokio::test]
+    async fn get_challenge_variant_checks_the_requested_identity() {
+        let server = MockServer::start().await;
+        for requested in ["matching", "different"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/api/challenge/{requested}/show")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "matching", "variant": {"key": "fromPosition", "name": "From Position"}
+                })))
+                .mount(&server)
+                .await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        assert_eq!(client.get_challenge_variant("matching").await.unwrap().key, "fromPosition");
+        let error = client.get_challenge_variant("different").await.unwrap_err();
+        assert!(error.to_string().contains("another challenge"));
     }
 
     #[tokio::test]

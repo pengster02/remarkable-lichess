@@ -271,6 +271,12 @@ pub struct ChallengeInfo {
     pub time_control: ChallengeTimeControlKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub days_per_turn: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_supported: Option<bool>,
 }
 
 // One of a real account's rated speed categories (bullet/blitz/rapid/classical/

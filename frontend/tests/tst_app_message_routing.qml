@@ -4164,6 +4164,47 @@ TestCase {
         verify(String(screen.source).endsWith("BoardScreen.qml"))
     }
 
+    function test_homeShowsVariantAndOnlyEnablesSupportedAcceptance() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: []})
+        var atomic = {id: "atomic", challenger: "VariantPlayer", limit_seconds: 600, increment_seconds: 5,
+                      variant: "atomic", rated: true, board_supported: false}
+        var standard = {id: "standard", challenger: "ClassicPlayer", limit_seconds: 600, increment_seconds: 5,
+                        variant: "standard", rated: false, board_supported: true}
+        endpoint.reply({type: "PendingChallenges", challenges: [atomic, standard]})
+        var first = findChild(home, "homeDeclineChallenge")
+        verify(first && waitForRendering(home))
+        var rows = Array.prototype.filter.call(first.parent.parent.parent.children, function(row) {
+            return row.modelData && row.modelData.id
+        })
+        compare(rows.length, 2)
+        compare(rows[0].children[0].text, "VariantPlayer challenges you (10+5 · Rated · Atomic)")
+        compare(rows[1].children[0].text, "ClassicPlayer challenges you (10+5 · Casual · Standard)")
+        verify(findChild(rows[0], "homeUnsupportedChallenge").visible)
+        verify(!findChild(rows[1], "homeUnsupportedChallenge").visible)
+        var accept = findChild(rows[0], "homeAcceptChallenge")
+        verify(!accept.enabled)
+        var sent = endpoint.sentMessages.length
+        mouseClick(accept, accept.width / 2, accept.height / 2)
+        compare(endpoint.sentMessages.length, sent)
+        mouseClick(first, first.width / 2, first.height / 2)
+        var decline = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(decline.type, "DeclineChallenge")
+        compare(decline.id, atomic.id)
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: atomic.id, request_id: decline.request_id})
+
+        var supported = findChild(home, "homeAcceptChallenge")
+        verify(supported.enabled && waitForRendering(supported))
+        mouseClick(supported, supported.width / 2, supported.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "AcceptChallenge")
+        compare(request.id, standard.id)
+        endpoint.reply({type: "ChallengeAccepted", game_id: standard.id, request_id: request.request_id})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: standard.id})
+    }
+
     function test_declineWaitsForItsReplyAndStaleListsCannotRestoreTheRow() {
         app.navigateTo("HomeScreen.qml")
         var incoming = [{id: "target", challenger: "Target", limit_seconds: 600, increment_seconds: 0},
