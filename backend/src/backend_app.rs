@@ -1519,15 +1519,34 @@ async fn send_pending_challenges(
     replier: &BackendReplier<LichessBackend>,
     write_lock: &Arc<std::sync::Mutex<()>>,
 ) {
+    use crate::protocol::{ChallengeInfo, ChallengeTimeControlKind};
     let msg = match client.get_challenges().await {
         Ok(challenges) => BackendMessage::PendingChallenges {
             challenges: challenges
                 .into_iter()
-                .map(|c| crate::protocol::ChallengeInfo {
-                    id: c.id,
-                    challenger: c.challenger.name,
-                    limit_seconds: c.time_control.limit,
-                    increment_seconds: c.time_control.increment,
+                .map(|c| {
+                    let clock = c.time_control.unwrap_or_default();
+                    let time_control = match clock.kind.as_deref() {
+                        Some("clock") => ChallengeTimeControlKind::Clock,
+                        Some("correspondence") => ChallengeTimeControlKind::Correspondence,
+                        Some("unlimited") => ChallengeTimeControlKind::Unlimited,
+                        None if clock.limit.is_some() && clock.increment.is_some() => {
+                            ChallengeTimeControlKind::Clock
+                        }
+                        _ => ChallengeTimeControlKind::Unknown,
+                    };
+                    let days_per_turn = clock.days_per_turn
+                        .filter(|_| time_control == ChallengeTimeControlKind::Correspondence)
+                        .and_then(|days| u32::try_from(days).ok())
+                        .filter(|days| *days > 0);
+                    ChallengeInfo {
+                        id: c.id,
+                        challenger: c.challenger.name,
+                        limit_seconds: clock.limit,
+                        increment_seconds: clock.increment,
+                        time_control,
+                        days_per_turn,
+                    }
                 })
                 .collect(),
         },

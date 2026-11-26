@@ -167,6 +167,27 @@ Rectangle {
         if (homeScreen.offscreenChallengeY >= 0) homePager.moveTo(homeScreen.offscreenChallengeY)
     }
 
+    function invitationTimeText(challenge) {
+        var kind = challenge.time_control
+        if (kind === "unlimited") return "Untimed"
+        if (kind === "correspondence") {
+            var days = challenge.days_per_turn
+            if (typeof days !== "number" || days <= 0) return "Correspondence"
+            return days === 1 ? "1 day per move" : days + " days per move"
+        }
+        if (kind !== "clock" && kind !== undefined && kind !== null) return "Time control unavailable"
+
+        var limit = challenge.limit_seconds
+        var increment = challenge.increment_seconds
+        if (typeof limit !== "number" || limit < 0 || typeof increment !== "number" || increment < 0) {
+            return kind === "clock" ? "Real-time" : "Time control unavailable"
+        }
+        var minutes = Math.floor(limit / 60)
+        var seconds = limit % 60
+        if (seconds === 0) return minutes + "+" + increment
+        return (minutes > 0 ? minutes + "m " : "") + seconds + "s + " + increment + "s"
+    }
+
     function connectivityLabel() {
         if (!homeScreen.connectivityKnown) return "Checking connection..."
         if (homeScreen.online) return "Online"
@@ -342,9 +363,10 @@ Rectangle {
                         spacing: theme.spacingXs
 
                         Text {
-                            text: modelData.challenger + " challenges you (" + Math.floor((modelData.limit_seconds || 0) / 60) + "+" + (modelData.increment_seconds || 0) + ")"
+                            text: modelData.challenger + " challenges you (" + homeScreen.invitationTimeText(modelData) + ")"
                             font.pixelSize: theme.fontLabel
                             wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
                             width: parent.width
                             color: theme.text
                         }
