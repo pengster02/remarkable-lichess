@@ -2,10 +2,10 @@ use crate::credentials;
 use crate::game::outcome::outcome;
 use crate::game::replay::OpeningExplorerPosition;
 use crate::game::session::GameSession;
-use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history};
+use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history, supports_variant};
 use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
 use crate::lichess::oauth;
-use crate::lichess::models::{ChallengeResolution, ChallengeResult, EventStreamMessage, GameStreamMessage};
+use crate::lichess::models::{ChallengeResolution, ChallengeResult, EventStreamMessage, GameStreamMessage, Variant};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::pgn_export::PgnGameId;
@@ -20,7 +20,7 @@ use crate::qr::QrMatrix;
 use crate::variations::{self, ReviewVariations};
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -106,6 +106,7 @@ impl GameStreamReadiness {
 struct AccountStream {
     task: tokio::task::JoinHandle<()>,
     challenge_refresh: mpsc::Sender<()>,
+    challenge_variants: Arc<Mutex<HashMap<String, Variant>>>,
 }
 
 // Inline waits delay unrelated requests. Detached tasks can outlive the account
@@ -1364,16 +1365,18 @@ impl LichessBackend {
         // stream blocked game events, and spawning per event overlaps requests.
         let (challenge_refresh, mut refreshes) = mpsc::channel(1);
         let event_refresh = challenge_refresh.clone();
+        let challenge_variants = Arc::new(Mutex::new(HashMap::new()));
+        let variants = challenge_variants.clone();
         let task = tokio::spawn(async move {
             // Both futures drop together when the account is replaced or signed out.
             let refresh = async {
                 while refreshes.recv().await.is_some() {
-                    send_pending_challenges(&client, &replier, &write_lock).await;
+                    send_pending_challenges(&client, &replier, &write_lock, &variants).await;
                 }
             };
             tokio::join!(read_account_events(&client, &replier, &write_lock, &event_refresh), refresh);
         });
-        self.account_stream = Some(AccountStream { task, challenge_refresh });
+        self.account_stream = Some(AccountStream { task, challenge_refresh, challenge_variants });
     }
 
     fn queue_challenge_refresh(&self) {
@@ -1405,10 +1408,13 @@ impl LichessBackend {
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
         let refresh = self.account_stream.as_ref().map(|account| account.challenge_refresh.clone());
+        let variants = self.account_stream.as_ref().map(|account| account.challenge_variants.clone());
         let (done, completion) = oneshot::channel();
         let task = tokio::spawn(async move {
             let result = match request.action {
-                ChallengeAction::Accept => client.accept_challenge(&request.challenge_id).await,
+                ChallengeAction::Accept => {
+                    accept_playable_challenge(&client, variants.as_deref(), &request.challenge_id).await
+                }
                 ChallengeAction::Decline => client.decline_challenge(&request.challenge_id).await,
             };
             drop(done);
@@ -1429,6 +1435,26 @@ impl LichessBackend {
         });
         self.pending_challenge_action = Some(GameRequest { request_id, task, completion: Some(completion) });
     }
+}
+
+async fn accept_playable_challenge(
+    client: &LichessClient,
+    variants: Option<&Mutex<HashMap<String, Variant>>>,
+    id: &str,
+) -> anyhow::Result<()> {
+    // Challenge IDs keep their variant. Reading each invite again adds latency,
+    // while trusting the frontend can accept a game the board cannot open.
+    let cached = match variants {
+        Some(variants) => variants.lock().await.get(id).cloned(),
+        None => None,
+    };
+    let variant = match cached {
+        Some(variant) => variant,
+        None => client.get_challenge_variant(id).await
+            .map_err(|error| anyhow::anyhow!("Couldn't verify the challenge variant: {error}"))?,
+    };
+    anyhow::ensure!(supports_variant(&variant.key), "{} games are not supported on this board.", variant.name);
+    client.accept_challenge(id).await
 }
 
 async fn verify_sign_in(token: String) -> Result<VerifiedSignIn, SignInError> {
@@ -1518,11 +1544,15 @@ async fn send_pending_challenges(
     client: &LichessClient,
     replier: &BackendReplier<LichessBackend>,
     write_lock: &Arc<std::sync::Mutex<()>>,
+    variants: &Mutex<HashMap<String, Variant>>,
 ) {
     use crate::protocol::{ChallengeInfo, ChallengeTimeControlKind};
     let msg = match client.get_challenges().await {
-        Ok(challenges) => BackendMessage::PendingChallenges {
-            challenges: challenges
+        Ok(challenges) => {
+            *variants.lock().await = challenges.iter()
+                .filter_map(|challenge| Some((challenge.id.clone(), challenge.variant.clone()?)))
+                .collect();
+            let challenges = challenges
                 .into_iter()
                 .map(|c| {
                     let clock = c.time_control.unwrap_or_default();
@@ -1539,6 +1569,8 @@ async fn send_pending_challenges(
                         .filter(|_| time_control == ChallengeTimeControlKind::Correspondence)
                         .and_then(|days| u32::try_from(days).ok())
                         .filter(|days| *days > 0);
+                    let variant = c.variant.map(|variant| variant.key);
+                    let board_supported = variant.as_deref().map(supports_variant);
                     ChallengeInfo {
                         id: c.id,
                         challenger: c.challenger.name,
@@ -1546,10 +1578,14 @@ async fn send_pending_challenges(
                         increment_seconds: clock.increment,
                         time_control,
                         days_per_turn,
+                        variant,
+                        rated: c.rated,
+                        board_supported,
                     }
                 })
-                .collect(),
-        },
+                .collect();
+            BackendMessage::PendingChallenges { challenges }
+        }
         Err(e) => {
             log::warn!("couldn't load challenges: {e}");
             BackendMessage::ChallengesLoadFailed {
