@@ -11,18 +11,19 @@ Item {
     property alias contentY: viewport.contentY
     property bool darkMode: nearestDarkMode(parent)
     property var pageStops: []
+    property bool keepRowsTogether: false
     signal pageNavigationRequested()
     // Raw content height breaks the page-bar visibility loop. Always reserving
     // the bar and deferring the check were the alternatives, but each wastes
     // space or creates a second layout pass.
     readonly property bool pagingNeeded: contentHost.height > pager.height + 1
     readonly property bool continuousScrollingEnabled: viewport.interactive
-    readonly property real pageHeight: viewport.height
+    readonly property real pageHeight: keepRowsTogether ? pageViewport.height : viewport.height
     readonly property real pageControlsHeight: pageBar.height + theme.spacingXs
-    readonly property real pageStep: Math.max(1, viewport.height - theme.spacingSmall)
+    readonly property real pageStep: Math.max(1, (keepRowsTogether ? pageHeight : viewport.height) - theme.spacingSmall)
     readonly property real maximumContentY: Math.max(
         0,
-        viewport.contentHeight - viewport.height
+        viewport.contentHeight - (keepRowsTogether ? pageHeight : viewport.height)
     )
     readonly property real visibleFraction: viewport.contentHeight > 0
         ? Math.min(1, pageViewport.height / viewport.contentHeight)
@@ -36,11 +37,16 @@ Item {
     // One list drives both direction and numbering. Stride arithmetic misses
     // a partial last page, and section anchors alone can skip long content.
     readonly property var effectivePageStops: pageOrigins()
-    readonly property int currentPage: pageIndexFor(contentY) + 1
+    readonly property int currentPage: (keepRowsTogether ? pageViewport.rowPageIndex : pageIndexFor(contentY)) + 1
     readonly property int pageCount: effectivePageStops.length
 
     onMaximumContentYChanged: {
-        if (contentY > maximumContentY) moveTo(maximumContentY)
+        if (!keepRowsTogether && contentY > maximumContentY) moveTo(maximumContentY)
+    }
+    onEffectivePageStopsChanged: {
+        if (keepRowsTogether && viewport) {
+            moveTo(effectivePageStops[Math.min(pageViewport.rowPageIndex, pageCount - 1)])
+        }
     }
 
     function nearestDarkMode(item) {
@@ -52,6 +58,10 @@ Item {
     }
 
     function moveTo(y) {
+        if (keepRowsTogether) {
+            pageViewport.rowPageIndex = pageIndexFor(y)
+            y = effectivePageStops[pageViewport.rowPageIndex]
+        }
         viewport.contentY = Math.max(0, Math.min(pager.maximumContentY, y))
     }
 
@@ -64,7 +74,9 @@ Item {
         for (var index = 0; index < items.length && origin < lastOrigin; index++) {
             var row = items[index]
             if (!row.visible || row.height <= 0 || row.y + row.height <= origin + pager.pageHeight) continue
-            var nextOrigin = Math.min(row.y, lastOrigin)
+            // A bottom-aligned last page can start inside a row. Keeping its start
+            // may leave blank space, while overlapping pages can repeat actions.
+            var nextOrigin = Math.min(row.y, keepRowsTogether ? origin + pager.pageHeight : lastOrigin)
             if (nextOrigin > origin) {
                 origin = nextOrigin
                 stops.push(origin)
@@ -168,6 +180,7 @@ Item {
 
     Item {
         id: pageViewport
+        property int rowPageIndex: 0
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -183,13 +196,28 @@ Item {
 
         Flickable {
             id: viewport
-            anchors.fill: parent
+            objectName: "pagedViewport"
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: pager.keepRowsTogether ? undefined : parent.bottom
+
+            // Clip the next row at its start. Fixed-height clipping exposes an
+            // incomplete action, and hiding delegates would change their layout.
+            Binding {
+                target: viewport
+                property: "height"
+                when: pager.keepRowsTogether
+                value: pager.currentPage < pager.pageCount
+                    ? Math.min(pager.pageHeight, pager.effectivePageStops[pager.currentPage] - pager.contentY)
+                    : pager.pageHeight
+            }
             z: 1
             contentWidth: width
             contentHeight: Math.max(
                 contentHost.height,
                 pager.pagingNeeded
-                    ? pager.requestedLastStop + height
+                    ? pager.requestedLastStop + (pager.keepRowsTogether ? pager.pageHeight : height)
                     : contentHost.height
             )
             interactive: false

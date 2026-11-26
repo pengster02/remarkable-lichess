@@ -3353,13 +3353,15 @@ TestCase {
         compare(summary.text, "Opponent — your move")
     }
 
-    function openHomeWithFiftyGames() {
+    function openHomeWithFiftyGames(mixedRows) {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
         var games = []
         for (var i = 1; i <= 50; ++i) {
-            games.push({game_id: "game" + i, opponent_name: "Opponent " + i, is_my_turn: i === 50,
-                        correspondence_seconds_left: i === 50 ? 0 : undefined})
+            var timed = mixedRows && i % 2 === 1
+            games.push({game_id: "game" + i, opponent_name: timed ? "TournamentPlayer" + i : "Opponent " + i,
+                        opponent_rating: timed ? 1802 : undefined, is_my_turn: timed || i === 50,
+                        correspondence_seconds_left: i === 50 ? 0 : timed ? 90061 : undefined})
         }
         endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
         return home
@@ -3444,6 +3446,57 @@ TestCase {
         mouseClick(resume, resume.width / 2, resume.height / 2)
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "game50"})
+    }
+
+    function test_homePagesKeepEveryGameRowWhole_data() {
+        return [
+            {tag: "Paper Pro Move", width: 954, height: 1696},
+            {tag: "Paper Pro", width: 1620, height: 2160}
+        ]
+    }
+
+    function test_homePagesKeepEveryGameRowWhole(data) {
+        width = data.width
+        height = data.height
+        var home = openHomeWithFiftyGames(true)
+        var pager = findChild(home, "homePager")
+        var first = findChild(home, "homeResumeButton")
+        verify(pager && first && waitForRendering(pager))
+        pager.pageDown()
+        endpoint.reply({type: "PendingChallenges", challenges: [
+            {id: "invite", challenger: "EndgameStudy", limit_seconds: 1200, increment_seconds: 15}
+        ]})
+        verify(waitForRendering(pager))
+        compare(pager.currentPage, 2)
+        fuzzyCompare(pager.contentY, pager.effectivePageStops[1], 0.01)
+        pager.pageUp()
+        compare(pager.currentPage, 1)
+
+        var rows = Array.prototype.filter.call(first.parent.parent.children, function(row) {
+            return row.modelData && row.modelData.game_id
+        })
+        var viewport = findChild(pager, "pagedViewport")
+        var seen = []
+        for (var page = 1; page <= pager.pageCount; ++page) {
+            compare(pager.currentPage, page)
+            var bottom = viewport ? viewport.height : pager.pageHeight
+            for (var index = 0; index < rows.length; ++index) {
+                var row = rows[index]
+                var y = row.mapToItem(pager, 0, 0).y
+                if (y + row.height <= 0.01 || y >= bottom - 0.01) continue
+                verify(y >= -0.01 && y + row.height <= bottom + 0.01,
+                       row.modelData.game_id + " is split on page " + page)
+                seen.push(row.modelData.game_id)
+            }
+            if (page < pager.pageCount) pager.pageDown()
+        }
+        compare(seen, home.ongoingGames.map(function(game) { return game.game_id }))
+
+        home.refreshGames(true)
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: home.ongoingGames.slice(0, 2)})
+        tryCompare(pager, "currentPage", 1)
+        compare(pager.contentY, 0)
+        compare(home.ongoingGames.length, 2)
     }
 
     function test_backgroundBoardStateDoesNotReplaceTheSelectedBoard() {

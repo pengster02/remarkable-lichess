@@ -13,6 +13,7 @@ Rectangle {
     property bool compact: false
     property string title: ""
     default property alias content: contentColumn.children
+    readonly property real contentTop: innerColumn.y + contentColumn.y
     width: parent ? parent.width : implicitWidth
     height: innerColumn.height +
         (sectionCard.compact ? theme.spacingXs : theme.spacingSmall) * 2
