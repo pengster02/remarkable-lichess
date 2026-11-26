@@ -3419,6 +3419,81 @@ TestCase {
         compare(home.ongoingGames.length, 50)
     }
 
+    function test_homeShowsAndOpensAnOffscreenInvitation() {
+        var home = openHomeWithFiftyGames()
+        var pager = findChild(home, "homePager")
+        var shortcut = findChild(app, "homeChallengeShortcut")
+        verify(pager && waitForRendering(pager))
+        pager.pageDown()
+        pager.pageDown()
+        compare(pager.currentPage, 3)
+        var invitation = {id: "invited", challenger: "EndgameStudy", limit_seconds: 1200, increment_seconds: 15}
+        endpoint.reply({type: "PendingChallenges", challenges: [invitation]})
+        verify(shortcut && shortcut.visible && waitForRendering(shortcut))
+        compare(shortcut.text, "1 challenge")
+        verify(!shortcut.contentItem.truncated)
+        compare(pager.currentPage, 3)
+
+        endpoint.reply({type: "PendingChallenges", challenges: []})
+        verify(!shortcut.visible)
+        compare(pager.currentPage, 3)
+        endpoint.reply({type: "PendingChallenges", challenges: [invitation]})
+        tryVerify(function() { return shortcut.visible })
+        var sent = endpoint.sentMessages.length
+        mouseClick(shortcut, shortcut.width / 2, shortcut.height / 2)
+        compare(pager.currentPage, 1)
+        compare(endpoint.sentMessages.length, sent)
+        verify(!shortcut.visible)
+
+        var decline = findChild(home, "homeDeclineChallenge")
+        verify(decline && waitForRendering(pager))
+        var top = decline.mapToItem(pager, 0, 0).y
+        verify(top >= 0 && top + decline.height <= pager.visiblePageHeight)
+        mouseClick(decline, decline.width / 2, decline.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "DeclineChallenge")
+        compare(request.id, invitation.id)
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: invitation.id, request_id: request.request_id})
+        endpoint.reply({type: "PendingChallenges", challenges: [invitation]})
+        compare(home.pendingChallenges.length, 0)
+        verify(!shortcut.visible)
+    }
+
+    function test_homeShortcutFindsAnInvitationBeyondTheVisibleOnes() {
+        var home = openHomeWithFiftyGames()
+        var pager = findChild(home, "homePager")
+        var invitations = []
+        for (var i = 0; i < 8; ++i) {
+            invitations.push({id: "invite-" + i, challenger: "Player " + i})
+        }
+        endpoint.reply({type: "PendingChallenges", challenges: invitations})
+        var shortcut = findChild(app, "homeChallengeShortcut")
+        verify(shortcut && waitForRendering(pager))
+        tryVerify(function() { return shortcut.visible })
+        compare(pager.currentPage, 1)
+        compare(shortcut.text, "8 challenges")
+        mouseClick(shortcut, shortcut.width / 2, shortcut.height / 2)
+        compare(pager.currentPage, 2)
+
+        var first = findChild(home, "homeDeclineChallenge")
+        var rows = Array.prototype.filter.call(first.parent.parent.parent.children, function(row) {
+            return row.modelData && row.modelData.id
+        })
+        var visible = rows.find(function(row) {
+            var top = row.mapToItem(pager, 0, 0).y
+            return top >= 0 && top + row.height <= pager.visiblePageHeight
+        })
+        verify(visible)
+        var decline = findChild(visible, "homeDeclineChallenge")
+        mouseClick(decline, decline.width / 2, decline.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "DeclineChallenge")
+        compare(request.id, visible.modelData.id)
+
+        app.navigateTo("SettingsScreen.qml")
+        verify(!shortcut.visible)
+    }
+
     function test_homeCanResumeTheFiftiethReturnedGame() {
         var home = openHomeWithFiftyGames()
         var first = findChild(home, "homeResumeButton")

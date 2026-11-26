@@ -43,6 +43,21 @@ Rectangle {
     // games, matching every reference client's own home/profile screen.
     property var ratings: []
     property var pendingChallenges: []
+    readonly property real offscreenChallengeY: {
+        if (pendingChallenges.length === 0) return -1
+        var top = homePager.contentY
+        var bottom = top + homePager.visiblePageHeight
+        var tolerance = homePager.positionTolerance
+        for (var index = 0; index < challengesCard.content.length; ++index) {
+            var row = challengesCard.content[index]
+            if (!row.modelData || !row.visible || row.height <= 0) continue
+            var y = challengesCard.y + challengesCard.contentTop + row.y
+            if (y < top - tolerance || y + row.height > bottom + tolerance) return y
+        }
+        return -1
+    }
+    readonly property string challengeShortcutLabel: offscreenChallengeY < 0 ? ""
+        : pendingChallenges.length === 1 ? "1 challenge" : pendingChallenges.length + " challenges"
     // Pushed down from main.qml's root state, same pattern as darkMode --
     // set once from TokenVerified's own username field, which used to be
     // parsed there and then never stored or shown anywhere in the UI at all.
@@ -148,6 +163,10 @@ Rectangle {
         homeScreen.respondToChallenge(action, challengeId)
     }
 
+    function showOffscreenChallenge() {
+        if (homeScreen.offscreenChallengeY >= 0) homePager.moveTo(homeScreen.offscreenChallengeY)
+    }
+
     function connectivityLabel() {
         if (!homeScreen.connectivityKnown) return "Checking connection..."
         if (homeScreen.online) return "Online"
@@ -215,6 +234,7 @@ Rectangle {
     }
 
     EinkPagedFlickable {
+        id: homePager
         objectName: "homePager"
         anchors.top: homeNavigation.bottom
         anchors.left: parent.left
