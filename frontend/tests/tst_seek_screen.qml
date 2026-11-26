@@ -117,6 +117,56 @@ TestCase {
         compare(seek.formError, "Increment must be between 0 and 60.")
     }
 
+    function test_clockMinimumMatchesTheChosenAction_data() {
+        return [
+            {tag: "public seek", button: "findOpponentButton", type: "CreateSeek",
+             minutes: 0, below: 11, valid: 12, speed: "Rapid"},
+            {tag: "direct challenge", button: "challengePlayerButton", type: "CreateChallenge",
+             minutes: 1, below: 2, valid: 3, speed: "Blitz"},
+            {tag: "share link", button: "openChallengeButton", type: "CreateOpenChallenge",
+             minutes: 2, below: 1, valid: 2, speed: "Blitz"},
+            {tag: "computer", button: "computerGameButton", type: "ChallengeAi",
+             minutes: 0, below: 4, valid: 5, speed: "Blitz"}
+        ]
+    }
+
+    function test_clockMinimumMatchesTheChosenAction(data) {
+        var pager = findChild(seek, "seekFlickable")
+        var button = findChild(seek, data.button)
+        var error = findChild(seek, "seekErrorText")
+        var increment = findChild(seek, "incrementField")
+        function revealButton() {
+            var top = button.mapToItem(pager, 0, 0).y + pager.contentY
+            pager.showPageContaining(top, button.height)
+            pager.reveal(top, button.height)
+            tryVerify(function() {
+                var y = button.mapToItem(pager, 0, 0).y
+                return button.visible && y >= -0.5 && y + button.height <= pager.visiblePageHeight + 0.5
+            })
+        }
+        findChild(seek, "minutesField").text = String(data.minutes)
+        findChild(seek, "usernameField").text = "opponent"
+        increment.text = String(data.below)
+        verify(waitForRendering(seek))
+        revealButton()
+        var before = requestSequence
+        mouseClick(button, button.width / 2, button.height / 2)
+        compare(sentMessages.length, 0)
+        compare(requestSequence, before)
+        compare(seek.pendingAction, "")
+        verify(error.visible && error.text.indexOf(data.speed + " or slower") >= 0)
+        verify(!error.truncated)
+
+        increment.text = String(data.valid)
+        verify(!error.visible)
+        revealButton()
+        mouseClick(button, button.width / 2, button.height / 2)
+        compare(sentMessages.length, 1)
+        compare(sentMessages[0].type, data.type)
+        compare(sentMessages[0].minutes, data.minutes)
+        compare(sentMessages[0].increment, data.valid)
+    }
+
     function test_challengeRequiresAUsername() {
         var pager = findChild(seek, "seekFlickable")
         var section = findChild(seek, "playerChallengeSection")
