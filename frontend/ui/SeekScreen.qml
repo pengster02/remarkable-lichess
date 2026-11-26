@@ -622,15 +622,19 @@ Rectangle {
             seekScreen.clearWaiting()
             seekScreen.showSetupError(msg.message || "Lichess could not create that game.", retry)
         } else if (msg.type === "GameStarted") {
-            var lookingForOpponent = seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0
             var matchingLink = seekScreen.pendingAction.length === 0 && !seekScreen.waiting &&
                 seekScreen.openChallengeUrls && msg.game_id === seekScreen.openChallengeUrls.game_id
-            if (lookingForOpponent && msg.from_realtime_lobby)
+            if (matchingLink) {
+                if (msg.board_supported === false)
+                    seekScreen.showSetupError("This game cannot be played on the tablet.", openChallengeShare)
+                else
+                    seekScreen.openGame(msg.game_id)
+                return
+            }
+            if (msg.board_supported === false || !msg.from_realtime_lobby) return
+            if (seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0)
                 seekScreen.openMatchedGame(msg.game_id)
-            else if (matchingLink)
-                seekScreen.openGame(msg.game_id)
-            else if (seekScreen.pendingAction === "seek" && msg.from_realtime_lobby &&
-                     !seekScreen.seekMatchBeforeAckId)
+            else if (seekScreen.pendingAction === "seek" && !seekScreen.seekMatchBeforeAckId)
                 seekScreen.seekMatchBeforeAckId = msg.game_id
         } else if (msg.type === "ErrorMsg") {
             if (seekScreen.matchRequestId > 0) return

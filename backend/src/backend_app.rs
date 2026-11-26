@@ -6,7 +6,8 @@ use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_move
 use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
 use crate::lichess::oauth;
 use crate::lichess::models::{
-    ChallengeResolution, ChallengeResult, ChallengeTerms, EventStreamMessage, GameStreamMessage, PlayingGame, Variant,
+    ChallengeResolution, ChallengeResult, ChallengeTerms, EventGame, EventStreamMessage, GameStreamMessage,
+    PlayingGame, PlayingOpponent, Variant,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
@@ -1630,9 +1631,11 @@ async fn read_account_events(
                         let from_realtime_lobby =
                             matches!(game.source.as_deref(), Some("lobby" | "pool")) &&
                             game.speed.as_deref().is_some_and(|speed| speed != "correspondence");
+                        let board_supported = game_start_board_support(&game);
                         send_locked(replier, write_lock, &BackendMessage::GameStarted {
                             game_id: game.id,
                             from_realtime_lobby,
+                            board_supported,
                         });
                     }
                     Some(EventStreamMessage::Challenge)
@@ -1892,11 +1895,24 @@ async fn refresh_home_games(
     send_locked(&replier, &write_lock, &reply);
 }
 
-fn ongoing_game_summary(game: PlayingGame) -> OngoingGameSummary {
+fn game_start_board_support(game: &EventGame) -> Option<bool> {
+    let variant = game.variant.as_ref();
+    match game.compat.as_ref().and_then(|compat| compat.board) {
+        Some(false) => Some(false),
+        Some(true) => variant.map(|variant| supports_variant(&variant.key)),
+        None => {
+            let clock = ongoing_clock_support(game.speed.as_deref(), game.source.as_deref(), game.opponent.as_ref());
+            match board_support(variant, clock) {
+                BoardSupport::Unknown => None,
+                support => Some(support == BoardSupport::Playable),
+            }
+        }
+    }
+}
+
+fn ongoing_clock_support(speed: Option<&str>, source: Option<&str>, opponent: Option<&PlayingOpponent>) -> BoardSupport {
     use BoardSupport::{Playable, Unavailable, Unknown};
-    let opponent = game.opponent.as_ref();
-    let source = game.source.as_deref();
-    let clock = match game.speed.as_deref() {
+    match speed {
         Some("rapid" | "classical" | "correspondence") => Playable,
         Some("ultraBullet") => Unavailable("This UltraBullet game is too fast for tablet play.".into()),
         Some("bullet") => Unavailable("This Bullet game is too fast for tablet play.".into()),
@@ -1910,7 +1926,12 @@ fn ongoing_game_summary(game: PlayingGame) -> OngoingGameSummary {
                 player.username.as_ref().is_some_and(|name| !name.is_empty())
             }) => Unavailable("Lichess requires Rapid or slower to play this Blitz game on the tablet.".into()),
         _ => Unknown,
-    };
+    }
+}
+
+fn ongoing_game_summary(game: PlayingGame) -> OngoingGameSummary {
+    let opponent = game.opponent.as_ref();
+    let clock = ongoing_clock_support(game.speed.as_deref(), game.source.as_deref(), opponent);
     let (board_supported, board_unavailable_reason) = board_support(game.variant.as_ref(), clock).summary_fields();
     OngoingGameSummary {
         game_id: game.game_id,
@@ -1930,9 +1951,29 @@ fn ongoing_game_summary(game: PlayingGame) -> OngoingGameSummary {
 }
 
 #[cfg(test)]
-mod ongoing_game_summary_tests {
+mod game_board_support_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn game_start_uses_reported_compatibility_and_the_local_variant() {
+        let standard = json!({"key": "standard", "name": "Standard"});
+        let atomic = json!({"key": "atomic", "name": "Atomic"});
+        for (details, expected) in [
+            (json!({"compat": {"board": false}, "speed": "rapid", "variant": standard}), Some(false)),
+            (json!({"compat": {"board": true}, "speed": "rapid", "variant": atomic}), Some(false)),
+            (json!({"compat": {"board": true}, "speed": "rapid", "variant": standard}), Some(true)),
+            (json!({"compat": {"bot": false}, "source": "pool", "speed": "blitz"}), Some(false)),
+            (json!({"source": "position", "opponent": {"ai": 4}, "speed": "blitz", "variant": standard}), Some(true)),
+            (json!({"source": "pool", "speed": "rapid"}), None),
+            (json!({}), None),
+        ] {
+            let mut game = details;
+            game["id"] = json!("game1234");
+            let event = serde_json::from_value(game.clone()).unwrap();
+            assert_eq!(game_start_board_support(&event), expected, "{game}");
+        }
+    }
 
     #[test]
     fn reports_board_eligibility_from_speed_source_and_opponent() {
