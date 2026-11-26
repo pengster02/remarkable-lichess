@@ -301,6 +301,12 @@ pub struct OngoingGameSummary {
     pub is_my_turn: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correspondence_seconds_left: Option<u32>,
+    // As with invitations, keep the label key and the backend's compatibility
+    // decision. A QML allowlist could drift and a required flag would lose unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_supported: Option<bool>,
 }
 
 // Boxed inside BoardState so rich identity stays one typed value without making

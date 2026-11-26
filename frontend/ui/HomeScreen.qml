@@ -465,7 +465,10 @@ Rectangle {
                 Repeater {
                     model: homeScreen.ongoingGames
                     Column {
+                        id: gameRow
                         required property var modelData
+                        readonly property bool canResume: modelData.board_supported !== false
+                        readonly property string variantLabel: chessDisplay.variantLabel(modelData.variant)
                         readonly property var correspondenceMs: homeScreen.correspondenceTimeLeftMs(modelData.game_id)
                         width: parent.width
                         spacing: theme.spacingXs
@@ -475,8 +478,9 @@ Rectangle {
                             text: (modelData.opponent_name || "Opponent") +
                                   (modelData.opponent_rating ? " (" + modelData.opponent_rating + ")" : "") +
                                   (modelData.is_my_turn ? " — your move" : " — waiting") +
-                                  (parent.correspondenceMs === null ? "" :
-                                      " ·\u00a0" + chessDisplay.formatCorrespondenceClock(parent.correspondenceMs)
+                                  (gameRow.variantLabel ? " · " + gameRow.variantLabel : "") +
+                                  (gameRow.correspondenceMs === null ? "" :
+                                      " ·\u00a0" + chessDisplay.formatCorrespondenceClock(gameRow.correspondenceMs)
                                           .replace(/ /g, "\u00a0") + "\u00a0left")
                             font.pixelSize: theme.fontLabel
                             font.bold: modelData.is_my_turn
@@ -485,6 +489,17 @@ Rectangle {
                             width: parent.width
                             color: theme.text
                         }
+                        // Keep the turn and deadline visible. Dropping the row loses them,
+                        // and a disabled Resume alone would leave its cause unclear.
+                        Text {
+                            objectName: "homeUnsupportedGame"
+                            visible: !gameRow.canResume
+                            text: "This variant is unavailable on the tablet."
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: theme.fontSmall
+                            color: theme.textMuted
+                        }
                         AppButton {
                             objectName: "homeResumeButton"
                             // Full-width row, not a shrink-wrapped button --
@@ -492,6 +507,7 @@ Rectangle {
                             // a row's hittability comes from spanning the
                             // whole content width.
                             width: parent.width
+                            visible: gameRow.canResume
                             text: "Resume"
                             highlighted: modelData.is_my_turn
                             onClicked: homeScreen.openGame(modelData.game_id)
@@ -548,7 +564,8 @@ Rectangle {
             if (next.length !== shown.length || next.some(function(game, index) {
                 var old = shown[index]
                 return game.game_id !== old.game_id || game.opponent_name !== old.opponent_name ||
-                    game.opponent_rating !== old.opponent_rating || game.is_my_turn !== old.is_my_turn
+                    game.opponent_rating !== old.opponent_rating || game.is_my_turn !== old.is_my_turn ||
+                    game.variant !== old.variant || game.board_supported !== old.board_supported
             })) homeScreen.ongoingGames = next
             if (homeScreen.gamesRefreshQueued) {
                 homeScreen.queueGamesRefresh()

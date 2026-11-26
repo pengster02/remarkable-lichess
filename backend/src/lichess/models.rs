@@ -52,6 +52,7 @@ pub struct PlayingGame {
     #[serde(rename = "isMyTurn")]
     pub is_my_turn: bool,
     pub speed: Option<String>,
+    pub variant: Option<Variant>,
     #[serde(rename = "secondsLeft")]
     pub seconds_left: Option<i64>,
     #[serde(default)]
@@ -555,15 +556,18 @@ mod tests {
         assert_eq!(parsed.now_playing[0].game_id, "abcd1234");
         assert!(parsed.now_playing[0].is_my_turn);
         assert_eq!(parsed.now_playing[0].opponent, None);
+        assert_eq!(parsed.now_playing[0].variant, None);
     }
 
     #[test]
     fn parses_playing_response_with_opponent_info() {
-        let json = r#"{"nowPlaying":[{"gameId":"abcd1234","isMyTurn":false,"opponent":{"username":"Bob","rating":1500}}]}"#;
+        let json = r#"{"nowPlaying":[{"gameId":"abcd1234","isMyTurn":false,"variant":{"key":"atomic","name":"Atomic"},"opponent":{"username":"Bob","rating":1500}}]}"#;
         let parsed: PlayingResponse = serde_json::from_str(json).unwrap();
-        let opponent = parsed.now_playing[0].opponent.as_ref().unwrap();
+        let game = &parsed.now_playing[0];
+        let opponent = game.opponent.as_ref().unwrap();
         assert_eq!(opponent.username.as_deref(), Some("Bob"));
         assert_eq!(opponent.rating, Some(1500));
+        assert_eq!(game.variant.as_ref().unwrap().key, "atomic");
     }
 
     #[test]
