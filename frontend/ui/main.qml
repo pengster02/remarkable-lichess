@@ -102,11 +102,11 @@ Rectangle {
     // another POST, while always opening on acceptance can replace a later screen.
     property var pendingInvitation: null
 
-    function connectivityLabel() {
+    function connectivityLabel(compact) {
         if (!root.connectivityKnown) return "Connecting…"
         if (root.online) return "Online"
-        if (root.wifiConnected === false) return "Offline — Wi-Fi disconnected"
-        return "Offline — Lichess unreachable"
+        if (root.wifiConnected === false) return compact ? "Wi-Fi disconnected" : "Offline — Wi-Fi disconnected"
+        return compact ? "Lichess unreachable" : "Offline — Lichess unreachable"
     }
 
     // Bundles "remember which row was tapped" with "actually ask the backend
@@ -790,9 +790,7 @@ Rectangle {
         }
     }
 
-    // Persistent status bar on every screen (one instance here at the root, above
-    // the Loader): always-on connection status, nothing tappable. There is no
-    // in-app exit button by design -- the host closes any fullscreen AppLoad app
+    // Persistent status bar above the Loader. The host closes any fullscreen AppLoad app
     // via its own swipe-down-from-top-edge gesture (see
     // docs/remarkable-appload-platform-notes.md); `close`/`unloading` above stay
     // because the host still looks them up on the root.
@@ -808,6 +806,8 @@ Rectangle {
         height: visible ? theme.topBarHeight : 0
         z: 1000
         color: theme.background
+        readonly property string challengeShortcutLabel: root.hasToken && screenLoader.item
+            ? screenLoader.item.challengeShortcutLabel || "" : ""
 
         Rectangle {
             anchors.left: parent.left
@@ -837,16 +837,33 @@ Rectangle {
         Text {
             anchors.left: statusDot.right
             anchors.leftMargin: theme.spacingXs
-            anchors.right: parent.right
-            anchors.rightMargin: theme.pageSideMargin
+            anchors.right: challengeShortcut.visible ? challengeShortcut.left : parent.right
+            anchors.rightMargin: challengeShortcut.visible ? theme.spacingSmall : theme.pageSideMargin
             anchors.verticalCenter: parent.verticalCenter
-            text: root.connectivityLabel()
+            text: root.connectivityLabel(challengeShortcut.visible)
             elide: Text.ElideRight
             font.pixelSize: theme.fontLabel
             font.bold: root.connectivityKnown && !root.online
             color: (!root.connectivityKnown || root.online)
                 ? theme.textMuted
                 : theme.errorText
+        }
+
+        // Use the fixed status bar to keep Home's page in view. A new row would
+        // resize the pager, and opening the invitation automatically would move it.
+        AppButton {
+            id: challengeShortcut
+            objectName: "homeChallengeShortcut"
+            anchors.right: parent.right
+            anchors.rightMargin: theme.pageSideMargin
+            anchors.verticalCenter: parent.verticalCenter
+            compact: true
+            topInset: theme.spacingXs / 2
+            bottomInset: theme.spacingXs / 2
+            highlighted: true
+            visible: text.length > 0
+            text: topBar.challengeShortcutLabel
+            onClicked: if (visible) screenLoader.item.showOffscreenChallenge()
         }
 
         EinkRefreshArea {
