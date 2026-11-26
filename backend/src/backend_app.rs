@@ -1740,6 +1740,8 @@ async fn refresh_home_games(
                 correspondence_seconds_left: g.seconds_left
                     .filter(|_| g.is_my_turn && g.speed.as_deref() == Some("correspondence"))
                     .and_then(|seconds| u32::try_from(seconds).ok()),
+                board_supported: g.variant.as_ref().map(|variant| supports_variant(&variant.key)),
+                variant: g.variant.map(|variant| variant.key),
             }).collect(),
         },
         Err(error) if is_rate_limited(&error) => {

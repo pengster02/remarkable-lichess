@@ -3358,15 +3358,70 @@ TestCase {
         compare(summary.text, "Opponent — your move")
     }
 
+    function test_homeOffersResumeForPlayableGames_data() {
+        return [
+            {tag: "standard", variant: "standard", supported: true, suffix: ""},
+            {tag: "custom position", variant: "fromPosition", supported: true, suffix: " · Custom position"},
+            {tag: "older payload", suffix: ""}
+        ]
+    }
+
+    function test_homeOffersResumeForPlayableGames(data) {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var games = [
+            {game_id: "atomic", opponent_name: "VariantPlayer", is_my_turn: true,
+             variant: "atomic", correspondence_seconds_left: 90061},
+            {game_id: "playable", opponent_name: "ClassicPlayer", is_my_turn: false,
+             variant: data.variant, board_supported: data.supported}
+        ]
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
+        var original = findChild(home, "homeResumeButton")
+        verify(original && original.visible)
+
+        home.refreshGames(true)
+        games[0].board_supported = false
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
+        var unsupportedResume = findChild(home, "homeResumeButton")
+        var unsupportedRow = unsupportedResume.parent
+        var reason = findChild(unsupportedRow, "homeUnsupportedGame")
+        var pager = findChild(home, "homePager")
+        verify(pager && waitForRendering(pager))
+        compare(findChild(unsupportedRow, "homeGameSummary").text,
+                "VariantPlayer — your move · Atomic ·\u00a01d\u00a01h\u00a0left")
+        verify(!unsupportedResume.visible && reason.visible)
+        var sent = endpoint.sentMessages.length
+        mouseClick(reason, reason.width / 2, reason.height / 2)
+        compare(endpoint.sentMessages.length, sent)
+        compare(screen.item, home)
+
+        var rows = Array.prototype.filter.call(unsupportedRow.parent.children, function(row) {
+            return row.modelData && row.modelData.game_id
+        })
+        compare(rows.length, 2)
+        compare(findChild(rows[1], "homeGameSummary").text, "ClassicPlayer — waiting" + data.suffix)
+        var resume = findChild(rows[1], "homeResumeButton")
+        verify(resume.visible && resume.enabled)
+        mouseClick(resume, resume.width / 2, resume.height / 2)
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "ResumeGame", game_id: "playable"})
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+    }
+
     function openHomeWithFiftyGames(mixedRows) {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
         var games = []
         for (var i = 1; i <= 50; ++i) {
             var timed = mixedRows && i % 2 === 1
-            games.push({game_id: "game" + i, opponent_name: timed ? "TournamentPlayer" + i : "Opponent " + i,
+            var game = {game_id: "game" + i, opponent_name: timed ? "TournamentPlayer" + i : "Opponent " + i,
                         opponent_rating: timed ? 1802 : undefined, is_my_turn: timed || i === 50,
-                        correspondence_seconds_left: i === 50 ? 0 : timed ? 90061 : undefined})
+                        correspondence_seconds_left: i === 50 ? 0 : timed ? 90061 : undefined}
+            if (mixedRows && i % 3 === 0) {
+                game.variant = "atomic"
+                game.board_supported = false
+            }
+            games.push(game)
         }
         endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: games})
         return home
