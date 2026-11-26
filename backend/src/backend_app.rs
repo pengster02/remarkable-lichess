@@ -5,7 +5,9 @@ use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history, supports_variant};
 use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
 use crate::lichess::oauth;
-use crate::lichess::models::{ChallengeResolution, ChallengeResult, ChallengeTerms, EventStreamMessage, GameStreamMessage};
+use crate::lichess::models::{
+    ChallengeResolution, ChallengeResult, ChallengeTerms, EventStreamMessage, GameStreamMessage, PlayingGame, Variant,
+};
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::pgn_export::PgnGameId;
@@ -108,16 +110,26 @@ impl GameStreamReadiness {
 struct AccountStream {
     task: tokio::task::JoinHandle<()>,
     challenge_refresh: mpsc::Sender<()>,
-    challenge_support: Arc<Mutex<HashMap<String, ChallengeBoardSupport>>>,
+    challenge_support: Arc<Mutex<HashMap<String, BoardSupport>>>,
 }
 
 // Preserve the reason for both Home and the preflight reply. A bool loses the
 // reason, while treating incomplete terms as a rejection would bypass lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ChallengeBoardSupport {
+enum BoardSupport {
     Playable,
     Unavailable(String),
     Unknown,
+}
+
+impl BoardSupport {
+    fn summary_fields(&self) -> (Option<bool>, Option<String>) {
+        match self {
+            Self::Playable => (Some(true), None),
+            Self::Unavailable(reason) => (Some(false), Some(reason.clone())),
+            Self::Unknown => (None, None),
+        }
+    }
 }
 
 // Inline waits delay unrelated requests. Detached tasks can outlive the account
@@ -1488,7 +1500,7 @@ impl LichessBackend {
 
 async fn accept_playable_challenge(
     client: &LichessClient,
-    support: Option<&Mutex<HashMap<String, ChallengeBoardSupport>>>,
+    support: Option<&Mutex<HashMap<String, BoardSupport>>>,
     id: &str,
 ) -> anyhow::Result<()> {
     // Challenge IDs keep their terms. Reading every invite again adds latency,
@@ -1506,18 +1518,25 @@ async fn accept_playable_challenge(
         }
     };
     match board_support {
-        ChallengeBoardSupport::Playable => client.accept_challenge(id).await,
-        ChallengeBoardSupport::Unavailable(reason) => Err(anyhow::anyhow!(reason)),
-        ChallengeBoardSupport::Unknown => {
+        BoardSupport::Playable => client.accept_challenge(id).await,
+        BoardSupport::Unavailable(reason) => Err(anyhow::anyhow!(reason)),
+        BoardSupport::Unknown => {
             Err(anyhow::anyhow!("Couldn't verify that this invitation can be played on the tablet."))
         }
     }
 }
 
-fn challenge_board_support(terms: &ChallengeTerms) -> ChallengeBoardSupport {
-    if let Some(variant) = terms.variant.as_ref().filter(|variant| !supports_variant(&variant.key)) {
-        return ChallengeBoardSupport::Unavailable(format!("{} games are not supported on this board.", variant.name));
+fn board_support(variant: Option<&Variant>, clock: BoardSupport) -> BoardSupport {
+    match variant {
+        Some(variant) if !supports_variant(&variant.key) => {
+            BoardSupport::Unavailable(format!("{} games are not supported on this board.", variant.name))
+        }
+        None if clock == BoardSupport::Playable => BoardSupport::Unknown,
+        _ => clock,
     }
+}
+
+fn challenge_board_support(terms: &ChallengeTerms) -> BoardSupport {
     let from_clock = terms.time_control.as_ref().and_then(|time_control| {
         match time_control.kind.as_deref() {
             Some("correspondence" | "unlimited") => Some(true),
@@ -1532,13 +1551,14 @@ fn challenge_board_support(terms: &ChallengeTerms) -> ChallengeBoardSupport {
         Some("blitz" | "rapid" | "classical" | "correspondence") => Some(true),
         _ => None,
     });
-    match (terms.variant.is_some(), clock_supported) {
-        (_, Some(false)) => ChallengeBoardSupport::Unavailable(
+    let clock = match clock_supported {
+        Some(false) => BoardSupport::Unavailable(
             "Lichess allows Blitz or slower for invitations played on the tablet.".into(),
         ),
-        (true, Some(true)) => ChallengeBoardSupport::Playable,
-        _ => ChallengeBoardSupport::Unknown,
-    }
+        Some(true) => BoardSupport::Playable,
+        None => BoardSupport::Unknown,
+    };
+    board_support(terms.variant.as_ref(), clock)
 }
 
 #[cfg(test)]
@@ -1548,7 +1568,7 @@ mod challenge_board_support_tests {
 
     #[test]
     fn invitation_eligibility_uses_the_friend_clock_and_preserves_unknown_terms() {
-        use ChallengeBoardSupport::{Playable, Unavailable, Unknown};
+        use BoardSupport::{Playable, Unavailable, Unknown};
         let standard = json!({"key": "standard", "name": "Standard"});
         let atomic = json!({"key": "atomic", "name": "Atomic"});
         let too_fast = Unavailable("Lichess allows Blitz or slower for invitations played on the tablet.".into());
@@ -1659,7 +1679,7 @@ async fn send_pending_challenges(
     client: &LichessClient,
     replier: &BackendReplier<LichessBackend>,
     write_lock: &Arc<std::sync::Mutex<()>>,
-    support: &Mutex<HashMap<String, ChallengeBoardSupport>>,
+    support: &Mutex<HashMap<String, BoardSupport>>,
 ) {
     use crate::protocol::{ChallengeInfo, ChallengeTimeControlKind};
     let msg = match client.get_challenges().await {
@@ -1669,11 +1689,7 @@ async fn send_pending_challenges(
                 .into_iter()
                 .map(|c| {
                     let decision = challenge_board_support(&c.terms);
-                    let (board_supported, board_unavailable_reason) = match &decision {
-                        ChallengeBoardSupport::Playable => (Some(true), None),
-                        ChallengeBoardSupport::Unavailable(reason) => (Some(false), Some(reason.clone())),
-                        ChallengeBoardSupport::Unknown => (None, None),
-                    };
+                    let (board_supported, board_unavailable_reason) = decision.summary_fields();
                     if board_supported.is_some() {
                         known_support.insert(c.id.clone(), decision);
                     }
@@ -1852,20 +1868,7 @@ async fn refresh_home_games(
         Ok(games) => BackendMessage::HomeState {
             request_id,
             wifi_connected,
-            ongoing_games: games.into_iter().map(|g| OngoingGameSummary {
-                game_id: g.game_id,
-                // The built-in AI omits the username.
-                opponent_name: g.opponent.as_ref().and_then(|o| {
-                    o.username.clone().or_else(|| o.ai.map(|level| format!("Stockfish level {level}")))
-                }),
-                opponent_rating: g.opponent.as_ref().and_then(|o| o.rating),
-                is_my_turn: g.is_my_turn,
-                correspondence_seconds_left: g.seconds_left
-                    .filter(|_| g.is_my_turn && g.speed.as_deref() == Some("correspondence"))
-                    .and_then(|seconds| u32::try_from(seconds).ok()),
-                board_supported: g.variant.as_ref().map(|variant| supports_variant(&variant.key)),
-                variant: g.variant.map(|variant| variant.key),
-            }).collect(),
+            ongoing_games: games.into_iter().map(ongoing_game_summary).collect(),
         },
         Err(error) if is_rate_limited(&error) => {
             *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
@@ -1887,6 +1890,87 @@ async fn refresh_home_games(
         }
     };
     send_locked(&replier, &write_lock, &reply);
+}
+
+fn ongoing_game_summary(game: PlayingGame) -> OngoingGameSummary {
+    use BoardSupport::{Playable, Unavailable, Unknown};
+    let opponent = game.opponent.as_ref();
+    let source = game.source.as_deref();
+    let clock = match game.speed.as_deref() {
+        Some("rapid" | "classical" | "correspondence") => Playable,
+        Some("ultraBullet") => Unavailable("This UltraBullet game is too fast for tablet play.".into()),
+        Some("bullet") => Unavailable("This Bullet game is too fast for tablet play.".into()),
+        // Lichess allows Blitz for friend, API and built-in AI games. A blanket
+        // Blitz ban loses those games, and assuming missing sources are public
+        // would hide Resume for older payloads and incomplete position games.
+        Some("blitz") if matches!(source, Some("friend" | "api" | "ai"))
+            || opponent.is_some_and(|player| player.ai.is_some()) => Playable,
+        Some("blitz") if matches!(source, Some("lobby" | "pool" | "arena" | "swiss" | "simul" | "tournament"))
+            || source == Some("position") && opponent.is_some_and(|player| {
+                player.username.as_ref().is_some_and(|name| !name.is_empty())
+            }) => Unavailable("Lichess requires Rapid or slower to play this Blitz game on the tablet.".into()),
+        _ => Unknown,
+    };
+    let (board_supported, board_unavailable_reason) = board_support(game.variant.as_ref(), clock).summary_fields();
+    OngoingGameSummary {
+        game_id: game.game_id,
+        // The built-in AI omits the username.
+        opponent_name: opponent.and_then(|player| {
+            player.username.clone().or_else(|| player.ai.map(|level| format!("Stockfish level {level}")))
+        }),
+        opponent_rating: opponent.and_then(|player| player.rating),
+        is_my_turn: game.is_my_turn,
+        correspondence_seconds_left: game.seconds_left
+            .filter(|_| game.is_my_turn && game.speed.as_deref() == Some("correspondence"))
+            .and_then(|seconds| u32::try_from(seconds).ok()),
+        variant: game.variant.map(|variant| variant.key),
+        board_supported,
+        board_unavailable_reason,
+    }
+}
+
+#[cfg(test)]
+mod ongoing_game_summary_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reports_board_eligibility_from_speed_source_and_opponent() {
+        let standard = json!({"key": "standard", "name": "Standard"});
+        let atomic = json!({"key": "atomic", "name": "Atomic"});
+        let human = json!({"username": "Opponent", "rating": 1750});
+        let ai = json!({"ai": 4});
+        for (speed, source, variant, opponent, supported, reason) in [
+            ("bullet", Some("friend"), &standard, &human, Some(false), Some("Bullet game")),
+            ("ultraBullet", None, &serde_json::Value::Null, &human, Some(false), Some("UltraBullet game")),
+            ("blitz", Some("pool"), &standard, &human, Some(false), Some("requires Rapid")),
+            ("blitz", Some("arena"), &standard, &human, Some(false), Some("requires Rapid")),
+            ("blitz", Some("position"), &standard, &human, Some(false), Some("requires Rapid")),
+            ("blitz", Some("position"), &standard, &ai, Some(true), None),
+            ("blitz", Some("position"), &standard, &serde_json::Value::Null, None, None),
+            ("blitz", Some("friend"), &standard, &human, Some(true), None),
+            ("blitz", Some("api"), &standard, &human, Some(true), None),
+            ("blitz", Some("ai"), &standard, &ai, Some(true), None),
+            ("blitz", None, &standard, &human, None, None),
+            ("blitz", Some("futureSource"), &standard, &human, None, None),
+            ("rapid", Some("pool"), &standard, &human, Some(true), None),
+            ("correspondence", None, &standard, &human, Some(true), None),
+            ("futureSpeed", Some("pool"), &standard, &human, None, None),
+            ("bullet", Some("pool"), &atomic, &human, Some(false), Some("Atomic")),
+        ] {
+            let game = serde_json::from_value(json!({
+                "gameId": "game1234", "isMyTurn": true, "speed": speed, "source": source,
+                "variant": variant, "opponent": opponent, "secondsLeft": 1200,
+            })).unwrap();
+            let summary = ongoing_game_summary(game);
+            assert_eq!(summary.board_supported, supported, "{speed}, {source:?}, {opponent}");
+            assert_eq!(summary.board_unavailable_reason.is_some(), reason.is_some());
+            if let Some(reason) = reason {
+                assert!(summary.board_unavailable_reason.unwrap().contains(reason));
+            }
+            assert_eq!(summary.correspondence_seconds_left, (speed == "correspondence").then_some(1200));
+        }
+    }
 }
 
 async fn submit_move(

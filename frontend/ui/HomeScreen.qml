@@ -495,7 +495,8 @@ Rectangle {
                         Text {
                             objectName: "homeUnsupportedGame"
                             visible: !gameRow.canResume
-                            text: "This variant is unavailable on the tablet."
+                            text: modelData.board_unavailable_reason || "This variant is unavailable on the tablet."
+                            textFormat: Text.PlainText
                             width: parent.width
                             wrapMode: Text.WordWrap
                             font.pixelSize: theme.fontSmall
@@ -566,7 +567,8 @@ Rectangle {
                 var old = shown[index]
                 return game.game_id !== old.game_id || game.opponent_name !== old.opponent_name ||
                     game.opponent_rating !== old.opponent_rating || game.is_my_turn !== old.is_my_turn ||
-                    game.variant !== old.variant || game.board_supported !== old.board_supported
+                    game.variant !== old.variant || game.board_supported !== old.board_supported ||
+                    game.board_unavailable_reason !== old.board_unavailable_reason
             })) homeScreen.ongoingGames = next
             if (homeScreen.gamesRefreshQueued) {
                 homeScreen.queueGamesRefresh()
