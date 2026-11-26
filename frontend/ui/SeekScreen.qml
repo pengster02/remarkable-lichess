@@ -24,6 +24,9 @@ Rectangle {
     property string waitingChallengeGameId: ""
     property int matchRequestId: 0
     property string seekMatchBeforeAckId: ""
+    // Retain the submitted preferences: reading the form can use later edits,
+    // and waiting for the seek acknowledgement can lose an early game event.
+    property var seekPreferences: null
     property bool seekEnded: false
     readonly property bool connectingMatch: pendingAction === "seek" || pendingAction === "challenge"
     readonly property bool creatingMatch: pendingAction === "open" || pendingAction === "computer"
@@ -37,6 +40,7 @@ Rectangle {
     readonly property var seekClockLimits: ({
         maximumIncrement: 180,
         minimumEstimateSeconds: 480,
+        classicalMinimumEstimateSeconds: 1500,
         speedError: "Choose Rapid or slower for matchmaking, such as 8+0 or 5+5."
     })
     readonly property var challengeClockLimits: ({
@@ -80,6 +84,10 @@ Rectangle {
         return /^\d+$/.test(trimmed) ? Number(trimmed) : NaN
     }
 
+    function estimatedClockSeconds(minutes, increment) {
+        return minutes * 60 + increment * 40
+    }
+
     function timeControlError(limits) {
         var minutes = wholeNumber(minutesField.text)
         var increment = wholeNumber(incrementField.text)
@@ -89,7 +97,7 @@ Rectangle {
         if (increment < 0 || increment > limits.maximumIncrement)
             return "Increment must be between 0 and " + limits.maximumIncrement + "."
         if (minutes === 0 && increment === 0) return "Choose some starting time or an increment."
-        if (minutes * 60 + increment * 40 < limits.minimumEstimateSeconds) return limits.speedError
+        if (estimatedClockSeconds(minutes, increment) < limits.minimumEstimateSeconds) return limits.speedError
         return ""
     }
 
@@ -111,6 +119,15 @@ Rectangle {
 
     function submitSeek() {
         if (!canSubmit || !validateTimeControl(seekClockLimits, findOpponentButton)) return
+        var minutes = wholeNumber(minutesField.text)
+        var increment = wholeNumber(incrementField.text)
+        seekPreferences = {
+            rated: rated,
+            color: selectedColor,
+            // Eligible seeks start at Rapid. The form's maximum stays below Correspondence.
+            speed: estimatedClockSeconds(minutes, increment) < seekClockLimits.classicalMinimumEstimateSeconds
+                ? "rapid" : "classical"
+        }
         dismissKeyboard()
         matchRequestId = nextRequestId()
         seekMatchBeforeAckId = ""
@@ -121,10 +138,10 @@ Rectangle {
         backendSender({
             type: "CreateSeek",
             request_id: matchRequestId,
-            minutes: wholeNumber(minutesField.text),
-            increment: wholeNumber(incrementField.text),
-            rated: rated,
-            color: selectedColor
+            minutes: minutes,
+            increment: increment,
+            rated: seekPreferences.rated,
+            color: seekPreferences.color
         })
     }
 
@@ -134,6 +151,7 @@ Rectangle {
         waitingChallengeGameId = ""
         matchRequestId = 0
         seekMatchBeforeAckId = ""
+        seekPreferences = null
     }
 
     function cancelWaiting() {
@@ -146,6 +164,14 @@ Rectangle {
     function openMatchedGame(gameId) {
         cancelWaiting()
         openGame(gameId)
+    }
+
+    function matchesSeekPreferences(game) {
+        var preferences = seekScreen.seekPreferences
+        return preferences !== null &&
+            (typeof game.rated !== "boolean" || game.rated === preferences.rated) &&
+            (!game.color || preferences.color === "random" || game.color === preferences.color) &&
+            (!game.speed || game.speed === preferences.speed)
     }
 
     function setupRetryInView(retry) {
@@ -631,7 +657,7 @@ Rectangle {
                     seekScreen.openGame(msg.game_id)
                 return
             }
-            if (msg.board_supported === false || !msg.from_realtime_lobby) return
+            if (msg.board_supported === false || !msg.from_realtime_lobby || !seekScreen.matchesSeekPreferences(msg)) return
             if (seekScreen.waiting && seekScreen.waitingChallengeGameId.length === 0)
                 seekScreen.openMatchedGame(msg.game_id)
             else if (seekScreen.pendingAction === "seek" && !seekScreen.seekMatchBeforeAckId)

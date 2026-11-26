@@ -3877,6 +3877,64 @@ TestCase {
         ])
     }
 
+    function test_seekFiltersAgainstSubmittedPreferences_data() {
+        return [
+            {tag: "Rapid before acknowledgement", phase: "connecting",
+             minutes: 24, increment: 1, speed: "rapid", otherSpeed: "classical", rated: false, color: "white"},
+            {tag: "Classical while waiting", phase: "waiting",
+             minutes: 23, increment: 3, speed: "classical", otherSpeed: "rapid", rated: true, color: "black"},
+            {tag: "random color after seek closes", phase: "settling",
+             minutes: 8, increment: 0, speed: "rapid", otherSpeed: "classical", rated: true, color: "random"}
+        ]
+    }
+
+    function test_seekFiltersAgainstSubmittedPreferences(data) {
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        var minutes = findChild(seek, "minutesField")
+        var increment = findChild(seek, "incrementField")
+        minutes.text = String(data.minutes)
+        increment.text = String(data.increment)
+        seek.rated = data.rated
+        seek.selectedColor = data.color
+        seek.submitSeek()
+        var requestId = seek.matchRequestId
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1], {
+            type: "CreateSeek", request_id: requestId, minutes: data.minutes, increment: data.increment,
+            rated: data.rated, color: data.color
+        })
+        var created = {type: "SeekCreated", request_id: requestId}
+        if (data.phase !== "connecting") endpoint.reply(created)
+        if (data.phase === "settling") endpoint.reply({type: "SeekEnded", request_id: requestId})
+
+        minutes.text = data.speed === "rapid" ? "25" : "10"
+        increment.text = "0"
+        seek.rated = !data.rated
+        seek.selectedColor = data.color === "white" ? "black" : "white"
+        var game = {type: "GameStarted", from_realtime_lobby: true, board_supported: true,
+                    speed: data.speed, rated: data.rated, color: data.color === "random" ? "black" : data.color}
+        var sent = endpoint.sentMessages.length
+        endpoint.reply(Object.assign({}, game, {game_id: "different-mode", rated: !data.rated}))
+        endpoint.reply(Object.assign({}, game, {game_id: "different-speed", speed: data.otherSpeed}))
+        if (data.color !== "random")
+            endpoint.reply(Object.assign({}, game, {game_id: "different-color", color: seek.selectedColor}))
+        compare(endpoint.sentMessages.length, sent)
+        compare(seek.matchRequestId, requestId)
+        compare(seek.seekMatchBeforeAckId, "")
+        compare(screen.item, seek)
+
+        endpoint.reply(Object.assign({}, game, {game_id: "matching"}))
+        if (data.phase === "connecting") {
+            compare(seek.seekMatchBeforeAckId, "matching")
+            endpoint.reply(created)
+        }
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        compare(endpoint.sentMessages.slice(sent), [
+            {type: "CancelMatch", request_id: requestId},
+            {type: "ResumeGame", game_id: "matching"}
+        ])
+    }
+
     function test_matchmakingCanBeCancelledBeforeAcknowledgement_data() {
         return [{tag: "seek", direct: false}, {tag: "direct challenge", direct: true}]
     }

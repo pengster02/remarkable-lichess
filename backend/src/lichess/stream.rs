@@ -44,6 +44,7 @@ mod tests {
         assert_eq!(parsed, EventStreamMessage::GameStart {
             game: EventGame {
                 id: "abcd1234".into(), source: None, speed: None,
+                rated: None, color: None,
                 variant: None, opponent: None, compat: None,
             },
         });

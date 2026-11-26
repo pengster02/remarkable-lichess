@@ -1636,6 +1636,11 @@ async fn read_account_events(
                             game_id: game.id,
                             from_realtime_lobby,
                             board_supported,
+                            speed: game.speed.filter(|speed| matches!(speed.as_str(),
+                                "ultraBullet" | "bullet" | "blitz" | "rapid" | "classical" | "correspondence"
+                            )),
+                            rated: game.rated,
+                            color: game.color.filter(|color| matches!(color.as_str(), "white" | "black")),
                         });
                     }
                     Some(EventStreamMessage::Challenge)
