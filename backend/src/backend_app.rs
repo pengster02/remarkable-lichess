@@ -39,6 +39,8 @@ const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. T
 const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.";
 const OPENING_RATE_LIMIT_MESSAGE: &str = "Lichess limited opening statistics requests.";
 const GAME_EXPORT_RATE_LIMIT_MESSAGE: &str = "Lichess limited game export requests.";
+const BOARD_BLITZ_MIN_ESTIMATE_SECONDS: u64 = 180;
+const BOARD_RAPID_MIN_ESTIMATE_SECONDS: u64 = 480;
 
 struct StreamReconnectDelay {
     next: Duration,
@@ -160,13 +162,24 @@ struct MatchRequest {
     request_id: Option<u32>,
 }
 
+// Match Lichess's speed estimate. Base time alone rejects valid increment
+// clocks, and one speed floor cannot cover both public seeks and friend games.
+fn board_clock_estimate_seconds(limit_seconds: u64, increment_seconds: u32) -> u64 {
+    limit_seconds + 40 * u64::from(increment_seconds)
+}
+
 impl MatchRequest {
     fn is_creation(&self) -> bool {
         matches!(self.kind, MatchKind::Computer { .. } | MatchKind::Open { .. })
     }
 
     fn validate(&self) -> Result<(), &'static str> {
-        let max_increment = if matches!(self.kind, MatchKind::Seek { .. }) { 180 } else { 60 };
+        let (max_increment, min_estimate, speed_error) = match self.kind {
+            MatchKind::Seek { .. } => (180, BOARD_RAPID_MIN_ESTIMATE_SECONDS,
+                "Choose Rapid or slower for matchmaking, such as 8+0 or 5+5."),
+            _ => (60, BOARD_BLITZ_MIN_ESTIMATE_SECONDS,
+                "Choose Blitz or slower for tablet play, such as 3+0 or 1+3."),
+        };
         if self.minutes > 180 || self.increment > max_increment {
             return Err("Time control is outside the allowed range.");
         }
@@ -181,6 +194,9 @@ impl MatchRequest {
                 return Err("Choose White, Black, or Random.");
             }
         }
+        if board_clock_estimate_seconds(60 * u64::from(self.minutes), self.increment) < min_estimate {
+            return Err(speed_error);
+        }
         Ok(())
     }
 
@@ -192,6 +208,30 @@ impl MatchRequest {
             }
             (Some(request_id), _) => BackendMessage::MatchCreationFailed { request_id, message },
             (None, _) => BackendMessage::ErrorMsg { message },
+        }
+    }
+}
+
+#[cfg(test)]
+mod match_clock_tests {
+    use super::*;
+
+    #[test]
+    fn validates_match_clocks_using_the_selected_action() {
+        let seek = MatchKind::Seek { rated: false, color: "random".into() };
+        let direct = MatchKind::Direct { username: "opponent".into(), rated: false, color: "black".into() };
+        let open = MatchKind::Open { rated: false };
+        let computer = MatchKind::Computer { level: 3, color: "white".into() };
+        for (kind, minutes, below, valid, speed) in [
+            (seek, 0, 11, 12, "Rapid"),
+            (direct, 1, 2, 3, "Blitz"),
+            (open, 2, 1, 2, "Blitz"),
+            (computer, 0, 4, 5, "Blitz"),
+        ] {
+            let mut request = MatchRequest { kind, minutes, increment: below, request_id: Some(1) };
+            assert!(request.validate().unwrap_err().contains(speed));
+            request.increment = valid;
+            assert_eq!(request.validate(), Ok(()));
         }
     }
 }
@@ -1482,9 +1522,7 @@ fn challenge_board_support(terms: &ChallengeTerms) -> ChallengeBoardSupport {
         match time_control.kind.as_deref() {
             Some("correspondence" | "unlimited") => Some(true),
             Some("clock") | None => time_control.limit.zip(time_control.increment).map(|(limit, increment)| {
-                // Lila's Friend games require Blitz (180 estimated seconds).
-                // Base time alone rejects valid increments, and Rapid is for general seeks.
-                u64::from(limit) + 40 * u64::from(increment) >= 180
+                board_clock_estimate_seconds(u64::from(limit), increment) >= BOARD_BLITZ_MIN_ESTIMATE_SECONDS
             }),
             _ => None,
         }

@@ -32,6 +32,18 @@ Rectangle {
     readonly property bool canSubmit: !waiting && pendingAction.length === 0
     property string formError: ""
     property Item setupRetryItem: null
+    // Immediate feedback keeps the form in view. A shared floor rejects valid
+    // direct games, while waiting for the backend would briefly hide the form.
+    readonly property var seekClockLimits: ({
+        maximumIncrement: 180,
+        minimumEstimateSeconds: 480,
+        speedError: "Choose Rapid or slower for matchmaking, such as 8+0 or 5+5."
+    })
+    readonly property var challengeClockLimits: ({
+        maximumIncrement: 60,
+        minimumEstimateSeconds: 180,
+        speedError: "Choose Blitz or slower for tablet play, such as 3+0 or 1+3."
+    })
     readonly property bool keyboardActive: minutesField.activeFocus ||
         incrementField.activeFocus || usernameField.activeFocus ||
         aiLevelField.activeFocus
@@ -68,20 +80,21 @@ Rectangle {
         return /^\d+$/.test(trimmed) ? Number(trimmed) : NaN
     }
 
-    function timeControlError(maximumIncrement) {
+    function timeControlError(limits) {
         var minutes = wholeNumber(minutesField.text)
         var increment = wholeNumber(incrementField.text)
         if (isNaN(minutes)) return "Minutes must be a whole number."
         if (minutes < 0 || minutes > 180) return "Minutes must be between 0 and 180."
         if (isNaN(increment)) return "Increment must be a whole number."
-        if (increment < 0 || increment > maximumIncrement)
-            return "Increment must be between 0 and " + maximumIncrement + "."
+        if (increment < 0 || increment > limits.maximumIncrement)
+            return "Increment must be between 0 and " + limits.maximumIncrement + "."
         if (minutes === 0 && increment === 0) return "Choose some starting time or an increment."
+        if (minutes * 60 + increment * 40 < limits.minimumEstimateSeconds) return limits.speedError
         return ""
     }
 
-    function validateTimeControl(maximumIncrement, retry) {
-        var message = timeControlError(maximumIncrement)
+    function validateTimeControl(limits, retry) {
+        var message = timeControlError(limits)
         if (message) showSetupError(message, retry)
         else formError = ""
         return message.length === 0
@@ -97,9 +110,7 @@ Rectangle {
     }
 
     function submitSeek() {
-        // Lichess permits 180s on seeks but only 60s on challenges; one global
-        // 60s cap hides valid seeks, while separate duplicate forms add drift.
-        if (!canSubmit || !validateTimeControl(180, findOpponentButton)) return
+        if (!canSubmit || !validateTimeControl(seekClockLimits, findOpponentButton)) return
         dismissKeyboard()
         matchRequestId = nextRequestId()
         seekMatchBeforeAckId = ""
@@ -170,7 +181,7 @@ Rectangle {
     }
 
     function submitChallenge() {
-        if (!showingSetup || !canSubmit || !validateTimeControl(60, challengePlayerButton)) return
+        if (!showingSetup || !canSubmit || !validateTimeControl(challengeClockLimits, challengePlayerButton)) return
         var username = usernameField.text.trim()
         if (username.length === 0) {
             showSetupError("Enter the Lichess username you want to challenge.", challengePlayerButton)
@@ -194,7 +205,7 @@ Rectangle {
 
     function submitOpenChallenge() {
         if (!showingSetup || !canSubmit || openChallengeUrls !== null ||
-                !validateTimeControl(60, openChallengeButton)) return
+                !validateTimeControl(challengeClockLimits, openChallengeButton)) return
         dismissKeyboard()
         matchRequestId = nextRequestId()
         pendingAction = "open"
@@ -208,7 +219,7 @@ Rectangle {
     }
 
     function submitComputerGame() {
-        if (!showingSetup || !canSubmit || !validateTimeControl(60, computerGameButton)) return
+        if (!showingSetup || !canSubmit || !validateTimeControl(challengeClockLimits, computerGameButton)) return
         var level = wholeNumber(aiLevelField.text)
         if (isNaN(level) || level < 1 || level > 8) {
             showSetupError("Computer level must be a whole number from 1 to 8.", computerGameButton)
