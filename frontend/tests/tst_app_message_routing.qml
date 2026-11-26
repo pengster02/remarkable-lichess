@@ -4260,6 +4260,45 @@ TestCase {
                 {type: "ResumeGame", game_id: standard.id})
     }
 
+    function test_homeExplainsAnIncompatibleInvitationClock() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        endpoint.reply({type: "HomeState", request_id: home.homeRequestId, ongoing_games: []})
+        var reason = "Lichess allows Blitz or slower for invitations played on the tablet."
+        var bullet = {id: "bullet", challenger: "FastPlayer", time_control: "clock",
+                      limit_seconds: 60, increment_seconds: 0, variant: "standard", rated: true,
+                      board_supported: false, board_unavailable_reason: reason}
+        var blitz = {id: "blitz", challenger: "BlitzPlayer", time_control: "clock",
+                     limit_seconds: 180, increment_seconds: 0, variant: "standard", board_supported: true}
+        endpoint.reply({type: "PendingChallenges", challenges: [bullet, blitz]})
+        var decline = findChild(home, "homeDeclineChallenge")
+        verify(decline && waitForRendering(home))
+        var row = decline.parent.parent
+        var explanation = findChild(row, "homeUnsupportedChallenge")
+        compare(row.children[0].text, "FastPlayer challenges you (1+0 · Rated · Standard)")
+        verify(explanation.visible && !explanation.truncated)
+        compare(explanation.text, reason)
+        var blocked = findChild(row, "homeAcceptChallenge")
+        verify(!blocked.enabled)
+        var sent = endpoint.sentMessages.length
+        mouseClick(blocked, blocked.width / 2, blocked.height / 2)
+        compare(endpoint.sentMessages.length, sent)
+        mouseClick(decline, decline.width / 2, decline.height / 2)
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "DeclineChallenge")
+        compare(request.id, bullet.id)
+        endpoint.reply({type: "ChallengeDeclined", challenge_id: bullet.id, request_id: request.request_id})
+
+        var playable = findChild(home, "homeAcceptChallenge")
+        verify(playable.enabled && waitForRendering(playable))
+        mouseClick(playable, playable.width / 2, playable.height / 2)
+        request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "AcceptChallenge")
+        compare(request.id, blitz.id)
+        endpoint.reply({type: "ChallengeAccepted", game_id: blitz.id, request_id: request.request_id})
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1], {type: "ResumeGame", game_id: blitz.id})
+    }
+
     function test_declineWaitsForItsReplyAndStaleListsCannotRestoreTheRow() {
         app.navigateTo("HomeScreen.qml")
         var incoming = [{id: "target", challenger: "Target", limit_seconds: 600, increment_seconds: 0},

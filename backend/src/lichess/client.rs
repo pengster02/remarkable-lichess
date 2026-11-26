@@ -1,7 +1,7 @@
 use crate::lichess::models::{
-    Account, ChallengeListResponse, ChallengeOpenJson, ChallengeVariantResponse, CloudEvaluation, CreatedGame, GameExport,
+    Account, ChallengeDetails, ChallengeListResponse, ChallengeOpenJson, ChallengeTerms, CloudEvaluation, CreatedGame, GameExport,
     GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame,
-    PlayingResponse, UserStatus, Variant,
+    PlayingResponse, UserStatus,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use crate::pgn_export::{PgnExport, PgnGameId};
@@ -597,17 +597,17 @@ impl LichessClient {
         Ok(parsed.incoming)
     }
 
-    pub async fn get_challenge_variant(&self, id: &str) -> Result<Variant> {
+    pub async fn get_challenge_terms(&self, id: &str) -> Result<ChallengeTerms> {
         let mut url = reqwest::Url::parse(&self.base_url)?;
         url.path_segments_mut().map_err(|_| anyhow!("Invalid Lichess URL"))?
             .pop_if_empty().extend(["api", "challenge", id, "show"]);
-        let resp = self.send_logged("get_challenge_variant", self.bearer(self.http.get(url))).await?;
+        let resp = self.send_logged("get_challenge_terms", self.bearer(self.http.get(url))).await?;
         if !resp.status().is_success() {
-            return Err(error_from_response("get_challenge_variant", resp).await);
+            return Err(error_from_response("get_challenge_terms", resp).await);
         }
-        let detail = resp.json::<ChallengeVariantResponse>().await?;
+        let detail = resp.json::<ChallengeDetails>().await?;
         anyhow::ensure!(detail.id == id, "Lichess returned details for another challenge");
-        Ok(detail.variant)
+        Ok(detail.terms)
     }
 
     pub async fn accept_challenge(&self, id: &str) -> Result<()> {
@@ -1837,31 +1837,35 @@ mod tests {
         assert_eq!(challenges.len(), 5);
         assert_eq!(challenges[0].id, "c1");
         assert_eq!(challenges[0].challenger.name, "Opponent");
-        let clocks = challenges.iter().filter_map(|c| c.time_control.as_ref()).collect::<Vec<_>>();
+        let clocks = challenges.iter().filter_map(|c| c.terms.time_control.as_ref()).collect::<Vec<_>>();
         assert_eq!(clocks[0].limit, Some(600));
         assert_eq!(clocks[0].increment, Some(0));
         assert_eq!(clocks[1].kind.as_deref(), Some("correspondence"));
         assert_eq!(clocks[1].days_per_turn, Some(3));
         assert_eq!(clocks[2].kind.as_deref(), Some("unlimited"));
         assert_eq!(clocks[3].kind.as_deref(), Some("future"));
-        assert_eq!(challenges[4].time_control, None);
+        assert_eq!(challenges[4].terms.time_control, None);
     }
 
     #[tokio::test]
-    async fn get_challenge_variant_checks_the_requested_identity() {
+    async fn get_challenge_terms_checks_the_requested_identity() {
         let server = MockServer::start().await;
         for requested in ["matching", "different"] {
             Mock::given(method("GET"))
                 .and(path(format!("/api/challenge/{requested}/show")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "id": "matching", "variant": {"key": "fromPosition", "name": "From Position"}
+                    "id": "matching", "variant": {"key": "fromPosition", "name": "From Position"},
+                    "speed": "blitz", "timeControl": {"type": "clock", "limit": 180, "increment": 0}
                 })))
                 .mount(&server)
                 .await;
         }
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        assert_eq!(client.get_challenge_variant("matching").await.unwrap().key, "fromPosition");
-        let error = client.get_challenge_variant("different").await.unwrap_err();
+        let terms = client.get_challenge_terms("matching").await.unwrap();
+        assert_eq!(terms.variant.unwrap().key, "fromPosition");
+        assert_eq!(terms.speed.as_deref(), Some("blitz"));
+        assert_eq!(terms.time_control.unwrap().limit, Some(180));
+        let error = client.get_challenge_terms("different").await.unwrap_err();
         assert!(error.to_string().contains("another challenge"));
     }
 

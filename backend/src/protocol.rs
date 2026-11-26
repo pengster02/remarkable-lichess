@@ -277,6 +277,8 @@ pub struct ChallengeInfo {
     pub rated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub board_supported: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_unavailable_reason: Option<String>,
 }
 
 // One of a real account's rated speed categories (bullet/blitz/rapid/classical/
