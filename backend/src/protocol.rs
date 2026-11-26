@@ -606,9 +606,14 @@ pub enum BackendMessage {
         request_id: Option<u32>,
     },
     MatchCreationFailed { request_id: u32, message: String },
-    // An account event cannot select a board. Alternatives were one stream per
-    // account game, or silently replacing the current stream on every gameStart.
-    GameStarted { game_id: String, from_realtime_lobby: bool },
+    // Keep compatibility separate from origin. Filtering events would drop Home
+    // refreshes, and reusing the lobby flag would hide why a link cannot open.
+    GameStarted {
+        game_id: String,
+        from_realtime_lobby: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        board_supported: Option<bool>,
+    },
     GameFinished { game_id: String },
     AccountEventsResumed,
     BoardState {

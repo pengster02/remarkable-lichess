@@ -1420,8 +1420,8 @@ TestCase {
         var first = latestHomeRequest()
         endpoint.reply({type: "HomeState", request_id: first, ongoing_games: [], wifi_connected: true})
         var before = endpoint.sentMessages.length
-        endpoint.reply({type: "GameStarted", game_id: "other-client", from_realtime_lobby: false})
-        endpoint.reply({type: "GameStarted", game_id: "also-elsewhere", from_realtime_lobby: true})
+        endpoint.reply({type: "GameStarted", game_id: "other-client", from_realtime_lobby: false, board_supported: false})
+        endpoint.reply({type: "GameStarted", game_id: "also-elsewhere", from_realtime_lobby: true, board_supported: false})
         tryVerify(function() { return latestHomeRequest() > first })
         var current = latestHomeRequest()
         compare(endpoint.sentMessages.length, before + 1)
@@ -3839,6 +3839,44 @@ TestCase {
         verify(String(screen.source).endsWith("BoardScreen.qml"))
     }
 
+    function test_incompatibleGameLeavesTheSeekActive_data() {
+        return [
+            {tag: "before acknowledgement", phase: "connecting"},
+            {tag: "waiting", phase: "waiting"},
+            {tag: "after stream closes", phase: "settling"}
+        ]
+    }
+
+    function test_incompatibleGameLeavesTheSeekActive(data) {
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        seek.submitSeek()
+        var requestId = seek.matchRequestId
+        var created = {type: "SeekCreated", request_id: requestId}
+        if (data.phase !== "connecting") endpoint.reply(created)
+        if (data.phase === "settling") endpoint.reply({type: "SeekEnded", request_id: requestId})
+        var sent = endpoint.sentMessages.length
+        endpoint.reply({type: "GameStarted", game_id: "unplayable",
+                        from_realtime_lobby: true, board_supported: false})
+        compare(endpoint.sentMessages.length, sent)
+        compare(screen.item, seek)
+        compare(seek.matchRequestId, requestId)
+        compare(seek.seekMatchBeforeAckId, "")
+
+        endpoint.reply({type: "GameStarted", game_id: "playable",
+                        from_realtime_lobby: true, board_supported: true})
+        if (data.phase === "connecting") {
+            compare(seek.seekMatchBeforeAckId, "playable")
+            compare(endpoint.sentMessages.length, sent)
+            endpoint.reply(created)
+        }
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        compare(endpoint.sentMessages.slice(sent), [
+            {type: "CancelMatch", request_id: requestId},
+            {type: "ResumeGame", game_id: "playable"}
+        ])
+    }
+
     function test_matchmakingCanBeCancelledBeforeAcknowledgement_data() {
         return [{tag: "seek", direct: false}, {tag: "direct challenge", direct: true}]
     }
@@ -3968,7 +4006,15 @@ TestCase {
                 {type: "ResumeGame", game_id: "accepted"})
     }
 
-    function test_openChallengeMatchesTheShareableLink() {
+    function test_openChallengeMatchesTheShareableLink_data() {
+        return [
+            {tag: "compatible", supported: true},
+            {tag: "legacy", supported: undefined},
+            {tag: "incompatible", supported: false}
+        ]
+    }
+
+    function test_openChallengeMatchesTheShareableLink(data) {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitOpenChallenge()
         var request = endpoint.sentMessages[endpoint.sentMessages.length - 1].request_id
@@ -3977,7 +4023,15 @@ TestCase {
                         url: "https://lichess.org/game/link", url_white: "white", url_black: "black"})
         endpoint.reply({type: "GameStarted", game_id: "other", from_realtime_lobby: false})
         verify(String(screen.source).endsWith("SeekScreen.qml"))
-        endpoint.reply({type: "GameStarted", game_id: "link", from_realtime_lobby: false})
+        var sent = endpoint.sentMessages.length
+        endpoint.reply({type: "GameStarted", game_id: "link", from_realtime_lobby: false,
+                        board_supported: data.supported})
+        if (data.supported === false) {
+            compare(endpoint.sentMessages.length, sent)
+            verify(String(screen.source).endsWith("SeekScreen.qml"))
+            compare(screen.item.formError, "This game cannot be played on the tablet.")
+            return
+        }
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "ResumeGame", game_id: "link"})
     }
