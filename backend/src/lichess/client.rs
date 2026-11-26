@@ -1803,11 +1803,17 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/challenge"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "in": [{
-                    "id": "c1",
-                    "challenger": {"id": "opp", "name": "Opponent"},
-                    "timeControl": {"limit": 600, "increment": 0}
-                }],
+                "in": [
+                    {"id": "c1", "challenger": {"id": "opp", "name": "Opponent"},
+                     "timeControl": {"limit": 600, "increment": 0}},
+                    {"id": "c2", "challenger": {"id": "opp", "name": "Opponent"},
+                     "timeControl": {"type": "correspondence", "daysPerTurn": 3}},
+                    {"id": "c3", "challenger": {"id": "opp", "name": "Opponent"},
+                     "timeControl": {"type": "unlimited"}},
+                    {"id": "c4", "challenger": {"id": "opp", "name": "Opponent"},
+                     "timeControl": {"type": "future"}},
+                    {"id": "c5", "challenger": {"id": "opp", "name": "Opponent"}}
+                ],
                 "out": []
             })))
             .mount(&server)
@@ -1815,10 +1821,17 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let challenges = client.get_challenges().await.unwrap();
-        assert_eq!(challenges.len(), 1);
+        assert_eq!(challenges.len(), 5);
         assert_eq!(challenges[0].id, "c1");
         assert_eq!(challenges[0].challenger.name, "Opponent");
-        assert_eq!(challenges[0].time_control.limit, Some(600));
+        let clocks = challenges.iter().filter_map(|c| c.time_control.as_ref()).collect::<Vec<_>>();
+        assert_eq!(clocks[0].limit, Some(600));
+        assert_eq!(clocks[0].increment, Some(0));
+        assert_eq!(clocks[1].kind.as_deref(), Some("correspondence"));
+        assert_eq!(clocks[1].days_per_turn, Some(3));
+        assert_eq!(clocks[2].kind.as_deref(), Some("unlimited"));
+        assert_eq!(clocks[3].kind.as_deref(), Some("future"));
+        assert_eq!(challenges[4].time_control, None);
     }
 
     #[tokio::test]

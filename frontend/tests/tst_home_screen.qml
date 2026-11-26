@@ -100,6 +100,36 @@ TestCase {
         verify(!status.visible)
     }
 
+    function test_invitationTimeControl_data() {
+        return [
+            {tag: "legacy clock", fields: {limit_seconds: 600, increment_seconds: 0}, label: "10+0"},
+            {tag: "sub-minute base", fields: {time_control: "clock", limit_seconds: 30, increment_seconds: 2},
+                label: "30s + 2s"},
+            {tag: "fractional minute base", fields: {time_control: "clock", limit_seconds: 90, increment_seconds: 15},
+                label: "1m 30s + 15s"},
+            {tag: "increment only", fields: {time_control: "clock", limit_seconds: 0, increment_seconds: 5},
+                label: "0+5"},
+            {tag: "missing increment", fields: {time_control: "clock", limit_seconds: 600}, label: "Real-time"},
+            {tag: "one day", fields: {time_control: "correspondence", days_per_turn: 1}, label: "1 day per move"},
+            {tag: "three days", fields: {time_control: "correspondence", days_per_turn: 3}, label: "3 days per move"},
+            {tag: "missing days", fields: {time_control: "correspondence"}, label: "Correspondence"},
+            {tag: "unlimited", fields: {time_control: "unlimited"}, label: "Untimed"},
+            {tag: "unknown typed control", fields: {time_control: "future", limit_seconds: 600, increment_seconds: 0},
+                label: "Time control unavailable"},
+            {tag: "missing legacy control", fields: {limit_seconds: null, increment_seconds: null},
+                label: "Time control unavailable"}
+        ]
+    }
+
+    function test_invitationTimeControl(data) {
+        home.handleMessage({type: "PendingChallenges", challenges: [
+            Object.assign({id: "incoming", challenger: "Opponent"}, data.fields)
+        ]})
+        var decline = findChild(home, "homeDeclineChallenge")
+        verify(decline)
+        compare(decline.parent.parent.children[0].text, "Opponent challenges you (" + data.label + ")")
+    }
+
     function test_successClearsAnEarlierConnectionError() {
         home.refresh()
         home.loadError = "offline"

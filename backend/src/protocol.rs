@@ -251,16 +251,26 @@ impl GameActionRequest {
     }
 }
 
-// Wire-format for an incoming challenge, decoupled from lichess::models::IncomingChallenge
-// (protocol.rs stays independent of the Lichess API's own shapes, same as everywhere else
-// in this file). limit/increment stay in raw seconds -- same units Lichess's own API uses --
-// rather than converting to minutes, so the frontend does its own display formatting.
+// Keep the original clock fields for older frontends. A nested replacement
+// would drop them, and formatted strings would make units and localization opaque.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeTimeControlKind {
+    Clock,
+    Correspondence,
+    Unlimited,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ChallengeInfo {
     pub id: String,
     pub challenger: String,
     pub limit_seconds: Option<u32>,
     pub increment_seconds: Option<u32>,
+    pub time_control: ChallengeTimeControlKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub days_per_turn: Option<u32>,
 }
 
 // One of a real account's rated speed categories (bullet/blitz/rapid/classical/

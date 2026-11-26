@@ -259,10 +259,16 @@ pub struct ChallengeUser {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+// Keep the tag and optional details separate. A strict tagged enum would reject
+// future or untagged payloads, and clock display strings omit the other modes.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct ChallengeTimeControl {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
     pub limit: Option<u32>,
     pub increment: Option<u32>,
+    #[serde(rename = "daysPerTurn")]
+    pub days_per_turn: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -270,7 +276,7 @@ pub struct IncomingChallenge {
     pub id: String,
     pub challenger: ChallengeUser,
     #[serde(rename = "timeControl")]
-    pub time_control: ChallengeTimeControl,
+    pub time_control: Option<ChallengeTimeControl>,
 }
 
 // GET /api/challenge's real response shape: {"in": [...], "out": [...]} -- only
