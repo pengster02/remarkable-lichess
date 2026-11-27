@@ -91,7 +91,8 @@ QtObject {
     function opponentLabel(game) {
         if (!game) return ""
         if (game.your_color === null) return "Side unavailable"
-        return "vs " + (game.opponent_name || "Opponent")
+        var name = typeof game.opponent_name === "string" ? game.opponent_name.trim() : ""
+        return "vs " + (name || "Opponent")
     }
 
     function terminationLabel(status) {

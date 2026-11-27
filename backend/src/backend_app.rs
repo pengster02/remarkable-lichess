@@ -3782,8 +3782,12 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> Option<HistoryGame
     let you = color.map(|color| game.players.player(color));
     let opponent = color.map(|color| game.players.player(color.other()));
     let opponent_name = opponent.and_then(|player| {
-        player.user.as_ref().and_then(|user| user.name.clone())
+        let user = player.user.as_ref();
+        user.and_then(|user| user.name.clone())
             .or_else(|| player.ai_level.map(|level| format!("Stockfish level {level}")))
+            .or_else(|| player.stored_name.clone())
+            .or_else(|| user?.id.as_deref().map(str::trim)
+                .filter(|id| !id.is_empty()).map(str::to_owned))
     });
     let winner = game.winner.as_deref().filter(|color| matches!(*color, "white" | "black"));
     let settled = outcome(game.status.as_deref().unwrap_or("unknown"), winner);
@@ -4013,6 +4017,7 @@ mod history_summary_tests {
     fn human_with_rating_diff(id: &str, name: &str, rating: u32, rating_diff: Option<i32>) -> GamePlayerUser {
         GamePlayerUser {
             user: Some(LightUser { id: Some(id.to_string()), name: Some(name.to_string()) }),
+            stored_name: None,
             rating: Some(rating),
             ai_level: None,
             rating_diff,
@@ -4021,12 +4026,15 @@ mod history_summary_tests {
     }
 
     fn ai(level: u8, rating: u32) -> GamePlayerUser {
-        GamePlayerUser { user: None, rating: Some(rating), ai_level: Some(level), rating_diff: None, analysis: None }
+        GamePlayerUser {
+            user: None, stored_name: None, rating: Some(rating), ai_level: Some(level), rating_diff: None, analysis: None,
+        }
     }
 
     fn human_with_analysis(id: &str, name: &str, rating: u32, summary: PlayerAnalysisSummary) -> GamePlayerUser {
         GamePlayerUser {
             user: Some(LightUser { id: Some(id.to_string()), name: Some(name.to_string()) }),
+            stored_name: None,
             rating: Some(rating),
             ai_level: None,
             rating_diff: None,
@@ -4057,6 +4065,25 @@ mod history_summary_tests {
         let summary = history_game_to_summary(game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480)), "myuser").unwrap();
         assert_eq!(summary.opponent_name, Some("Bob".to_string()));
         assert_eq!(summary.opponent_rating, Some(1480));
+    }
+
+    #[test]
+    fn archive_uses_available_opponent_names_without_changing_perspective() {
+        for (opponent, expected) in [
+            (r#"{"name":"  Guest Opponent  "}"#, Some("Guest Opponent")),
+            (r#"{"name":"Stored Opponent","user":{"id":"opp","name":"   "}}"#, Some("Stored Opponent")),
+            (r#"{"name":false,"user":{"id":"opp","name":[]}}"#, Some("opp")),
+            (r#"{"name":"Alias","user":{"id":"opp","name":"Account"}}"#, Some("Account")),
+            (r#"{"name":"Alias","aiLevel":3}"#, Some("Stockfish level 3")),
+            (r#"{"name":null,"user":{"id":" "}}"#, None),
+        ] {
+            let opponent: GamePlayerUser = serde_json::from_str(opponent).unwrap();
+            let archived = game(opponent, human("myuser", "MyUser", 1500));
+            let summary = history_game_to_summary(archived, "myuser").unwrap();
+            assert_eq!(summary.opponent_name.as_deref(), expected);
+            assert_eq!(summary.your_color, Some("black"));
+            assert_eq!(summary.result, "loss");
+        }
     }
 
     #[test]

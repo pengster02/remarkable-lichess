@@ -660,9 +660,12 @@ Rectangle {
         spacing: theme.spacingXs
 
         Row {
+            id: reviewHeading
+            width: parent.width
             spacing: theme.spacingSmall
             visible: gameReviewScreen.game !== null
             Text {
+                id: reviewResult
                 text: gameReviewScreen.game ? chessDisplay.resultLabel(gameReviewScreen.game.result) : ""
                 font.pixelSize: theme.fontLabel
                 font.bold: true
@@ -670,6 +673,7 @@ Rectangle {
             }
             // Your own rating change from this one game (rated games only).
             Text {
+                id: reviewRatingChange
                 visible: gameReviewScreen.game !== null && gameReviewScreen.game.rating_diff !== null && gameReviewScreen.game.rating_diff !== undefined
                 text: gameReviewScreen.game && gameReviewScreen.game.rating_diff > 0
                     ? ("+" + gameReviewScreen.game.rating_diff)
@@ -677,13 +681,34 @@ Rectangle {
                 font.pixelSize: theme.fontLabel
                 color: gameReviewScreen.game && gameReviewScreen.game.rating_diff > 0 ? theme.winText : theme.lossText
             }
-            Text {
-                text: gameReviewScreen.game
-                    ? chessDisplay.opponentLabel(gameReviewScreen.game) +
-                      (gameReviewScreen.game.opponent_rating ? " (" + gameReviewScreen.game.opponent_rating + ")" : "")
-                    : ""
-                font.pixelSize: theme.fontLabel
-                color: theme.text
+            Row {
+                id: reviewOpponent
+                spacing: theme.spacingXs
+                width: Math.max(0, reviewHeading.width - reviewResult.width - reviewHeading.spacing -
+                    (reviewRatingChange.visible ? reviewRatingChange.width + reviewHeading.spacing : 0))
+
+                Text {
+                    objectName: "reviewOpponentName"
+                    // Eliding the combined label hides the rating, while wrapping pushes the board down.
+                    width: Math.min(Math.ceil(implicitWidth), Math.max(0, reviewOpponent.width -
+                        (reviewOpponentRating.visible ? reviewOpponentRating.width + reviewOpponent.spacing : 0)))
+                    text: chessDisplay.opponentLabel(gameReviewScreen.game)
+                    textFormat: Text.PlainText
+                    maximumLineCount: 1
+                    elide: Text.ElideRight
+                    font.pixelSize: theme.fontLabel
+                    color: theme.text
+                }
+
+                Text {
+                    id: reviewOpponentRating
+                    objectName: "reviewOpponentRating"
+                    visible: text.length > 0
+                    text: gameReviewScreen.game && gameReviewScreen.game.opponent_rating
+                        ? "(" + gameReviewScreen.game.opponent_rating + ")" : ""
+                    font.pixelSize: theme.fontLabel
+                    color: theme.text
+                }
             }
         }
 

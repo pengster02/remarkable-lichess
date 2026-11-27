@@ -414,6 +414,8 @@ Rectangle {
                                 width: Math.min(Math.ceil(implicitWidth), Math.max(0, opponentRow.availableWidth -
                                     opponentRow.ratingSpace))
                                 text: chessDisplay.opponentLabel(modelData)
+                                textFormat: Text.PlainText
+                                maximumLineCount: 1
                                 font.pixelSize: theme.fontBody
                                 elide: Text.ElideRight
                                 color: theme.text
