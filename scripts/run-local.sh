@@ -111,6 +111,7 @@ PREVIOUS_ID="$(docker ps -a --no-trunc --format '{{.ID}} {{.Names}}' |
   awk -v name="${NAME}" '$2 == name { print $1 }')"
 PREVIOUS_STOPPED=0
 if [ -n "${PREVIOUS_ID}" ]; then
+  PREVIOUS_RUNNING="$(docker container inspect --format '{{.State.Running}}' "${PREVIOUS_ID}")"
   PREVIOUS_MOUNT="$(docker container inspect --format \
     "{{range .Mounts}}{{if eq .Destination \"${CONFIG_ROOT}\"}}{{.Type}} {{.Name}}{{end}}{{end}}" \
     "${PREVIOUS_ID}")"
@@ -119,7 +120,6 @@ if [ -n "${PREVIOUS_ID}" ]; then
     NEEDS_MIGRATION=1
   fi
   if [ "${NEEDS_MIGRATION}" = 1 ] || { [ "${TOKEN_MODE}" = replace ] && [ -n "$emulator_token" ]; }; then
-    PREVIOUS_RUNNING="$(docker container inspect --format '{{.State.Running}}' "${PREVIOUS_ID}")"
     if [ "${PREVIOUS_RUNNING}" = true ]; then
       docker stop "${PREVIOUS_ID}" >/dev/null
       PREVIOUS_STOPPED=1
@@ -142,12 +142,8 @@ if [ -n "$emulator_token" ] &&
 fi
 unset emulator_token
 
-if [ -n "${PREVIOUS_ID}" ]; then
-  docker rm -f "${PREVIOUS_ID}" >/dev/null
-fi
-
 RUN_ARGS=(
-  -d --name "${NAME}"
+  --name "${NAME}"
   -p "127.0.0.1:${PORT}:6080"
   # Source binds preserve live edits. A whole checkout exposes host credentials.
   # Copying sources into the image would require rebuilding it after an edit.
@@ -168,8 +164,45 @@ RUN_ARGS=(
   -e XOVI_SRC=/workspace/xovi
 )
 
+rollback_launch() {
+  if [ -n "${CONTAINER_ID}" ] && ! docker rm -f "${CONTAINER_ID}" >/dev/null; then
+    echo "Could not remove failed replacement ${CONTAINER_ID}." >&2
+  fi
+  if [ -n "${PREVIOUS_ID}" ]; then
+    if docker rename "${PREVIOUS_ID}" "${NAME}"; then
+      restart_previous
+    else
+      echo "Could not restore the emulator name. The previous container is ${PREVIOUS_ID}." >&2
+    fi
+  fi
+}
+
 echo "Starting emulator on http://localhost:${PORT}/vnc.html"
-CONTAINER_ID="$(docker run "${RUN_ARGS[@]}" "${IMAGE}")"
+# Deleting the old container loses it on a bind failure, and a failed
+# docker run can create a replacement without returning its ID.
+if [ -n "${PREVIOUS_ID}" ] &&
+  ! docker rename "${PREVIOUS_ID}" "${NAME}-previous-${PREVIOUS_ID:0:12}"; then
+  restart_previous
+  exit 1
+fi
+if ! CONTAINER_ID="$(docker create "${RUN_ARGS[@]}" "${IMAGE}")"; then
+  rollback_launch
+  exit 1
+fi
+if [ -n "${PREVIOUS_ID}" ] && [ "${PREVIOUS_RUNNING}" = true ] && [ "${PREVIOUS_STOPPED}" = 0 ]; then
+  if ! docker stop "${PREVIOUS_ID}" >/dev/null; then
+    rollback_launch
+    exit 1
+  fi
+  PREVIOUS_STOPPED=1
+fi
+if ! docker start "${CONTAINER_ID}" >/dev/null; then
+  rollback_launch
+  exit 1
+fi
+if [ -n "${PREVIOUS_ID}" ] && ! docker rm "${PREVIOUS_ID}" >/dev/null; then
+  echo "The previous container is still available as ${PREVIOUS_ID}." >&2
+fi
 DEADLINE=$((SECONDS + READY_TIMEOUT))
 
 echo "Container ${NAME} started. Waiting for the noVNC display..."
