@@ -220,6 +220,16 @@ pub struct EventGame {
     pub variant: Option<Variant>,
     pub opponent: Option<PlayingOpponent>,
     pub compat: Option<GameCompatibility>,
+    pub status: Option<EventGameStatus>,
+    #[serde(rename = "isMyTurn")]
+    pub is_my_turn: Option<bool>,
+    #[serde(rename = "secondsLeft")]
+    pub seconds_left: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct EventGameStatus {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -536,18 +546,21 @@ mod tests {
 
     #[test]
     fn parses_game_start_event() {
-        let json = r#"{"type":"gameStart","game":{"id":"abcd1234","gameId":"abcd1234","source":"lobby","speed":"blitz","rated":false,"color":"white","variant":{"key":"standard","name":"Standard"},"compat":{"board":false,"bot":false}}}"#;
+        let json = r#"{"type":"gameStart","game":{"id":"abcd1234","gameId":"abcd1234","source":"friend","speed":"correspondence","rated":false,"color":"white","variant":{"key":"standard","name":"Standard"},"compat":{"board":true,"bot":false},"status":{"id":20,"name":"started"},"isMyTurn":true,"secondsLeft":7200}}"#;
         let msg: EventStreamMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg, EventStreamMessage::GameStart {
             game: EventGame {
                 id: "abcd1234".into(),
-                source: Some("lobby".into()),
-                speed: Some("blitz".into()),
+                source: Some("friend".into()),
+                speed: Some("correspondence".into()),
                 rated: Some(false),
                 color: Some("white".into()),
                 variant: Some(Variant { key: "standard".into(), name: "Standard".into() }),
                 opponent: None,
-                compat: Some(GameCompatibility { board: Some(false) }),
+                compat: Some(GameCompatibility { board: Some(true) }),
+                status: Some(EventGameStatus { name: "started".into() }),
+                is_my_turn: Some(true),
+                seconds_left: Some(7200),
             },
         });
     }

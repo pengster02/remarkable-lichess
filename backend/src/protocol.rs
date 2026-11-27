@@ -295,9 +295,7 @@ pub struct RatingSummary {
     pub rating: u32,
 }
 
-// A single now-playing game from GET /api/account/playing, as shown on Home --
-// replaces the old singular `resumable_game_id`, which silently dropped every
-// game past the first for anyone with more than one correspondence game going.
+// A now-playing row from the account list or an authenticated gameStart.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OngoingGameSummary {
     pub game_id: String,
@@ -306,6 +304,10 @@ pub struct OngoingGameSummary {
     pub is_my_turn: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correspondence_seconds_left: Option<u32>,
+    // An optional per-game age preserves both clocks' phases. A single age
+    // resets one clock, while subtracting whole seconds loses its next tick.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correspondence_age_ms: Option<u64>,
     // As with invitations, keep the label key and the backend's compatibility
     // decision. A QML allowlist could drift and a required flag would lose unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -669,6 +671,8 @@ pub enum BackendMessage {
         rated: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         color: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        home_game: Option<Box<OngoingGameSummary>>,
     },
     GameFinished { game_id: String },
     AccountEventsResumed,

@@ -45,7 +45,8 @@ mod tests {
             game: EventGame {
                 id: "abcd1234".into(), source: None, speed: None,
                 rated: None, color: None,
-                variant: None, opponent: None, compat: None,
+                variant: None, opponent: None, compat: None, status: None,
+                is_my_turn: None, seconds_left: None,
             },
         });
     }

@@ -196,15 +196,36 @@ struct BoardStreamAccount {
 #[derive(Default)]
 struct HomeGameList {
     snapshot: Option<(Instant, Vec<OngoingGameSummary>)>,
+    // Keep start receipts until a newer read can confirm them. Retaining raw
+    // events adds unused data, and inserting into the snapshot shares its age.
+    starts: Vec<(Instant, OngoingGameSummary)>,
     finished: HashSet<String>,
 }
 
 impl HomeGameList {
-    fn record(&mut self, received_at: Instant, games: Vec<OngoingGameSummary>) -> Vec<OngoingGameSummary> {
+    fn record(&mut self, request_started_at: Instant, received_at: Instant, games: Vec<OngoingGameSummary>) -> Vec<OngoingGameSummary> {
         self.finished.retain(|id| games.iter().any(|game| &game.game_id == id));
+        self.starts.retain(|(start, game)| *start > request_started_at
+            && !games.iter().any(|listed| listed.game_id == game.game_id));
         let games: Vec<_> = games.into_iter().filter(|game| !self.finished.contains(&game.game_id)).collect();
         self.snapshot = Some((received_at, games.clone()));
-        games
+        self.include_starts(games, received_at)
+    }
+
+    fn start(&mut self, received_at: Instant, game: &OngoingGameSummary) -> bool {
+        if self.finished.contains(&game.game_id)
+            || self.snapshot.as_ref().is_some_and(|(_, games)| games.iter().any(|listed| listed.game_id == game.game_id))
+            || self.starts.iter().any(|(_, started)| started.game_id == game.game_id)
+        {
+            return false;
+        }
+        // Match the size cap of the account list. Reconnect can replay starts,
+        // while relying on finish notices alone leaves missed entries resident.
+        if self.starts.len() == 50 {
+            self.starts.remove(0);
+        }
+        self.starts.push((received_at, game.clone()));
+        true
     }
 
     fn finish(&mut self, id: &str) -> bool {
@@ -212,15 +233,30 @@ impl HomeGameList {
         if let Some((_, games)) = self.snapshot.as_mut() {
             games.retain(|game| game.game_id != id);
         }
+        self.starts.retain(|(_, game)| game.game_id != id);
         first
     }
 
     fn replay(&self, now: Instant) -> Option<CachedHomeGames> {
-        self.snapshot.as_ref().map(|(received_at, games)| CachedHomeGames {
-            games: games.clone(),
+        if self.snapshot.is_none() && self.starts.is_empty() {
+            return None;
+        }
+        let (received_at, games) = self.snapshot.clone().unwrap_or_else(|| (now, Vec::new()));
+        Some(CachedHomeGames {
+            games: self.include_starts(games, now),
             // Replaying original times resets clocks. Wall time can jump when Wi-Fi returns.
-            age_ms: now.saturating_duration_since(*received_at).as_millis() as u64,
+            age_ms: now.saturating_duration_since(received_at).as_millis() as u64,
         })
+    }
+
+    fn include_starts(&self, mut games: Vec<OngoingGameSummary>, now: Instant) -> Vec<OngoingGameSummary> {
+        games.extend(self.starts.iter().map(|(received_at, game)| {
+            let mut game = game.clone();
+            game.correspondence_age_ms = game.correspondence_seconds_left
+                .map(|_| now.saturating_duration_since(*received_at).as_millis() as u64);
+            game
+        }));
+        games
     }
 }
 
@@ -2096,6 +2132,10 @@ async fn read_account_events(
                             matches!(game.source.as_deref(), Some("lobby" | "pool")) &&
                             game.speed.as_deref().is_some_and(|speed| speed != "correspondence");
                         let board_supported = game_start_board_support(&game);
+                        let mut list = game_list.lock().expect("home game list lock poisoned");
+                        let home_game = ongoing_game_from_start(&game, board_supported)
+                            .filter(|preview| list.start(Instant::now(), preview))
+                            .map(Box::new);
                         send_locked(replier, write_lock, &BackendMessage::GameStarted {
                             game_id: game.id,
                             from_realtime_lobby,
@@ -2105,6 +2145,7 @@ async fn read_account_events(
                             )),
                             rated: game.rated,
                             color: game.color.filter(|color| matches!(color.as_str(), "white" | "black")),
+                            home_game,
                         });
                     }
                     Some(EventStreamMessage::Challenge)
@@ -2387,13 +2428,14 @@ async fn refresh_home_games(
         send_limited(retry_after_ms);
         return;
     }
+    let request_started_at = Instant::now();
     match client.get_playing().await {
         Ok(games) => {
             let received_at = Instant::now();
             let wifi_connected = wifi_link_state();
             let games = games.into_iter().map(ongoing_game_summary).collect();
             let mut list = game_list.lock().expect("home game list lock poisoned");
-            let ongoing_games = list.record(received_at, games);
+            let ongoing_games = list.record(request_started_at, received_at, games);
             send_locked(&replier, &write_lock, &BackendMessage::HomeState { request_id, wifi_connected, ongoing_games });
         }
         Err(error) if is_rate_limited(&error) => {
@@ -2504,10 +2546,33 @@ fn ongoing_game_summary(game: PlayingGame) -> OngoingGameSummary {
         correspondence_seconds_left: game.seconds_left
             .filter(|_| game.is_my_turn && game.speed.as_deref() == Some("correspondence"))
             .and_then(|seconds| u32::try_from(seconds).ok()),
+        correspondence_age_ms: None,
         variant: game.variant.map(|variant| variant.key),
         board_supported,
         board_unavailable_reason,
     }
+}
+
+fn ongoing_game_from_start(event: &EventGame, board_supported: Option<bool>) -> Option<OngoingGameSummary> {
+    if event.status.as_ref().is_some_and(|status| !matches!(status.name.as_str(), "created" | "started")) {
+        return None;
+    }
+    let mut game = ongoing_game_summary(PlayingGame {
+        game_id: event.id.clone(),
+        is_my_turn: event.is_my_turn?,
+        speed: event.speed.clone(),
+        source: event.source.clone(),
+        variant: event.variant.clone(),
+        seconds_left: event.seconds_left,
+        opponent: event.opponent.clone(),
+    });
+    game.board_supported = board_supported;
+    game.board_unavailable_reason = if board_supported == Some(false) {
+        game.board_unavailable_reason.or_else(|| Some("Lichess does not allow tablet play for this game.".into()))
+    } else {
+        None
+    };
+    Some(game)
 }
 
 #[cfg(test)]
@@ -2528,7 +2593,7 @@ mod game_board_support_tests {
         assert!(!list.finish("finished"));
         let active = game("active");
         let finished = game("finished");
-        let rows = list.record(received_at, vec![finished.clone(), active.clone()]);
+        let rows = list.record(received_at, received_at, vec![finished.clone(), active.clone()]);
         assert_eq!(rows, vec![active.clone()]);
         let later = received_at + Duration::from_millis(1234);
         let replay = list.replay(later).unwrap();
@@ -2537,10 +2602,49 @@ mod game_board_support_tests {
 
         assert!(list.finish("active"));
         assert!(list.replay(later).unwrap().games.is_empty());
-        assert!(list.record(later, vec![finished, active]).is_empty());
-        assert!(list.record(later, vec![]).is_empty());
+        assert!(list.record(later, later, vec![finished, active]).is_empty());
+        assert!(list.record(later, later, vec![]).is_empty());
         assert!(list.finished.is_empty());
         assert_eq!(list.replay(later).unwrap().age_ms, 0);
+    }
+
+    #[test]
+    fn home_preserves_start_clocks_until_a_newer_list_supersedes_them() {
+        let start = |id, turn, compatible| {
+            let event = serde_json::from_value(json!({
+                "id": id, "isMyTurn": turn, "speed": "correspondence", "secondsLeft": 90,
+                "variant": {"key": "standard", "name": "Standard"},
+                "opponent": {"username": "Opponent", "rating": 1575},
+                "compat": {"board": compatible},
+            })).unwrap();
+            ongoing_game_from_start(&event, game_start_board_support(&event))
+        };
+        let mut list = HomeGameList::default();
+        let now = Instant::now();
+        assert!(start("legacy", None::<bool>, true).is_none());
+        let first = start("first", Some(true), true).unwrap();
+        let second = start("second", Some(true), false).unwrap();
+        assert_eq!(first.opponent_rating, Some(1575));
+        assert_eq!(second.board_supported, Some(false));
+        assert!(second.board_unavailable_reason.is_some());
+        assert!(list.start(now, &first));
+        assert!(list.start(now + Duration::from_millis(1000), &second));
+        assert!(!list.start(now + Duration::from_millis(1100), &first));
+
+        let received_at = now + Duration::from_millis(1350);
+        let replay = list.replay(received_at).unwrap();
+        assert_eq!(replay.games[0].correspondence_age_ms, Some(1350));
+        assert_eq!(replay.games[1].correspondence_age_ms, Some(350));
+        assert!(list.finish("first"));
+        assert!(!list.start(received_at, &first));
+        let rows = list.record(now + Duration::from_millis(500), received_at, vec![first]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].game_id, "second");
+        assert_eq!(rows[0].correspondence_age_ms, Some(350));
+        let rows = list.record(received_at, received_at, vec![second.clone()]);
+        assert_eq!(rows, vec![second.clone()]);
+        assert!(!list.start(received_at, &second));
+        assert_eq!(list.replay(received_at).unwrap().games, rows);
     }
 
     #[test]
