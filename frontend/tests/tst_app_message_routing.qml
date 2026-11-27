@@ -4682,6 +4682,48 @@ TestCase {
         compare(screen.item.actionError, "Challenge expired")
     }
 
+    function test_invitationCooldownPausesBothActionsAndSurvivesHomeRemount() {
+        var incoming = {type: "PendingChallenges", challenges: [{id: "invite01", challenger: "Player"}]}
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply(incoming)
+        screen.item.submitChallengeAction("accept", "invite01")
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply({type: "ChallengeActionFailed", challenge_id: "invite01", request_id: request.request_id,
+                        message: "Wait", retry_after_ms: 60000})
+        compare(screen.item.pendingChallengeId, "")
+        compare(screen.item.actionError, "")
+        var deadline = app.challengeActionRetryAt
+
+        app.navigateTo("SeekScreen.qml")
+        verify(findChild(screen.item, "findOpponentButton").enabled)
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply(incoming)
+        compare(app.challengeActionRetryAt, deadline)
+        var notice = findChild(screen.item, "challengeActionCooldownNotice")
+        var accept = findChild(screen.item, "homeAcceptChallenge")
+        var decline = findChild(screen.item, "homeDeclineChallenge")
+        verify(notice.visible)
+        verify(!accept.enabled && !decline.enabled)
+        var count = endpoint.sentMessages.length
+        screen.item.submitChallengeAction("decline", "invite01")
+        app.respondToChallenge("accept", "invite01")
+        compare(endpoint.sentMessages.length, count)
+        app.challengeActionRetryAt = Date.now() + 50
+        tryCompare(accept, "enabled", true)
+        verify(decline.enabled && !notice.visible)
+        compare(endpoint.sentMessages.length, count)
+        screen.item.submitChallengeAction("decline", "invite01")
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1].type, "DeclineChallenge")
+    }
+
+    function test_invitationCooldownRestoresBeforeHomeLoads() {
+        endpoint.reply({type: "ChallengeActionCooldown", retry_after_ms: 59500})
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply({type: "PendingChallenges", challenges: [{id: "invite01", challenger: "Player"}]})
+        verify(findChild(screen.item, "challengeActionCooldownNotice").visible)
+        verify(!findChild(screen.item, "homeAcceptChallenge").enabled)
+    }
+
     function test_pendingAcceptSurvivesHomeRemountWithoutOpeningTheBoard() {
         app.navigateTo("HomeScreen.qml")
         var incoming = {id: "accepted-later", challenger: "Player"}

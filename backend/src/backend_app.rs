@@ -427,9 +427,20 @@ struct ChallengeRequest {
 
 impl ChallengeRequest {
     fn failure(&self, message: String) -> BackendMessage {
+        self.failed_reply(message, None)
+    }
+
+    fn rate_limited(&self, retry_after_ms: u32) -> BackendMessage {
+        let seconds = retry_after_ms.div_ceil(1000);
+        self.failed_reply(
+            format!("Lichess is limiting challenge responses. Try again in {seconds}s."), Some(retry_after_ms),
+        )
+    }
+
+    fn failed_reply(&self, message: String, retry_after_ms: Option<u32>) -> BackendMessage {
         match self.request_id {
             Some(request_id) => BackendMessage::ChallengeActionFailed {
-                challenge_id: self.challenge_id.clone(), request_id, message,
+                challenge_id: self.challenge_id.clone(), request_id, message, retry_after_ms,
             },
             None => BackendMessage::ErrorMsg { message },
         }
@@ -506,6 +517,9 @@ pub struct LichessBackend {
     account_stream_cooldown: RateLimitCooldown,
     game_stream_cooldown: RateLimitCooldown,
     pending_challenge_action: Option<GameRequest>,
+    // Per-invitation deadlines let the next response bypass the wait. Sharing
+    // this deadline with list reads would also prevent Home from refreshing.
+    challenge_action_cooldown: RateLimitCooldown,
     home_games: Option<tokio::task::JoinHandle<()>>,
     home_ratings: Option<tokio::task::JoinHandle<()>>,
     home_games_retry_after: Arc<Mutex<Option<Instant>>>,
@@ -557,6 +571,7 @@ impl LichessBackend {
             account_stream_cooldown: RateLimitCooldown::default(),
             game_stream_cooldown: RateLimitCooldown::default(),
             pending_challenge_action: None,
+            challenge_action_cooldown: RateLimitCooldown::default(),
             home_games: None,
             home_ratings: None,
             home_games_retry_after: Arc::new(Mutex::new(None)),
@@ -1629,11 +1644,16 @@ impl LichessBackend {
             }
         }
         stop_game_request(&mut self.pending_challenge_action).await;
+        if let Some(retry_after_ms) = self.challenge_action_cooldown.remaining_ms() {
+            self.send(replier, &request.rate_limited(retry_after_ms));
+            return;
+        }
         let request_id = request.request_id;
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
         let refresh = self.account_stream.as_ref().map(|account| account.challenge_refresh.clone());
         let support = self.account_stream.as_ref().map(|account| account.challenge_support.clone());
+        let cooldown = self.challenge_action_cooldown.clone();
         let (done, completion) = oneshot::channel();
         let task = tokio::spawn(async move {
             let result = match request.action {
@@ -1642,20 +1662,27 @@ impl LichessBackend {
                 }
                 ChallengeAction::Decline => client.decline_challenge(&request.challenge_id).await,
             };
-            drop(done);
-            match result {
-                Ok(()) => {
-                    let challenge_id = request.challenge_id;
-                    let reply = match request.action {
-                        ChallengeAction::Accept => BackendMessage::ChallengeAccepted { game_id: challenge_id, request_id },
-                        ChallengeAction::Decline => BackendMessage::ChallengeDeclined { challenge_id, request_id },
-                    };
-                    send_locked(&replier, &write_lock, &reply);
-                    if let Some(refresh) = refresh {
-                        let _ = refresh.try_send(());
-                    }
+            let failure = result.err().map(|error| {
+                if is_rate_limited(&error) {
+                    cooldown.start();
+                    request.rate_limited(LICHESS_RATE_LIMIT_DELAY.as_millis() as u32)
+                } else {
+                    request.failure(format!("{error:#}"))
                 }
-                Err(error) => send_locked(&replier, &write_lock, &request.failure(error.to_string())),
+            });
+            drop(done);
+            if let Some(reply) = failure {
+                send_locked(&replier, &write_lock, &reply);
+                return;
+            }
+            let challenge_id = request.challenge_id;
+            let reply = match request.action {
+                ChallengeAction::Accept => BackendMessage::ChallengeAccepted { game_id: challenge_id, request_id },
+                ChallengeAction::Decline => BackendMessage::ChallengeDeclined { challenge_id, request_id },
+            };
+            send_locked(&replier, &write_lock, &reply);
+            if let Some(refresh) = refresh {
+                let _ = refresh.try_send(());
             }
         });
         self.pending_challenge_action = Some(GameRequest { request_id, task, completion: Some(completion) });
@@ -1677,7 +1704,7 @@ async fn accept_playable_challenge(
         Some(support) => support,
         None => {
             let terms = client.get_challenge_terms(id).await
-                .map_err(|error| anyhow::anyhow!("Couldn't verify the challenge details: {error}"))?;
+                .map_err(|error| error.context("Couldn't verify the challenge details"))?;
             challenge_board_support(&terms)
         }
     };
@@ -2770,6 +2797,9 @@ impl AppLoadBackend for LichessBackend {
             self.handle_request_settings(replier);
             if let Some(retry_after_ms) = self.match_creation_cooldown.remaining_ms() {
                 self.send(replier, &BackendMessage::MatchCreationCooldown { retry_after_ms });
+            }
+            if let Some(retry_after_ms) = self.challenge_action_cooldown.remaining_ms() {
+                self.send(replier, &BackendMessage::ChallengeActionCooldown { retry_after_ms });
             }
             if self.account_stream.as_ref().is_some_and(|account| account.credential_rejected.load(Ordering::Relaxed)) {
                 self.reject_authenticated_account(replier).await;
