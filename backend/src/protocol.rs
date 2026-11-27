@@ -676,6 +676,10 @@ pub enum BackendMessage {
         game_id: String,
         position_id: PositionId,
         game_stream_connected: bool,
+        // A connected flag is also copied into cached and predicted positions.
+        // A separate notice could outlive the Board update that confirmed it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from_game_stream: Option<bool>,
         // Keep startup in the board snapshot. A separate event can race a
         // reconnect, and missing legal moves also describe a finished position.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1505,6 +1509,7 @@ mod tests {
             game_id: "g1".into(),
             position_id: PositionId(4_294_967_294),
             game_stream_connected: false,
+            from_game_stream: None,
             awaiting_game_start: None,
             resolved_move_request_id: None,
             pending_game_action: None,
