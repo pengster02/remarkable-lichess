@@ -88,7 +88,10 @@ pub fn replay_uci_moves_with_history(initial_fen: &str, moves: &str) -> Result<(
 }
 
 pub fn replay_uci_game(initial_fen: &str, moves: &str) -> Result<GameReplay> {
-    let mut pos = starting_position(initial_fen)?;
+    replay_uci_game_from_position(starting_position(initial_fen)?, moves)
+}
+
+pub(crate) fn replay_uci_game_from_position(mut pos: Chess, moves: &str) -> Result<GameReplay> {
     let initial_in_check = pos.is_check();
     let mut history = Vec::new();
     let mut position_history =
