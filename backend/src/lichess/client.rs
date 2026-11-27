@@ -368,19 +368,14 @@ impl LichessClient {
             query.push(("until".to_string(), until_ms.to_string()));
         }
         let resp = self
-            .send_logged(
+            .send_direct_authenticated(
                 "get_game_history",
-                self.bearer(
-                    self.http
-                        .get(format!("{}/api/games/user/{}", self.base_url, username))
-                        .header("Accept", "application/x-ndjson")
-                        .query(&query),
-                ),
+                self.no_redirect_http
+                    .get(format!("{}/api/games/user/{}", self.base_url, username))
+                    .header("Accept", "application/x-ndjson")
+                    .query(&query),
             )
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("get_game_history", resp).await);
-        }
         let body = resp.text().await?;
         // Dropping a broken row can hide the lookahead, while treating the
         // response as empty can misreport an entire archive as exhausted.
@@ -435,11 +430,9 @@ impl LichessClient {
     /// (confirmed against lichess-org/api's game-export-gameId.yaml
     /// `AcceptPgnOrJson` header parameter), so this sets an explicit
     /// `Accept: application/json` rather than relying on a query param.
-    /// No bearer token needed per that same spec (`security: []`, a public
-    /// game export) -- sent anyway since every other call in this client
-    /// does and an already-authenticated request costs nothing extra here.
+    /// Lichess offers extended export flags to authenticated requests.
     pub async fn export_game(&self, game_id: &str) -> Result<GameExport> {
-        let resp = self.send_game_export("export_game", self.http
+        let resp = self.send_direct_authenticated("export_game", self.no_redirect_http
             .get(format!("{}/game/export/{}", self.base_url, game_id))
             .header(reqwest::header::ACCEPT, "application/json"))
             .await?;
@@ -450,7 +443,7 @@ impl LichessClient {
         // Raw PGN preserves Lichess annotations byte for byte. Rebuilding it
         // loses metadata, and pgnInJson adds bytes to every review load.
         const MEDIA_TYPE: &str = "application/x-chess-pgn";
-        let response = self.send_game_export("export PGN", self.http
+        let response = self.send_direct_authenticated("export PGN", self.no_redirect_http
             .get(format!("{}/game/export/{}", self.base_url, game_id.as_str()))
             .header(reqwest::header::ACCEPT, MEDIA_TYPE)
             .query(&[("clocks", "true"), ("evals", "true"), ("opening", "true"), ("literate", "true")]))
@@ -461,16 +454,6 @@ impl LichessClient {
         anyhow::ensure!(media_type.is_some_and(|value| value.trim().eq_ignore_ascii_case(MEDIA_TYPE)),
             "Lichess did not return PGN");
         PgnExport::from_response(game_id, response.bytes().await?.to_vec())
-    }
-
-    async fn send_game_export(
-        &self, context: &str, builder: reqwest::RequestBuilder,
-    ) -> Result<reqwest::Response> {
-        let response = self.send_logged(context, self.bearer(builder)).await?;
-        match response.status() {
-            status if status.is_success() => Ok(response),
-            _ => Err(error_from_response(context, response).await),
-        }
     }
 
     pub async fn get_cloud_evaluation(&self, fen: &str) -> Result<Option<CloudEvaluation>> {
@@ -1356,6 +1339,33 @@ mod tests {
                 .await.unwrap_err();
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    #[tokio::test]
+    async fn history_and_exports_do_not_follow_redirects() {
+        let server = MockServer::start().await;
+        for (route, media_type) in [
+            ("/api/games/user/player", "application/x-ndjson"),
+            ("/game/export/abcd1234", "application/json"),
+            ("/game/export/abcd1234", "application/x-chess-pgn"),
+        ] {
+            Mock::given(method("GET")).and(path(route))
+                .and(header("Accept", media_type))
+                .and(header("Authorization", "Bearer test-token"))
+                .respond_with(ResponseTemplate::new(307).insert_header("Location", "/unexpected"))
+                .expect(1).mount(&server).await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let game = PgnGameId::parse("abcd1234".into()).unwrap();
+        for error in [
+            client.get_game_history_page("player", &GameHistoryFilters::default(), None).await.unwrap_err(),
+            client.export_game("abcd1234").await.unwrap_err(),
+            client.export_pgn(game).await.err().expect("a redirected PGN export must fail"),
+        ] {
+            assert_eq!(error.downcast_ref::<HttpResponseError>().unwrap().status,
+                reqwest::StatusCode::TEMPORARY_REDIRECT);
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
     }
 
     #[tokio::test]
