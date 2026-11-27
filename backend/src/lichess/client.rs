@@ -509,128 +509,66 @@ impl LichessClient {
         Ok(response.json().await?)
     }
 
-    pub async fn make_move(&self, game_id: &str, uci: &str) -> Result<()> {
-        let resp = self
-            .send_logged("make_move", self.bearer(self.http.post(format!(
-                "{}/api/board/game/{}/move/{}",
-                self.base_url, game_id, uci
-            ))))
+    async fn post_board_action(&self, context: &str, path: &str) -> Result<()> {
+        // A redirect can replay the action or drop its bearer. Waiting for a
+        // direct 401's body can leave the rejected sign-in usable during the wait.
+        let response = self
+            .send_logged(context, self.bearer(self.no_redirect_http.post(format!("{}{path}", self.base_url))))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("make_move", resp).await);
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(http_response_error(context, status, None));
+        }
+        if !status.is_success() {
+            return Err(error_from_response(context, response).await);
         }
         Ok(())
     }
 
+    pub async fn make_move(&self, game_id: &str, uci: &str) -> Result<()> {
+        self.post_board_action("make_move", &format!("/api/board/game/{game_id}/move/{uci}")).await
+    }
+
     pub async fn resign(&self, game_id: &str) -> Result<()> {
-        let resp = self
-            .send_logged("resign", self.bearer(self.http.post(format!(
-                "{}/api/board/game/{}/resign",
-                self.base_url, game_id
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("resign", resp).await);
-        }
-        Ok(())
+        self.post_board_action("resign", &format!("/api/board/game/{game_id}/resign")).await
     }
 
     /// Same endpoint handles both offering a draw (when none is pending) and
     /// responding to the opponent's (accept=true to take it, false to decline) --
     /// confirmed against lichess-org/api's `api-board-game-gameId-draw-accept.yaml`.
     pub async fn draw(&self, game_id: &str, accept: bool) -> Result<()> {
-        let resp = self
-            .send_logged("draw", self.bearer(self.http.post(format!(
-                "{}/api/board/game/{}/draw/{}",
-                self.base_url, game_id, accept
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("draw", resp).await);
-        }
-        Ok(())
+        self.post_board_action("draw", &format!("/api/board/game/{game_id}/draw/{accept}")).await
     }
 
     /// Offer/accept/decline takeback -- same offer-or-respond split as `draw`.
     pub async fn takeback(&self, game_id: &str, accept: bool) -> Result<()> {
-        let resp = self
-            .send_logged("takeback", self.bearer(self.http.post(format!(
-                "{}/api/board/game/{}/takeback/{}",
-                self.base_url, game_id, accept
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("takeback", resp).await);
-        }
-        Ok(())
+        self.post_board_action("takeback", &format!("/api/board/game/{game_id}/takeback/{accept}")).await
     }
 
     /// Only legal before either side has made a move; Lichess itself rejects a
     /// late abort rather than us trying to replicate that rule client-side.
     pub async fn abort(&self, game_id: &str) -> Result<()> {
-        let resp = self
-            .send_logged("abort", self.bearer(self.http.post(format!("{}/api/board/game/{}/abort", self.base_url, game_id))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("abort", resp).await);
-        }
-        Ok(())
+        self.post_board_action("abort", &format!("/api/board/game/{game_id}/abort")).await
     }
 
     pub async fn berserk(&self, game_id: &str) -> Result<()> {
-        let resp = self
-            .send_logged("berserk", self.bearer(self.http.post(format!(
-                "{}/api/board/game/{}/berserk",
-                self.base_url, game_id
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("berserk", resp).await);
-        }
-        Ok(())
+        self.post_board_action("berserk", &format!("/api/board/game/{game_id}/berserk")).await
     }
 
     pub async fn add_time(&self, game_id: &str, seconds: u32) -> Result<()> {
-        let resp = self
-            .send_logged("add_time", self.bearer(self.http.post(format!(
-                "{}/api/round/{}/add-time/{}",
-                self.base_url, game_id, seconds
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("add_time", resp).await);
-        }
-        Ok(())
+        self.post_board_action("add_time", &format!("/api/round/{game_id}/add-time/{seconds}")).await
     }
 
     /// Only legal after Lichess's own `opponentGone` stream event has fired and
     /// its `claimWinInSeconds` has elapsed -- same "let the server be the
     /// authority" approach as `abort`, rather than running a local countdown.
     pub async fn claim_victory(&self, game_id: &str) -> Result<()> {
-        let resp = self
-            .send_logged("claim_victory", self.bearer(self.http.post(format!(
-                "{}/api/board/game/{}/claim-victory",
-                self.base_url, game_id
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("claim_victory", resp).await);
-        }
-        Ok(())
+        self.post_board_action("claim_victory", &format!("/api/board/game/{game_id}/claim-victory")).await
     }
 
     /// Only legal after Lichess reports that the opponent has left.
     pub async fn claim_draw(&self, game_id: &str) -> Result<()> {
-        let resp = self
-            .send_logged("claim_draw", self.bearer(self.http.post(format!(
-                "{}/api/board/game/{}/claim-draw",
-                self.base_url, game_id
-            ))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("claim_draw", resp).await);
-        }
-        Ok(())
+        self.post_board_action("claim_draw", &format!("/api/board/game/{game_id}/claim-draw")).await
     }
 
     /// GET /api/challenge returns {"in": [...], "out": [...]} -- only "in"
@@ -1604,6 +1542,49 @@ mod tests {
         assert!(error
             .downcast_ref::<reqwest::Error>()
             .is_some_and(reqwest::Error::is_timeout));
+    }
+
+    #[tokio::test]
+    async fn board_post_unauthorized_does_not_wait_for_the_error_body() {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        let (release, hold) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut socket = accept_http_request(server).await;
+            socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 80\r\n\r\n").await.unwrap();
+            hold.await.unwrap();
+        });
+
+        let client = LichessClient::with_base_url("test-token".into(), endpoint);
+        let result = tokio::time::timeout(Duration::from_secs(2), client.make_move("g1", "e2e4")).await;
+        release.send(()).unwrap();
+        task.await.unwrap();
+        assert!(is_unauthorized(&result.expect("401 headers should complete the request").unwrap_err()));
+    }
+
+    #[tokio::test]
+    async fn board_posts_do_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/move/e2e4"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(307).insert_header("Location", "/unexpected"))
+            .expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/board/game/g1/draw/true"))
+            .and(header("Authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(307).insert_header("Location", "/unexpected"))
+            .expect(1).mount(&server).await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for error in [
+            client.make_move("g1", "e2e4").await.unwrap_err(),
+            client.draw("g1", true).await.unwrap_err(),
+        ] {
+            assert_eq!(error.downcast_ref::<HttpResponseError>().unwrap().status,
+                reqwest::StatusCode::TEMPORARY_REDIRECT);
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
