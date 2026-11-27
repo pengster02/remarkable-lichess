@@ -2506,10 +2506,13 @@ async fn fetch_opening_explorer(
         }
     };
     match client.get_opening_explorer(database, &position.root_fen, &position.play).await {
-        Ok(mut data) => {
-            position.normalize_moves(&mut data);
-            BackendMessage::OpeningExplorer { review_id, request_id, database, fen, data }
-        }
+        Ok(data) => match position.normalize_moves(data) {
+            Ok(data) => BackendMessage::OpeningExplorer { review_id, request_id, database, fen, data },
+            Err(error) => {
+                log::warn!("could not use opening explorer statistics: {error}");
+                failed("Lichess returned inconsistent opening statistics. Try again.", None)
+            }
+        },
         Err(error) if is_rate_limited(&error) => {
             *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
             failed(OPENING_RATE_LIMIT_MESSAGE, Some(LICHESS_RATE_LIMIT_DELAY))
