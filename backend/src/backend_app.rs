@@ -10,7 +10,7 @@ use crate::lichess::client::{
 use crate::lichess::oauth;
 use crate::lichess::models::{
     ChallengeResolution, ChallengeResult, ChallengeTerms, EventGame, EventStreamMessage, GameStreamMessage,
-    PlayingGame, PlayingOpponent, Variant,
+    Account, PlayingGame, PlayingOpponent, Variant,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
@@ -76,9 +76,10 @@ impl StreamReconnectDelay {
 struct RateLimitCooldown(Arc<std::sync::Mutex<Option<Instant>>>);
 
 impl RateLimitCooldown {
-    fn start(&self) {
-        *self.0.lock().expect("rate-limit lock poisoned") =
-            Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+    fn start(&self) -> Instant {
+        let deadline = Instant::now() + LICHESS_RATE_LIMIT_DELAY;
+        *self.0.lock().expect("rate-limit lock poisoned") = Some(deadline);
+        deadline
     }
 
     fn pending_deadline(&self) -> Option<Instant> {
@@ -90,6 +91,33 @@ impl RateLimitCooldown {
         self.pending_deadline().map(|deadline| {
             deadline.saturating_duration_since(Instant::now()).as_millis().max(1) as u32
         })
+    }
+}
+
+// Home and sign-in share the same profile route. Independent waits let one
+// repeat the other's 429, and a global gate would also interrupt Board work.
+#[derive(Default)]
+struct AccountProfile {
+    read_lock: Mutex<()>,
+    cooldown: RateLimitCooldown,
+}
+
+enum AccountProfileError {
+    RateLimited(Instant),
+    Read(anyhow::Error),
+}
+
+impl AccountProfile {
+    async fn read(&self, client: &LichessClient) -> Result<Account, AccountProfileError> {
+        let _guard = self.read_lock.lock().await;
+        if let Some(deadline) = self.cooldown.pending_deadline() {
+            return Err(AccountProfileError::RateLimited(deadline));
+        }
+        match client.get_account().await {
+            Ok(account) => Ok(account),
+            Err(error) if is_rate_limited(&error) => Err(AccountProfileError::RateLimited(self.cooldown.start())),
+            Err(error) => Err(AccountProfileError::Read(error)),
+        }
     }
 }
 
@@ -139,6 +167,7 @@ struct AccountStream {
     challenge_list: Arc<std::sync::Mutex<ChallengeList>>,
     challenge_read_denied: Arc<AtomicBool>,
     home_games: Arc<std::sync::Mutex<HomeGameList>>,
+    ratings: Arc<std::sync::Mutex<Vec<RatingSummary>>>,
     // Each sign-in owns its own flag. A shared flag can invalidate a replacement,
     // and a username cannot distinguish successive sign-ins to the same account.
     credential_rejected: Arc<AtomicBool>,
@@ -395,6 +424,7 @@ struct VerifiedSignIn {
     client: LichessClient,
     my_id: String,
     username: String,
+    ratings: Vec<RatingSummary>,
 }
 
 // Keep verified credentials in memory until the screen confirms. Saving first
@@ -417,6 +447,7 @@ enum SignInError {
     Rejected,
     MissingBoardScope,
     RateLimited(Duration),
+    ProfileRateLimited(Instant),
     Qr(String),
 }
 
@@ -436,6 +467,9 @@ impl SignInRequest {
     fn failure(self, error: SignInError) -> BackendMessage {
         let reason = match error {
             SignInError::Qr(reason) => reason,
+            SignInError::ProfileRateLimited(deadline) => return self.failure(SignInError::RateLimited(
+                deadline.saturating_duration_since(Instant::now()),
+            )),
             SignInError::RateLimited(remaining) => {
                 let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
                 let reason = format!("Lichess is limiting sign-in requests. Wait {seconds}s before trying again.");
@@ -584,6 +618,7 @@ pub struct LichessBackend {
     home_games: Option<tokio::task::JoinHandle<()>>,
     home_ratings: Option<tokio::task::JoinHandle<()>>,
     home_games_cooldown: RateLimitCooldown,
+    account_profile: Arc<AccountProfile>,
     history_load: Option<GameRequest>,
     // Keep the export cooldown across screen visits. A QML-only timer misses
     // reentry, while an API-wide gate could interrupt live play.
@@ -637,6 +672,7 @@ impl LichessBackend {
             home_games: None,
             home_ratings: None,
             home_games_cooldown: RateLimitCooldown::default(),
+            account_profile: Arc::new(AccountProfile::default()),
             history_load: None,
             history_retry_after: Arc::new(Mutex::new(None)),
             pgn_export: None,
@@ -720,7 +756,7 @@ impl LichessBackend {
     }
 
     async fn install_sign_in(&mut self, replier: &BackendReplier<Self>, request: SignInRequest, verified: VerifiedSignIn) {
-        let VerifiedSignIn { token, client, my_id, username } = verified;
+        let VerifiedSignIn { token, client, my_id, username, ratings } = verified;
         if let Err(error) = credentials::save(&self.token_path, &token) {
             log::warn!("could not persist verified sign-in: {error}");
             if request.request_id.is_some() {
@@ -738,7 +774,7 @@ impl LichessBackend {
         self.send(replier, &BackendMessage::TokenVerified {
             username, request_id: request.request_id,
         });
-        self.spawn_account_stream(replier.clone());
+        self.spawn_account_stream(replier.clone(), ratings);
     }
 
     fn is_current_sign_in(&self, request: SignInRequest) -> bool {
@@ -746,7 +782,8 @@ impl LichessBackend {
     }
 
     fn sign_in_allowed(&self, replier: &BackendReplier<Self>, request: SignInRequest) -> bool {
-        let deadline = *self.sign_in_retry_after.lock().expect("sign-in retry deadline lock poisoned");
+        let deadline = (*self.sign_in_retry_after.lock().expect("sign-in retry deadline lock poisoned"))
+            .max(self.account_profile.cooldown.pending_deadline());
         let Some(remaining) = deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()))
             .filter(|remaining| !remaining.is_zero()) else {
             return true;
@@ -773,7 +810,7 @@ impl LichessBackend {
         if !self.sign_in_allowed(replier, request) {
             return;
         }
-        self.spawn_sign_in(replier, request, verify_sign_in(token));
+        self.spawn_sign_in(replier, request, verify_sign_in(token, self.account_profile.clone()));
     }
 
     /// The top status bar is on every screen, but every other connectivity
@@ -851,6 +888,7 @@ impl LichessBackend {
 
         let progress_replier = replier.clone();
         let write_lock = Arc::clone(&self.write_lock);
+        let profile = self.account_profile.clone();
         self.spawn_sign_in(replier, request, async move {
             let token = match tokio::time::timeout(oauth::LOGIN_TIMEOUT, pending.complete(LICHESS_BASE_URL)).await {
                 Ok(Ok(token)) => token,
@@ -864,7 +902,7 @@ impl LichessBackend {
             if let Some(request_id) = request_id {
                 send_locked(&progress_replier, &write_lock, &BackendMessage::LoginVerifying { request_id });
             }
-            verify_sign_in(token).await
+            verify_sign_in(token, profile).await
         });
     }
 
@@ -888,7 +926,7 @@ impl LichessBackend {
             Ok(token) if !token.trim().is_empty() => {
                 let request = SignInRequest { method: SignInMethod::Saved, request_id: None };
                 if self.sign_in_allowed(replier, request) {
-                    self.spawn_sign_in(replier, request, verify_sign_in(token.trim().to_owned()));
+                    self.spawn_sign_in(replier, request, verify_sign_in(token.trim().to_owned(), self.account_profile.clone()));
                 }
             }
             Ok(_) => self.send(replier, &BackendMessage::AuthenticationRequired),
@@ -919,20 +957,21 @@ impl LichessBackend {
             game_list, credential_rejected.clone(), request_id,
         )));
         if !games_only {
-            stop_task(&mut self.home_ratings).await;
-            let replier = replier.clone();
-            let write_lock = self.write_lock.clone();
-            self.home_ratings = Some(tokio::spawn(async move {
-                match client.get_account().await {
-                    Ok(account) => {
-                        let ratings = ratings_from_perfs(account.perfs);
-                        send_locked(&replier, &write_lock, &BackendMessage::HomeRatings { request_id, ratings });
-                    }
-                    Err(error) if is_unauthorized(&error) => report_account_rejection(&replier, &credential_rejected),
-                    Err(_) => {}
-                }
-            }));
+            self.start_home_ratings(replier, request_id).await;
         }
+    }
+
+    async fn start_home_ratings(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>) {
+        let (Some(client), Some(account)) = (self.client.clone(), self.account_stream.as_ref()) else {
+            return;
+        };
+        let ratings = account.ratings.clone();
+        let credential_rejected = account.credential_rejected.clone();
+        stop_task(&mut self.home_ratings).await;
+        self.home_ratings = Some(tokio::spawn(refresh_home_ratings(
+            client, replier.clone(), self.write_lock.clone(), self.account_profile.clone(),
+            ratings, credential_rejected, request_id,
+        )));
     }
 
     async fn handle_resume_game(&mut self, replier: &BackendReplier<Self>, game_id: String) {
@@ -1639,7 +1678,7 @@ impl LichessBackend {
         )));
     }
 
-    fn spawn_account_stream(&mut self, replier: BackendReplier<Self>) {
+    fn spawn_account_stream(&mut self, replier: BackendReplier<Self>, ratings: Vec<RatingSummary>) {
         let Some(client) = self.client.clone() else { return };
         let write_lock = self.write_lock.clone();
         // Keep one refresh queued behind the active fetch. Awaiting it inside the
@@ -1692,7 +1731,10 @@ impl LichessBackend {
             );
         });
         self.account_stream = Some(AccountStream {
-            task, challenge_refresh, challenge_list, challenge_read_denied, home_games, credential_rejected,
+            task, challenge_refresh, challenge_list, challenge_read_denied, home_games,
+            // The verified profile can cover a first Home failure. A screen
+            // cache misses reloads, and a process cache can leak across accounts.
+            ratings: Arc::new(std::sync::Mutex::new(ratings)), credential_rejected,
         });
     }
 
@@ -1875,9 +1917,12 @@ mod challenge_board_support_tests {
     }
 }
 
-async fn verify_sign_in(token: String) -> Result<VerifiedSignIn, SignInError> {
+async fn verify_sign_in(token: String, profile: Arc<AccountProfile>) -> Result<VerifiedSignIn, SignInError> {
     let client = LichessClient::new(token.clone());
-    let account = client.get_account().await?;
+    let account = profile.read(&client).await.map_err(|error| match error {
+        AccountProfileError::RateLimited(deadline) => SignInError::ProfileRateLimited(deadline),
+        AccountProfileError::Read(error) => error.into(),
+    })?;
     // Account access needs no scope. A live Board stream needs a game, and
     // attempting matchmaking to check the scope would change account state.
     let grant = client.get_token_grant().await?.ok_or(SignInError::Rejected)?;
@@ -1887,7 +1932,9 @@ async fn verify_sign_in(token: String) -> Result<VerifiedSignIn, SignInError> {
     if !grant.scopes.split(',').any(|scope| scope.trim() == "board:play") {
         return Err(SignInError::MissingBoardScope);
     }
-    Ok(VerifiedSignIn { token, client, my_id: account.id, username: account.username })
+    Ok(VerifiedSignIn {
+        token, client, my_id: account.id, username: account.username, ratings: ratings_from_perfs(account.perfs),
+    })
 }
 
 async fn read_account_events(
@@ -2270,6 +2317,38 @@ async fn refresh_home_games(
             });
         }
     }
+}
+
+async fn refresh_home_ratings(
+    client: LichessClient,
+    replier: BackendReplier<LichessBackend>,
+    write_lock: Arc<std::sync::Mutex<()>>,
+    profile: Arc<AccountProfile>,
+    cache: Arc<std::sync::Mutex<Vec<RatingSummary>>>,
+    credential_rejected: Arc<AtomicBool>,
+    request_id: Option<u32>,
+) {
+    let (ratings, message, retry_after_ms) = match profile.read(&client).await {
+        Ok(account) => {
+            let ratings = ratings_from_perfs(account.perfs);
+            *cache.lock().expect("home ratings lock poisoned") = ratings.clone();
+            (ratings, None, None)
+        }
+        Err(AccountProfileError::RateLimited(deadline)) => {
+            let ms = deadline.saturating_duration_since(Instant::now()).as_millis().max(1) as u32;
+            (cache.lock().expect("home ratings lock poisoned").clone(),
+                Some("Lichess is limiting rating requests. Trying again shortly.".into()), Some(ms))
+        }
+        Err(AccountProfileError::Read(error)) if is_unauthorized(&error) => {
+            report_account_rejection(&replier, &credential_rejected);
+            return;
+        }
+        Err(AccountProfileError::Read(_)) => {
+            (cache.lock().expect("home ratings lock poisoned").clone(),
+                Some("Couldn't refresh ratings.".into()), None)
+        }
+    };
+    send_locked(&replier, &write_lock, &BackendMessage::HomeRatings { request_id, ratings, message, retry_after_ms });
 }
 
 fn game_start_board_support(game: &EventGame) -> Option<bool> {
@@ -3006,6 +3085,9 @@ impl AppLoadBackend for LichessBackend {
             FrontendMessage::SaveToken { token, request_id } => self.start_token_sign_in(replier, token, request_id).await,
             FrontendMessage::RequestHome { request_id, games_only } => {
                 self.start_home_refresh(replier, request_id, games_only).await;
+            }
+            FrontendMessage::RequestHomeRatings { request_id } => {
+                self.start_home_ratings(replier, Some(request_id)).await;
             }
             FrontendMessage::ResumeGame { game_id } => self.handle_resume_game(replier, game_id).await,
             FrontendMessage::LeaveGame { game_id } => {

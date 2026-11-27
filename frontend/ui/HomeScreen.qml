@@ -70,6 +70,7 @@ Rectangle {
     property bool loadedOnce: false
     property int homeRequestId: 0
     property int ratingsRequestId: 0
+    property string ratingsNotice: ""
     property bool gamesLoadPending: false
     property bool gamesRefreshQueued: false
     readonly property bool canRefreshGames: !!homeScreen.backendSender && !!homeScreen.nextRequestId &&
@@ -111,6 +112,14 @@ Rectangle {
         onTriggered: homeScreen.queueGamesRefresh()
     }
     Timer {
+        id: ratingsRetryDelay
+        onTriggered: {
+            if (!homeScreen.nextRequestId || !homeScreen.backendSender) return
+            homeScreen.ratingsRequestId = homeScreen.nextRequestId()
+            homeScreen.backendSender({type: "RequestHomeRatings", request_id: homeScreen.ratingsRequestId})
+        }
+    }
+    Timer {
         interval: Math.max(1, homeScreen.nextCorrespondenceRefreshMs)
         running: homeScreen.visible && homeScreen.liveClockEnabled && homeScreen.nextCorrespondenceRefreshMs > 0
         repeat: true
@@ -146,6 +155,7 @@ Rectangle {
         if (gamesOnly) {
             request.games_only = true
         } else {
+            ratingsRetryDelay.stop()
             homeScreen.loadedOnce = false
             homeScreen.connectivityKnown = false
             homeScreen.loadError = ""
@@ -546,8 +556,19 @@ Rectangle {
             SectionCard {
                 darkMode: homeScreen.darkMode
                 title: "Your ratings"
-                visible: homeScreen.ratings.length > 0
+                visible: homeScreen.ratings.length > 0 || homeScreen.ratingsNotice.length > 0
+                Text {
+                    objectName: "homeRatingsStatus"
+                    width: parent.width
+                    visible: homeScreen.ratingsNotice.length > 0
+                    text: homeScreen.ratingsNotice + (homeScreen.ratings.length > 0
+                        ? "\nShowing the last loaded ratings." : "")
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.textMuted
+                }
                 Flow {
+                    visible: homeScreen.ratings.length > 0
                     width: parent.width
                     spacing: theme.spacingSmall
                     Repeater {
@@ -612,6 +633,12 @@ Rectangle {
         } else if (msg.type === "HomeRatings") {
             if (!homeScreen.acceptsHomeReply(msg)) return
             homeScreen.ratings = msg.ratings || []
+            homeScreen.ratingsNotice = msg.message || ""
+            ratingsRetryDelay.stop()
+            if (msg.retry_after_ms > 0) {
+                ratingsRetryDelay.interval = msg.retry_after_ms
+                ratingsRetryDelay.start()
+            }
         } else if (msg.type === "GameStarted") {
             var alreadyListed = homeScreen.ongoingGames.some(function(game) { return game.game_id === msg.game_id })
             if (!alreadyListed && homeScreen.finishedGameIds.indexOf(msg.game_id) === -1) {

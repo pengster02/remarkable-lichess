@@ -96,6 +96,9 @@ pub enum FrontendMessage {
     // networks where the phone can't reach this tablet (see LoginScreen.qml).
     SaveToken { token: String, request_id: Option<u32> },
     RequestHome { request_id: Option<u32>, #[serde(default)] games_only: bool },
+    // A ratings retry leaves games alone. Retrying all of Home repeats unrelated
+    // reads, and another flag on RequestHome can conflict with games_only.
+    RequestHomeRatings { request_id: u32 },
     // Attaches this specific game's stream if it isn't already being tracked --
     // replaces the old behavior of RequestHome always auto-attaching whichever
     // game happened to be `now_playing.first()`, which only worked because Home
@@ -559,6 +562,10 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
         ratings: Vec<RatingSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
     },
     ConnectivityState {
         online: bool,

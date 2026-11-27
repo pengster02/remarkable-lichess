@@ -1369,6 +1369,50 @@ TestCase {
         compare(home.ratings[0].rating, 1500)
     }
 
+    function test_homeRatingsCooldownReplaysRowsAndRetriesOnlyRatings() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var request = latestHomeRequest()
+        var cached = [{speed: "rapid", rating: 1510}]
+        endpoint.reply({type: "HomeState", request_id: request, wifi_connected: true,
+                        ongoing_games: [{game_id: "ongoing", is_my_turn: true}]})
+        var resume = findChild(home, "homeResumeButton")
+        var refresh = findChild(home, "homeRefreshButton")
+        verify(resume && resume.enabled && refresh.enabled)
+        var before = endpoint.sentMessages.length
+        endpoint.reply({type: "HomeRatings", request_id: request,
+                        ratings: cached, message: "Trying ratings again shortly.", retry_after_ms: 150})
+        compare(home.ratings, cached)
+        verify(app.online && resume.enabled && refresh.enabled)
+        var status = findChild(home, "homeRatingsStatus")
+        verify(status.visible)
+        verify(status.text.indexOf("Showing the last loaded ratings.") !== -1)
+        compare(endpoint.sentMessages.length, before)
+        tryCompare(endpoint.sentMessages, "length", before + 1)
+        var retry = endpoint.sentMessages[before]
+        verify(retry.request_id > request)
+        compare(retry.type, "RequestHomeRatings")
+        compare(home.homeRequestId, request)
+
+        endpoint.reply({type: "HomeRatings", request_id: request, ratings: []})
+        compare(home.ratings, cached)
+        endpoint.reply({type: "HomeRatings", request_id: retry.request_id, ratings: [{speed: "rapid", rating: 1550}]})
+        compare(home.ratings[0].rating, 1550)
+        verify(!status.visible && app.online)
+        compare(findChild(home, "homeResumeButton"), resume)
+    }
+
+    function test_leavingHomeCancelsTheScheduledRatingsRetry() {
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply({type: "HomeRatings", request_id: latestHomeRequest(), ratings: [],
+                        message: "Trying ratings again shortly.", retry_after_ms: 180})
+        verify(findChild(screen.item, "homeRatingsStatus").visible)
+        app.navigateTo("SettingsScreen.qml")
+        var before = endpoint.sentMessages.length
+        wait(300)
+        compare(endpoint.sentMessages.length, before)
+    }
+
     function test_manualHomeGamesRefreshKeepsOtherHomeData() {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
