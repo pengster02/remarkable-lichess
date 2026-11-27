@@ -678,7 +678,7 @@ Rectangle {
             }
             Text {
                 text: gameReviewScreen.game
-                    ? "vs " + (gameReviewScreen.game.opponent_name || "Opponent") +
+                    ? chessDisplay.opponentLabel(gameReviewScreen.game) +
                       (gameReviewScreen.game.opponent_rating ? " (" + gameReviewScreen.game.opponent_rating + ")" : "")
                     : ""
                 font.pixelSize: theme.fontLabel

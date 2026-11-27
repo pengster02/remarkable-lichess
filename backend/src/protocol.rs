@@ -386,9 +386,8 @@ pub struct HistoryGameSummary {
     pub game_id: String,
     pub opponent_name: Option<String>,
     pub opponent_rating: Option<u32>,
-    pub your_color: String,
-    // "win"/"loss"/"draw", or the raw Lichess game status (e.g. "aborted",
-    // "noStart") for the rare case where there's no winner and it wasn't a draw.
+    pub your_color: Option<&'static str>,
+    // Neutral winner colors are sent when user perspective is unavailable.
     pub result: String,
     // How the game actually ended -- "Checkmate"/"Resignation"/"Time forfeit"/
     // etc. (see game::outcome::outcome), distinct from `result`

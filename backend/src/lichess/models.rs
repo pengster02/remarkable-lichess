@@ -1,4 +1,6 @@
 use serde::Deserialize;
+#[cfg(feature = "transport")]
+use shakmaty::Color;
 
 // Confirmed against lichess-org/api's Perf.yaml (games/rating/rd/prog required,
 // prov/rank only appear conditionally). Only the four fields this app actually
@@ -402,6 +404,39 @@ pub struct GamePlayerUser {
 pub struct GamePlayers {
     pub white: GamePlayerUser,
     pub black: GamePlayerUser,
+}
+
+#[cfg(feature = "transport")]
+pub(crate) enum ParticipantPerspective {
+    Known(Color),
+    Unverified,
+    Foreign,
+}
+
+#[cfg(feature = "transport")]
+impl GamePlayers {
+    pub(crate) fn perspective(&self, account_id: &str) -> ParticipantPerspective {
+        fn user_id(player: &GamePlayerUser) -> Option<&str> {
+            player.user.as_ref()?.id.as_deref().filter(|id| !id.is_empty())
+        }
+        let white = user_id(&self.white);
+        let black = user_id(&self.black);
+        // An omitted user is weaker evidence than two different IDs. Assuming
+        // Black invents a side, while omitting every unmatched game loses old rows.
+        match (white == Some(account_id), black == Some(account_id)) {
+            (true, false) => ParticipantPerspective::Known(Color::White),
+            (false, true) => ParticipantPerspective::Known(Color::Black),
+            (false, false) if white.is_some() && black.is_some() => ParticipantPerspective::Foreign,
+            _ => ParticipantPerspective::Unverified,
+        }
+    }
+
+    pub(crate) fn player(&self, color: Color) -> &GamePlayerUser {
+        match color {
+            Color::White => &self.white,
+            Color::Black => &self.black,
+        }
+    }
 }
 
 // Confirmed against lichess-org/api's GameOpening.yaml -- only `name` is shown
