@@ -31,7 +31,7 @@ Rectangle {
         pieceSet: gameReviewScreen.pieceSet
     }
 
-    // SAN per move, e.g. ["e4", "e5", "Nf3", ...].
+    // Replay-derived SAN keeps the move labels and king highlight in sync.
     property var moves: []
     // fens[0] is the starting position; fens[i] is the position after moves[i-1].
     property var fens: []

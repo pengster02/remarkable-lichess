@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct ExportReplay {
+    pub moves: Vec<String>,
     pub fens: Vec<String>,
     pub initial_in_check: bool,
 }
@@ -35,7 +36,7 @@ pub fn fens_for_export(
 /// this doesn't reuse `game::rules`'s `replay_uci_moves_with_history`: that
 /// helper parses UCI (`e2e4`), which this input never is.
 ///
-/// Returns `fens[0]` as the starting position and `fens[i]` as the position
+/// Returns canonical SAN, `fens[0]` as the starting position and `fens[i]` as the position
 /// after SAN move `moves[i-1]`, so `fens.len() == moves.len() + 1` -- lets a
 /// review screen index directly into this array for Prev/Next/jump-to-move,
 /// no re-simulation per step.
@@ -43,7 +44,7 @@ pub fn fens_for_export(
 pub fn replay_export(
     variant: Option<&str>,
     initial_fen: Option<&str>,
-    moves: &[String],
+    moves: &[impl AsRef<str>],
 ) -> Result<ExportReplay> {
     if let Some(variant) = variant {
         anyhow::ensure!(supports_variant(variant), "Review is unavailable for {variant} games");
@@ -58,18 +59,21 @@ pub fn replay_export(
     replay_from_position(initial, moves)
 }
 
-fn replay_from_position(mut pos: Chess, moves: &[String]) -> Result<ExportReplay> {
+fn replay_from_position(mut pos: Chess, moves: &[impl AsRef<str>]) -> Result<ExportReplay> {
     // Capture this while the starting position is parsed. SAN has no preceding
     // move here, and reparsing the first FEN would duplicate validation.
     let initial_in_check = pos.is_check();
     let mut fens = Vec::with_capacity(moves.len() + 1);
+    let mut canonical_moves = Vec::with_capacity(moves.len());
     fens.push(fen_string(&pos));
     for san_str in moves {
-        let m = resolve_san(&pos, san_str)?;
-        pos.play_unchecked(m);
+        let m = resolve_san(&pos, san_str.as_ref())?;
+        // Raw suffixes can disagree with the board, and a second flag can drift
+        // from the move sheet. Derive notation and position from one legal play.
+        canonical_moves.push(SanPlus::from_move_and_play_unchecked(&mut pos, m).to_string());
         fens.push(fen_string(&pos));
     }
-    Ok(ExportReplay { fens, initial_in_check })
+    Ok(ExportReplay { moves: canonical_moves, fens, initial_in_check })
 }
 
 fn resolve_san(pos: &Chess, san: &str) -> Result<Move> {
@@ -222,11 +226,33 @@ mod tests {
     }
 
     #[test]
-    fn checkmate_suffix_in_san_is_accepted() {
-        // Fool's Mate: 1. f3 e5 2. g4 Qh4#
-        let moves = vec!["f3".to_string(), "e5".to_string(), "g4".to_string(), "Qh4#".to_string()];
-        let fens = fens_for_moves(&moves).unwrap();
-        assert_eq!(fens.len(), 5);
+    fn canonical_san_and_fens_follow_the_same_legal_moves() {
+        for (given, expected) in [
+            (&["e4+"][..], &["e4"][..]),
+            (&["e4", "f6", "Qh5#"], &["e4", "f6", "Qh5+"]),
+            (&["f3", "e5", "g4", "Qh4"], &["f3", "e5", "g4", "Qh4#"]),
+            (&["f3", "e5", "g4", "Qh4#"], &["f3", "e5", "g4", "Qh4#"]),
+        ] {
+            let replay = replay_export(Some("standard"), None, given).unwrap();
+            assert_eq!(replay.moves, expected);
+            assert_eq!(replay.fens.len(), replay.moves.len() + 1);
+            assert_eq!(replay.fens, replay_export(Some("standard"), None, expected).unwrap().fens);
+        }
+    }
+
+    #[test]
+    fn canonical_san_preserves_promotion_castling_and_en_passant() {
+        for (initial, given, expected) in [
+            ("8/4P3/8/8/8/8/8/4K2k w - - 0 15", "e8=Q#", "e8=Q"),
+            ("r3k2r/ppp1pppp/8/3pP3/8/8/PPPP1PPP/R3K2R w KQkq d6 0 3", "O-O#", "O-O"),
+            ("r3k2r/ppp1pppp/8/3pP3/8/8/PPPP1PPP/R3K2R w KQkq d6 0 3", "exd6+", "exd6"),
+        ] {
+            let replay = replay_export(Some("fromPosition"), Some(initial), &[given]).unwrap();
+            assert_eq!(replay.moves, [expected]);
+            assert_eq!(replay.fens[0], initial);
+            let explorer = OpeningExplorerPosition::from_replay(initial, &replay.moves, &replay.fens[1]).unwrap();
+            assert_eq!(explorer.play.len(), 1);
+        }
     }
 
     #[test]
@@ -238,7 +264,7 @@ mod tests {
     #[test]
     fn replay_uses_the_exported_black_to_move_position() {
         let initial = "4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17";
-        let moves = vec!["e5".into(), "a4".into()];
+        let moves = ["e5", "a4"];
         let replay = replay_export(Some("fromPosition"), Some(initial), &moves).unwrap();
         assert!(!replay.initial_in_check);
         let fens = replay.fens;
@@ -250,13 +276,13 @@ mod tests {
     #[test]
     fn checked_custom_start_is_reported_before_its_first_reply() {
         let initial = "rnbqkbnr/ppppp1pp/5p2/7Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2";
-        let replay = replay_export(Some("fromPosition"), Some(initial), &["g6".into()]).unwrap();
+        let replay = replay_export(Some("fromPosition"), Some(initial), &["g6"]).unwrap();
         assert!(replay.initial_in_check);
         assert_eq!(replay.fens, [
             initial,
             "rnbqkbnr/ppppp2p/5pp1/7Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3",
         ]);
-        assert!(!replay_export(Some("standard"), None, &[]).unwrap().initial_in_check);
+        assert!(!replay_export(Some("standard"), None, &[] as &[&str]).unwrap().initial_in_check);
     }
 
     #[test]

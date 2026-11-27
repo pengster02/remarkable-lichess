@@ -1342,9 +1342,9 @@ impl LichessBackend {
             let ParticipantPerspective::Known(color) = players.perspective(&player_id) else { return None; };
             players.player(color).rating_diff
         });
-        let moves: Vec<String> = export.moves.split_whitespace().map(str::to_string).collect();
+        let exported_moves: Vec<&str> = export.moves.split_whitespace().collect();
         let replay = match crate::game::replay::replay_export(
-            export.variant.as_deref(), export.initial_fen.as_deref(), &moves,
+            export.variant.as_deref(), export.initial_fen.as_deref(), &exported_moves,
         ) {
             Ok(replay) => replay,
             Err(e) => {
@@ -1354,12 +1354,12 @@ impl LichessBackend {
         };
         // Widen before scaling. A 32-bit product wraps, and saturating would
         // display the wrong duration. The full result is exact in QML.
-        let mut clock_ms: Vec<Option<u64>> = export.clocks.into_iter().take(moves.len())
+        let mut clock_ms: Vec<Option<u64>> = export.clocks.into_iter().take(replay.moves.len())
             .map(|clock| clock.map(|cs| u64::from(cs) * 10)).collect();
         while clock_ms.last() == Some(&None) {
             clock_ms.pop();
         }
-        let analysis: Vec<MoveAnalysis> = export.analysis.into_iter().take(moves.len())
+        let analysis: Vec<MoveAnalysis> = export.analysis.into_iter().take(replay.moves.len())
             .map(|entry| {
                 let (eval_cp, mate_in) = match entry.score {
                     Some(ArchivedScore::Centipawns(cp)) => (Some(cp), None),
@@ -1375,7 +1375,7 @@ impl LichessBackend {
             ready.store(true, Ordering::Release);
         }
         send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
-            game_id: export.id, request_id, moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
+            game_id: export.id, request_id, moves: replay.moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
             clock_ms, analysis, rating_diff,
             variation_storage: request_id.map(|_| true),
         });
