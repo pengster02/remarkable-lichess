@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openbox \
     python3 \
     python3-numpy \
+    python3-websocket \
     qt6-base-dev \
     qt6-base-dev-tools \
     qt6-declarative-dev \
