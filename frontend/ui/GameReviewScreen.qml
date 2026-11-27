@@ -37,8 +37,8 @@ Rectangle {
     property var fens: []
     property bool initialInCheck: false
     // Aligned with `moves` (ply index i describes moves[i]), each possibly
-    // shorter than `moves` or empty entirely (see protocol.rs's GameMoves
-    // comment) -- untimed/never-analyzed games just show nothing extra.
+    // shorter than `moves` or empty entirely. A null clock leaves its move
+    // visible without borrowing the next move's time.
     property var clockMs: []
     property var analysis: []
     // The HistoryGameSummary the user actually tapped (see main.qml's

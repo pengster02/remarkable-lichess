@@ -525,10 +525,24 @@ pub struct GameExport {
     // A missing sequence cannot be replayed. Defaulting it invents a board,
     // while rejecting an explicit empty string loses legitimate no-move games.
     pub moves: String,
-    #[serde(default)]
-    pub clocks: Vec<u32>,
+    #[serde(default, deserialize_with = "deserialize_export_clocks")]
+    pub clocks: Vec<Option<u32>>,
     #[serde(default)]
     pub analysis: Vec<GameMoveAnalysis>,
+}
+
+fn deserialize_export_clocks<'de, D>(deserializer: D) -> Result<Vec<Option<u32>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // An absent clock leaves its ply slot intact. Dropping the slot shifts
+    // later clocks onto the wrong moves, while using zero invents a time forfeit.
+    let serde_json::Value::Array(clocks) = serde_json::Value::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    Ok(clocks.into_iter()
+        .map(|clock| clock.as_u64().and_then(|centis| u32::try_from(centis).ok()))
+        .collect())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -773,7 +787,7 @@ mod tests {
         assert_eq!(export.moves, "e4 e5 Nf3 Nc6");
         // Neither field was in this payload -- must default to empty, not error,
         // for the (common) case of an untimed or never-analyzed game.
-        assert_eq!(export.clocks, Vec::<u32>::new());
+        assert!(export.clocks.is_empty());
         assert_eq!(export.analysis, Vec::new());
     }
 
@@ -787,11 +801,26 @@ mod tests {
             {"mate":3}
         ]}"#;
         let export: GameExport = serde_json::from_str(json).unwrap();
-        assert_eq!(export.clocks, vec![3000, 2990, 2980]);
+        assert_eq!(export.clocks, vec![Some(3000), Some(2990), Some(2980)]);
         assert_eq!(export.analysis.len(), 3);
         assert_eq!(export.analysis[0].eval, Some(25));
         assert_eq!(export.analysis[1].judgment.as_ref().unwrap().name, "Inaccuracy");
         assert_eq!(export.analysis[2].mate, Some(3));
+    }
+
+    #[test]
+    fn game_export_preserves_clock_positions_when_optional_data_is_bad() {
+        let export: GameExport = serde_json::from_str(r#"{
+            "id":"abcd1234","moves":"e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6",
+            "clocks":[4294967295,-1,2980,null,0,1.5,"2970",4294967296]
+        }"#).unwrap();
+        assert_eq!(export.clocks, [Some(u32::MAX), None, Some(2980), None, Some(0), None, None, None]);
+        for clocks in ["null", "{}", "30"] {
+            let body = format!(r#"{{"id":"abcd1234","moves":"e4","clocks":{clocks}}}"#);
+            let export: GameExport = serde_json::from_str(&body).unwrap();
+            assert_eq!(export.moves, "e4");
+            assert!(export.clocks.is_empty());
+        }
     }
 
     #[test]
