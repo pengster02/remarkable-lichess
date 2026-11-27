@@ -101,6 +101,9 @@ Rectangle {
     // Bind replies to the selected board even while it loads. Trusting the next
     // snapshot or waiting to set the ID until the first frame both allow a stale board.
     property string selectedGameId: ""
+    onSelectedGameIdChanged: {
+        if (pgnExport.visible && pgnExport.gameId !== selectedGameId) pgnExport.reset()
+    }
     // Keep resolved IDs across navigation until a newer list omits them. Waiting
     // for the list keeps old rows visible, while removing a row only on its page
     // lets an in-flight list restore it.

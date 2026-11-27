@@ -2076,6 +2076,63 @@ TestCase {
         verify(String(screen.source).endsWith("LoginScreen.qml"))
     }
 
+    function test_finishedBoardExportsUnsupportedVariantAndCancelsOnSelectionChange() {
+        app.openGame("atomic01")
+        var board = screen.item
+        endpoint.reply({type: "FinalPositionUnavailable", game_id: "atomic01", review_supported: false,
+                        outcome: {result: "black", reason: "Variant ending"}})
+        verify(board.gameOver)
+        compare(findChild(board, "gameOverSummary").text, "Black won · Variant ending")
+        verify(!findChild(board, "reviewFinishedGameButton"))
+        var exportButton = findChild(board, "exportFinishedGameButton")
+        verify(exportButton && waitForRendering(exportButton))
+        compare(pgnRequests().length, 0)
+        compare(gameMoveRequests().length, 0)
+        mouseClick(exportButton, exportButton.width / 2, exportButton.height / 2)
+
+        var dialog = findChild(app, "pgnExportDialog")
+        verify(dialog.visible && !dialog.saving)
+        compare(dialog.gameId, "atomic01")
+        compare(pgnRequests().length, 0)
+        var save = findChild(dialog, "savePgnButton")
+        var file = findChild(dialog, "pgnExportPath")
+        verify(save && waitForRendering(save))
+        mouseClick(save, save.width / 2, save.height / 2)
+        var first = pgnRequests().slice(-1)[0]
+        compare(first.game_id, "atomic01")
+        endpoint.reply({type: "PgnExported", request_id: first.request_id, game_id: "wrong001", path: "/wrong"})
+        verify(dialog.saving && !file.visible)
+        endpoint.reply({type: "PgnExportFailed", request_id: first.request_id, game_id: "atomic01",
+                        message: "Could not download the game's PGN from Lichess."})
+        compare(save.text, "Retry")
+        save.clicked()
+        var retry = pgnRequests().slice(-1)[0]
+        verify(retry.request_id > first.request_id)
+        endpoint.reply({type: "PgnExported", request_id: first.request_id, game_id: "atomic01", path: "/late"})
+        verify(dialog.saving && !file.visible)
+        var savedPath = "/home/root/.config/remarkable-lichess/exports/atomic01.pgn"
+        endpoint.reply({type: "PgnExported", request_id: retry.request_id, game_id: "atomic01", path: savedPath})
+        compare(file.text, savedPath)
+        compare(save.text, "Export again")
+
+        save.clicked()
+        var canceled = pgnRequests().slice(-1)[0]
+        app.openGame("standard")
+        verify(!dialog.visible && !dialog.saving)
+        verify(endpoint.sentMessages.some(function(msg) {
+            return msg.type === "CancelPgnExport" && msg.request_id === canceled.request_id
+        }))
+        verify(!exportButton.visible)
+        endpoint.reply({type: "PgnExported", request_id: canceled.request_id, game_id: "atomic01", path: "/late"})
+        compare(file.text, "")
+        var finalBoard = boardState("standard")
+        finalBoard.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(finalBoard)
+        verify(findChild(board, "reviewFinishedGameButton").visible)
+        compare(gameMoveRequests().length, 0)
+        compare(pgnRequests().length, 3)
+    }
+
     function test_historyCooldownSurvivesReturningThroughHome() {
         var request = historyRequests().slice(-1)[0]
         endpoint.reply({type: "GameHistoryFailed", request_id: request.request_id,
