@@ -81,7 +81,10 @@ Rectangle {
             filterRated: filterRated,
             filterSpeed: filterSpeed,
             filterColor: filterColor,
-            games: games,
+            games: games.map(function(game) {
+                return game.game_id === reviewedGameId && game.pgn_fallback === true
+                    ? Object.assign({}, game, {pgn_fallback: false}) : game
+            }),
             loading: loading,
             loadError: loadError,
             olderLoadError: olderLoadError,
@@ -259,6 +262,7 @@ Rectangle {
             color: theme.errorText
             wrapMode: Text.WordWrap
             width: parent.width
+            textFormat: Text.PlainText
         }
         AppButton {
             objectName: "retryGameHistoryButton"
@@ -321,6 +325,7 @@ Rectangle {
                 readonly property var analysis: modelData.your_analysis || null
                 readonly property bool canReview: modelData.review_supported !== false
                 readonly property bool canExport: !!gameHistoryScreen.openPgnExport && !!modelData.game_id
+                readonly property bool showReviewActions: modelData.pgn_fallback === true && canReview && canExport
                 readonly property string variantLabel: chessDisplay.variantLabel(modelData.variant)
                 readonly property real headingTop: y + rowContent.y + gameHeading.y - historyList.contentY
                 readonly property bool headingOnPage: headingTop >= -historyList.positionTolerance &&
@@ -345,7 +350,7 @@ Rectangle {
 
                 MouseArea {
                     anchors.fill: parent
-                    enabled: gameCard.headingOnPage &&
+                    enabled: gameCard.headingOnPage && !gameCard.showReviewActions &&
                         (gameCard.canReview ? !gameHistoryScreen.gameExportCoolingDown : gameCard.canExport)
                     onClicked: {
                         gameHistoryScreen.errorMessage = ""
@@ -464,6 +469,33 @@ Rectangle {
                         wrapMode: Text.WordWrap
                         color: theme.textMuted
                     }
+
+                    // Keep both choices with the failed game. A shared banner
+                    // can outlive its card, and switching the card loses retry.
+                    Flow {
+                        width: parent.width
+                        spacing: theme.spacingXs
+                        visible: gameCard.showReviewActions
+
+                        AppButton {
+                            objectName: "historyRetryReview"
+                            text: "Retry Review"
+                            compact: true
+                            enabled: !gameHistoryScreen.openingReview && !gameHistoryScreen.gameExportCoolingDown
+                            onClicked: {
+                                gameHistoryScreen.errorMessage = ""
+                                gameHistoryScreen.selectGameForReview(gameCard.modelData)
+                            }
+                        }
+
+                        AppButton {
+                            objectName: "historyFallbackExportPgn"
+                            text: "Export PGN"
+                            compact: true
+                            enabled: !gameHistoryScreen.openingReview
+                            onClicked: gameHistoryScreen.openPgnExport(gameCard.modelData.game_id, false)
+                        }
+                    }
                 }
                 }
             }
@@ -574,13 +606,15 @@ Rectangle {
                 else gameHistoryScreen.loadError = msg.message || "Lichess could not load game history."
             }
         } else if (msg.type === "GameMovesFailed") {
-            gameHistoryScreen.errorMessage = msg.message
-            if (msg.review_supported === false) {
+            if (msg.review_supported === false || msg.pgn_fallback === true) {
+                gameHistoryScreen.restoredPosition = captureHistoryPosition(msg.game_id)
+                var updates = msg.review_supported === false ? {review_supported: false} : {pgn_fallback: true}
                 gameHistoryScreen.games = gameHistoryScreen.games.map(function(game) {
                     return game.game_id === msg.game_id
-                        ? Object.assign({}, game, {review_supported: false}) : game
+                        ? Object.assign({}, game, updates) : game
                 })
             }
+            gameHistoryScreen.errorMessage = msg.message
         }
     }
 }

@@ -920,6 +920,10 @@ pub enum BackendMessage {
         retry_after_ms: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         review_supported: Option<bool>,
+        // A verified export can fail once and replay on retry. Marking it
+        // unsupported removes retry, while matching error text is brittle.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pgn_fallback: Option<bool>,
     },
     ReviewVariations { review_id: u32, variations: ReviewVariations },
     ReviewVariationsLoadFailed { review_id: u32, message: String },
@@ -1394,6 +1398,7 @@ mod tests {
             message: "unavailable".into(),
             retry_after_ms: None,
             review_supported: None,
+            pgn_fallback: None,
         }).unwrap();
         assert_eq!(failure, serde_json::json!({
             "type": "GameMovesFailed", "request_id": 7, "message": "unavailable",
@@ -1403,6 +1408,7 @@ mod tests {
             message: "limited".into(),
             retry_after_ms: Some(60000),
             review_supported: None,
+            pgn_fallback: None,
         }).unwrap();
         assert_eq!(limited, serde_json::json!({
             "type": "GameMovesFailed", "request_id": 8, "message": "limited", "retry_after_ms": 60000,
@@ -1412,9 +1418,20 @@ mod tests {
             message: "too large".into(),
             retry_after_ms: None,
             review_supported: Some(false),
+            pgn_fallback: None,
         }).unwrap();
         assert_eq!(unavailable, serde_json::json!({
             "type": "GameMovesFailed", "request_id": 9, "message": "too large", "review_supported": false,
+        }));
+        let fallback = serde_json::to_value(BackendMessage::GameMovesFailed {
+            request_id: 10,
+            message: "Could not replay this game.".into(),
+            retry_after_ms: None,
+            review_supported: None,
+            pgn_fallback: Some(true),
+        }).unwrap();
+        assert_eq!(fallback, serde_json::json!({
+            "type": "GameMovesFailed", "request_id": 10, "message": "Could not replay this game.", "pgn_fallback": true,
         }));
     }
 
