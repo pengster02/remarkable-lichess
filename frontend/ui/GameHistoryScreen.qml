@@ -445,20 +445,10 @@ Rectangle {
                         color: theme.textMuted
                     }
 
-                    // Only present once this specific game has been through
-                    // Lichess's computer analysis (most never are) -- same
-                    // your_analysis field GameReviewScreen's own header shows.
                     Text {
                         objectName: "historyAnalysis"
                         visible: text.length > 0
-                        text: gameCard.analysis
-                            ? "Accuracy " +
-                              (gameCard.analysis.accuracy !== null && gameCard.analysis.accuracy !== undefined
-                                  ? gameCard.analysis.accuracy + "%"
-                                  : "n/a") +
-                              " · " + gameCard.analysis.blunders + " blunders, " +
-                              gameCard.analysis.mistakes + " mistakes"
-                            : ""
+                        text: chessDisplay.playerAnalysisLabel(gameCard.analysis, false)
                         font.pixelSize: theme.fontSmall
                         wrapMode: Text.WordWrap
                         width: rowContent.width

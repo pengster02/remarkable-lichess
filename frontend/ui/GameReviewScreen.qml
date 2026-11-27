@@ -696,23 +696,10 @@ Rectangle {
             color: theme.textMuted
         }
 
-        // Whole-game "report card" from Lichess's own computer analysis --
-        // only present once this specific game has actually been through it
-        // (most never are), same your_analysis field GameHistoryScreen's row
-        // now also reads.
         Text {
-            visible: gameReviewScreen.game !== null &&
-                gameReviewScreen.game.your_analysis !== null &&
-                gameReviewScreen.game.your_analysis !== undefined
-            text: gameReviewScreen.game && gameReviewScreen.game.your_analysis
-                ? "Your accuracy: " +
-                  (gameReviewScreen.game.your_analysis.accuracy !== null && gameReviewScreen.game.your_analysis.accuracy !== undefined
-                      ? gameReviewScreen.game.your_analysis.accuracy + "%"
-                      : "n/a") +
-                  " · " + gameReviewScreen.game.your_analysis.inaccuracies + " inaccuracies, " +
-                  gameReviewScreen.game.your_analysis.mistakes + " mistakes, " +
-                  gameReviewScreen.game.your_analysis.blunders + " blunders"
-                : ""
+            objectName: "reviewPlayerAnalysis"
+            visible: text.length > 0
+            text: chessDisplay.playerAnalysisLabel(gameReviewScreen.game && gameReviewScreen.game.your_analysis, true)
             font.pixelSize: theme.fontSmall
             wrapMode: Text.WordWrap
             width: parent.width

@@ -132,6 +132,21 @@ QtObject {
         return humanizeIdentifier(variant)
     }
 
+    function playerAnalysisLabel(analysis, detailed) {
+        if (!analysis) return ""
+        var accuracy = analysis.accuracy
+        var hasAccuracy = Number.isInteger(accuracy) && accuracy >= 0 && accuracy <= 100
+        var fields = detailed ? ["inaccuracies", "mistakes", "blunders"] : ["blunders", "mistakes"]
+        var counts = fields.filter(function(field) {
+            return Number.isInteger(analysis[field]) && analysis[field] >= 0
+        }).map(function(field) {
+            return analysis[field] + " " + field
+        })
+        if (!hasAccuracy && counts.length === 0) return ""
+        return (detailed ? "Your accuracy: " : "Accuracy ") + (hasAccuracy ? accuracy + "%" : "n/a") +
+            (counts.length ? " · " + counts.join(", ") : "")
+    }
+
     function formatClock(ms) {
         var totalSeconds = Math.max(0, Math.floor(ms / 1000))
         var hours = Math.floor(totalSeconds / 3600)

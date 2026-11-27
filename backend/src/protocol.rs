@@ -355,15 +355,12 @@ pub struct OpponentDeparture {
     pub claim_win_in_seconds: Option<u64>,
 }
 
-// This account's own whole-game accuracy stats from Lichess's computer
-// analysis (see lichess::models::PlayerAnalysisSummary) -- present only once
-// this specific game has actually been analyzed there, which most games
-// never are unless the player opened them for review.
+// Available whole-game measurements for the signed-in player.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct GameAnalysisSummary {
-    pub inaccuracies: u32,
-    pub mistakes: u32,
-    pub blunders: u32,
+    pub inaccuracies: Option<u32>,
+    pub mistakes: Option<u32>,
+    pub blunders: Option<u32>,
     pub acpl: Option<u32>,
     pub accuracy: Option<u32>,
 }
