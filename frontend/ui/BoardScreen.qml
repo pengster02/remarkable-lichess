@@ -1380,7 +1380,7 @@ Rectangle {
         Text {
             objectName: "finishedReviewError"
             width: parent.width
-            visible: boardScreen.finishedReviewSupported && text.length > 0
+            visible: text.length > 0
             text: boardScreen.reviewOpenError
             color: theme.errorText
             font.pixelSize: theme.fontSmall
@@ -2313,6 +2313,7 @@ Rectangle {
                 : null
         } else if (msg.type === "GameMovesFailed") {
             boardScreen.reviewOpenError = msg.message || "Could not open this game for review."
+            if (msg.review_supported === false) boardScreen.finishedReviewSupported = false
         } else if (msg.type === "ErrorMsg") {
             boardScreen.boardNotice = {text: msg.message, positionBound: false}
         }

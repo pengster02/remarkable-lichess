@@ -48,6 +48,10 @@ const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. T
 const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.";
 const OPENING_RATE_LIMIT_MESSAGE: &str = "Lichess limited opening statistics requests.";
 const GAME_EXPORT_RATE_LIMIT_MESSAGE: &str = "Lichess limited game export requests.";
+// AppLoad sends JSON as one Unix socket record after the size header. Its
+// 10 MiB protocol limit exceeds the measured Linux socket capacity (208 KiB).
+// Reject before sending the header, since a failed body cannot be retried in place.
+const MAX_REVIEW_REPLY_BYTES: usize = 192 * 1024;
 const MOVE_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting moves. Wait before trying again.";
 const GAME_ACTION_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting game actions. Wait before trying again.";
 const BOARD_BLITZ_MIN_ESTIMATE_SECONDS: u64 = 180;
@@ -1282,6 +1286,7 @@ impl LichessBackend {
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameMovesFailed {
                     request_id, message: "Not signed in to Lichess".into(), retry_after_ms: None,
+                    review_supported: None,
                 },
                 None => BackendMessage::TokenInvalid { reason: "no token saved".into() },
             };
@@ -1314,10 +1319,12 @@ impl LichessBackend {
         retry_after: Arc<Mutex<Option<Instant>>>,
     ) {
         let GameReviewRequest { game_id, request_id, player_id, credential_rejected, archive_fens } = request;
-        let fail = |message, delay: Option<Duration>| {
+        let fail = |message: String, delay: Option<Duration>, review_supported| {
+            // The parser can include a whole invalid SAN token in its error.
+            let message = if message.len() <= 512 { message } else { "Could not replay this game.".into() };
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameMovesFailed {
-                    request_id, message, retry_after_ms: delay.map(export_wait_ms),
+                    request_id, message, retry_after_ms: delay.map(export_wait_ms), review_supported,
                 },
                 None => BackendMessage::ErrorMsg { message },
             };
@@ -1326,7 +1333,7 @@ impl LichessBackend {
         let export = match request_game_export(&retry_after, client.export_game(&game_id)).await {
             Ok(export) => export,
             Err(GameExportFailure::RateLimited(remaining)) => {
-                fail(GAME_EXPORT_RATE_LIMIT_MESSAGE.into(), Some(remaining));
+                fail(GAME_EXPORT_RATE_LIMIT_MESSAGE.into(), Some(remaining), None);
                 return;
             }
             Err(GameExportFailure::Request(error)) if is_unauthorized(&error) => {
@@ -1334,7 +1341,7 @@ impl LichessBackend {
                 return;
             }
             Err(GameExportFailure::Request(error)) => {
-                fail(error.to_string(), None);
+                fail(error.to_string(), None, None);
                 return;
             }
         };
@@ -1348,7 +1355,7 @@ impl LichessBackend {
         ) {
             Ok(replay) => replay,
             Err(e) => {
-                fail(format!("Could not replay this game: {e}"), None);
+                fail(format!("Could not replay this game: {e}"), None, None);
                 return;
             }
         };
@@ -1371,14 +1378,19 @@ impl LichessBackend {
                 MoveAnalysis { eval_cp, mate_in, judgment, judgment_comment }
             })
             .collect();
-        if let Some(archive_fens) = archive_fens {
-            archive_fens.get_or_init(|| replay.fens.clone());
-        }
-        send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
+        let mut reply = BackendMessage::GameMoves {
             game_id: export.id, request_id, moves: replay.moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
             clock_ms, analysis, rating_diff,
             variation_storage: request_id.map(|_| true),
-        });
+        };
+        let Some(json) = encode_review_reply(&mut reply) else {
+            fail("This game is too large for Review. Export its PGN instead.".into(), None, Some(false));
+            return;
+        };
+        if let (Some(archive_fens), BackendMessage::GameMoves { fens, .. }) = (archive_fens, reply) {
+            archive_fens.get_or_init(|| fens);
+        }
+        send_json_locked(&replier, &write_lock, &json);
     }
 
     fn handle_load_variations(&mut self, replier: &BackendReplier<Self>, review_id: u32) {
@@ -2344,8 +2356,47 @@ fn report_account_rejection(replier: &BackendReplier<LichessBackend>, rejected: 
 /// call is unsafe once more than one task can be sending at once.
 fn send_locked(replier: &BackendReplier<LichessBackend>, lock: &Arc<std::sync::Mutex<()>>, msg: &BackendMessage) {
     let json = serde_json::to_string(msg).expect("BackendMessage always serializes");
+    send_json_locked(replier, lock, &json);
+}
+
+fn send_json_locked(replier: &BackendReplier<LichessBackend>, lock: &Arc<std::sync::Mutex<()>>, json: &str) {
     let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
+    let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, json);
+}
+
+fn encode_review_reply(reply: &mut BackendMessage) -> Option<String> {
+    let encode = |reply: &BackendMessage| {
+        let json = serde_json::to_string(reply).expect("BackendMessage always serializes");
+        (json.len() <= MAX_REVIEW_REPLY_BYTES).then_some(json)
+    };
+    if let Some(json) = encode(reply) {
+        return Some(json);
+    }
+    // Dropping optional data keeps every ply. Truncating the replay hides the
+    // ending, while splitting it requires a different frontend protocol.
+    let BackendMessage::GameMoves { analysis, .. } = reply else { return None; };
+    let mut removed_captions = false;
+    for entry in analysis {
+        removed_captions |= entry.judgment_comment.take().is_some();
+    }
+    if removed_captions {
+        if let Some(json) = encode(reply) {
+            return Some(json);
+        }
+    }
+    let BackendMessage::GameMoves { analysis, .. } = reply else { return None; };
+    if !analysis.is_empty() {
+        analysis.clear();
+        if let Some(json) = encode(reply) {
+            return Some(json);
+        }
+    }
+    let BackendMessage::GameMoves { clock_ms, .. } = reply else { return None; };
+    if clock_ms.is_empty() {
+        return None;
+    }
+    clock_ms.clear();
+    encode(reply)
 }
 
 fn challenge_list_reply(
@@ -4004,6 +4055,27 @@ mod pending_seek_tests {
         cancel_game_request(&mut pending, 7).await;
         assert!(pending.is_none());
         assert_eq!(Arc::strong_count(&owner), 1);
+    }
+}
+
+#[cfg(test)]
+mod review_packet_tests {
+    use super::{encode_review_reply, BackendMessage, MAX_REVIEW_REPLY_BYTES};
+
+    #[test]
+    fn review_packet_checks_the_encoded_byte_boundary() {
+        let mut reply = BackendMessage::GameMoves {
+            game_id: "scope001".into(), request_id: Some(1), moves: vec![], fens: vec![String::new()],
+            initial_in_check: false, clock_ms: vec![], analysis: vec![], rating_diff: None,
+            variation_storage: Some(true),
+        };
+        let overhead = serde_json::to_string(&reply).unwrap().len();
+        let BackendMessage::GameMoves { fens, .. } = &mut reply else { unreachable!() };
+        fens[0] = "a".repeat(MAX_REVIEW_REPLY_BYTES - overhead);
+        assert_eq!(encode_review_reply(&mut reply).unwrap().len(), MAX_REVIEW_REPLY_BYTES);
+        let BackendMessage::GameMoves { fens, .. } = &mut reply else { unreachable!() };
+        fens[0].push('é');
+        assert!(encode_review_reply(&mut reply).is_none());
     }
 }
 
