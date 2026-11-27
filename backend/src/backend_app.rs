@@ -183,11 +183,12 @@ struct AccountStream {
     credential_rejected: Arc<AtomicBool>,
 }
 
-// Bind a Board worker to the sign-in that opened it. Looking up the current
-// account at finish can mutate a replacement, and a Board-local cache misses Home.
+// Capture the sign-in's shared state. Looking up the current account can mutate
+// a replacement, and Board-local state cannot update Home or sign out.
 struct BoardStreamAccount {
     player_id: String,
     home_games: Arc<std::sync::Mutex<HomeGameList>>,
+    credential_rejected: Arc<AtomicBool>,
 }
 
 // The account owns the last read. A screen-local cache misses reloads, and
@@ -1020,7 +1021,11 @@ impl LichessBackend {
         let (Some(client), Some(player_id), Some(account)) =
             (self.client.clone(), self.my_id.clone(), self.account_stream.as_ref())
         else { return };
-        let account = BoardStreamAccount { player_id, home_games: account.home_games.clone() };
+        let account = BoardStreamAccount {
+            player_id,
+            home_games: account.home_games.clone(),
+            credential_rejected: account.credential_rejected.clone(),
+        };
         {
             let current = self.session.lock().await;
             if let Some(session) = current.as_ref().filter(|session| session.game_id == game_id) {
@@ -2816,6 +2821,10 @@ fn spawn_game_stream(
             }
             let mut received_for = Duration::ZERO;
             let response = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await;
+            if response.as_ref().err().is_some_and(is_unauthorized) {
+                report_account_rejection(&replier, &account.credential_rejected);
+                return;
+            }
             if response.as_ref().err().is_some_and(is_rate_limited) {
                 cooldowns.stream.start();
                 continue;

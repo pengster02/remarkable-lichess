@@ -23,6 +23,13 @@ pub struct LichessClient {
 const ONE_SHOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const HISTORY_PAGE_SIZE: usize = 20;
 
+// Direct stream reads can act on a 401 header. Always reading the body delays
+// sign-out, while skipping every error body loses Board and match diagnostics.
+enum StreamErrorBody {
+    Read,
+    SkipUnauthorized,
+}
+
 #[derive(Debug)]
 struct HttpResponseError {
     status: reqwest::StatusCode,
@@ -49,7 +56,7 @@ pub(crate) fn is_auth_rejection(error: &anyhow::Error) -> bool {
     })
 }
 
-#[cfg(feature = "transport")]
+#[cfg(any(feature = "transport", test))]
 pub(crate) fn is_unauthorized(error: &anyhow::Error) -> bool {
     error.downcast_ref::<HttpResponseError>()
         .is_some_and(|error| error.status == reqwest::StatusCode::UNAUTHORIZED)
@@ -68,9 +75,7 @@ pub(crate) fn board_stream_rejection(error: &anyhow::Error) -> Option<&str> {
     let error = error.downcast_ref::<HttpResponseError>()?;
     let fallback = match error.status {
         reqwest::StatusCode::BAD_REQUEST => "This game is unavailable in the Board API.",
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            "Lichess denied access to this board."
-        }
+        reqwest::StatusCode::FORBIDDEN => "Lichess denied access to this board.",
         reqwest::StatusCode::NOT_FOUND => "Lichess couldn't find this game.",
         _ => return None,
     };
@@ -209,6 +214,7 @@ impl LichessClient {
         &self,
         context: &str,
         builder: reqwest::RequestBuilder,
+        error_body: StreamErrorBody,
     ) -> Result<reqwest::Response> {
         // Bound stream setup only. A connect timeout leaves headers unbounded,
         // while a request-wide timeout also cuts off a healthy streaming body.
@@ -223,6 +229,9 @@ impl LichessClient {
         let status = response.status();
         if status.is_success() {
             return Ok(response);
+        }
+        if matches!(error_body, StreamErrorBody::SkipUnauthorized) && status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(http_response_error(context, status, None));
         }
 
         let error = tokio::time::timeout_at(deadline, error_from_response(context, response))
@@ -698,7 +707,7 @@ impl LichessClient {
         }
         let resp = self
             .send_stream_logged("create_seek", self.bearer(self.http.post(format!("{}/api/board/seek", self.base_url)))
-                .form(&form))
+                .form(&form), StreamErrorBody::Read)
             .await?;
         Ok(response_to_lines(resp))
     }
@@ -740,7 +749,7 @@ impl LichessClient {
                     ("clock.increment", increment.to_string()),
                     ("keepAliveStream", "true".to_string()),
                     ("color", color.to_string()),
-                ]))
+                ]), StreamErrorBody::Read)
             .await?;
         let mut lines = response_to_lines(resp);
         let first_line = tokio::time::timeout(self.request_timeout, async {
@@ -809,7 +818,11 @@ impl LichessClient {
     ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
         // A redirected request could drop its bearer and make a valid account look unauthorized.
         let resp = self
-            .send_stream_logged(&format!("stream {url_path}"), self.bearer(self.no_redirect_http.get(format!("{}{}", self.base_url, url_path))))
+            .send_stream_logged(
+                &format!("stream {url_path}"),
+                self.bearer(self.no_redirect_http.get(format!("{}{}", self.base_url, url_path))),
+                StreamErrorBody::SkipUnauthorized,
+            )
             .await?;
         Ok(response_to_lines(resp))
     }
@@ -921,7 +934,7 @@ mod tests {
         result
     }
 
-    async fn stalled_stream_error(response: &'static [u8]) -> anyhow::Error {
+    async fn stalled_stream_error(response: &'static [u8], request_timeout: Duration) -> anyhow::Error {
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", server.local_addr().unwrap());
         let (sent, observed) = oneshot::channel();
@@ -933,17 +946,17 @@ mod tests {
             let _ = hold.await;
         });
         let mut client = LichessClient::with_base_url("test-token".into(), endpoint);
-        client.request_timeout = Duration::from_millis(200);
+        client.request_timeout = request_timeout;
         let result = tokio::time::timeout(Duration::from_secs(2), client.stream_lines("/test")).await;
         release.send(()).unwrap();
         task.await.unwrap();
         observed.await.expect("HTTP peer must have accepted the request");
-        result.expect("stream setup should finish by its own deadline").err().unwrap()
+        result.expect("stream setup should finish before the observation deadline").err().unwrap()
     }
 
     #[tokio::test]
     async fn stalled_stream_headers_return_a_timeout() {
-        let error = stalled_stream_error(b"").await;
+        let error = stalled_stream_error(b"", Duration::from_millis(200)).await;
         assert!(error.to_string().contains("timed out waiting for Lichess"), "{error}");
     }
 
@@ -951,9 +964,19 @@ mod tests {
     async fn stalled_stream_error_body_keeps_the_http_status() {
         let error = stalled_stream_error(
             b"HTTP/1.1 403 Forbidden\r\nContent-Length: 80\r\n\r\n{\"error\":\"partial",
+            Duration::from_millis(200),
         ).await;
         assert!(is_auth_rejection(&error));
         assert_eq!(board_stream_rejection(&error), Some("Lichess denied access to this board."));
+    }
+
+    #[tokio::test]
+    async fn stream_unauthorized_does_not_wait_for_the_error_body() {
+        let error = stalled_stream_error(
+            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 80\r\n\r\n",
+            Duration::from_secs(20),
+        ).await;
+        assert!(is_unauthorized(&error));
     }
 
     #[tokio::test]
@@ -996,7 +1019,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn board_stream_retries_temporary_http_failures_only() {
+    async fn board_stream_distinguishes_game_rejection_from_other_http_failures() {
         let server = MockServer::start().await;
         for status in [400, 401, 403, 404, 429, 503] {
             Mock::given(method("GET"))
@@ -1007,10 +1030,11 @@ mod tests {
         }
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         for (status, rejected) in [
-            (400, true), (401, true), (403, true), (404, true), (429, false), (503, false),
+            (400, true), (401, false), (403, true), (404, true), (429, false), (503, false),
         ] {
             let failure = client.stream_lines(&format!("/api/board/game/stream/{status}")).await.err().unwrap();
             assert_eq!(board_stream_rejection(&failure).is_some(), rejected, "HTTP {status}");
+            assert_eq!(is_unauthorized(&failure), status == 401, "HTTP {status}");
         }
     }
 
@@ -1160,6 +1184,7 @@ mod tests {
             client.get_account().await.err(),
             client.get_playing().await.err(),
             client.stream_lines("/api/stream/event").await.err(),
+            client.stream_lines("/api/board/game/stream/game1234").await.err(),
         ];
         for error in errors {
             let error = error.expect("account read must refuse the redirect");
