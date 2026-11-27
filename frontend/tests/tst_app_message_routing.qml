@@ -4895,6 +4895,31 @@ TestCase {
         compare(app.username, "player")
     }
 
+    function test_savedTokenErrorSurvivesQrPreparation() {
+        var reason = "Create a Lichess token with Board play (board:play) permission."
+        endpoint.reply({type: "TokenInvalid", reason: reason})
+        var login = screen.item
+        var qr = login.signInRequestId
+        verify(qr > 0)
+        endpoint.reply({type: "LoginChallenge", request_id: qr, qr_size: 1, qr_rows: ["1"]})
+        verify(login.showingQr)
+        var notice = findChild(login, "savedSignInErrorText")
+        verify(notice.visible)
+        compare(notice.text, reason)
+
+        login.showManualEntry()
+        verify(notice.visible)
+        findChild(login, "tokenField").text = "synthetic-fixture-token"
+        login.saveToken()
+        verify(!notice.visible)
+        var request = login.signInRequestId
+        endpoint.reply({type: "LoginFailed", request_id: request, reason: reason})
+        var tokenError = findChild(login, "tokenErrorText")
+        verify(tokenError.visible)
+        compare(tokenError.text, reason)
+        verify(!app.hasToken)
+    }
+
     function test_tokenOnlyAuthStaysInTokenModeAfterSignOut() {
         function qrRequests() {
             return Array.prototype.filter.call(endpoint.sentMessages, function(message) {

@@ -53,12 +53,43 @@ case "${HTTP_CODE}" in
 esac
 if ! USERNAME="$(python3 -c '
 import json, sys
-username = json.load(sys.stdin).get("username")
-if not isinstance(username, str) or not username.strip():
+account = json.load(sys.stdin)
+if not all(isinstance(account.get(key), str) and account[key].strip() for key in ("id", "username")):
     sys.exit(1)
-print(username)
+print(account["username"])
 ' < "$ACCOUNT_RESPONSE" 2>/dev/null)"; then
   echo "Lichess returned an invalid account profile. Try again." >&2
+  exit 1
+fi
+
+# Send the token on stdin and disable curl configuration for this POST so
+# redirects cannot forward the body and local trace settings cannot print it.
+unset scope_response
+if ! scope_response="$(printf '%s' "${TOKEN}" | \
+  curl -q -fsS --connect-timeout 5 --max-time 15 -A remarkable-lichess \
+    -H 'Content-Type: text/plain' --data-binary @- https://lichess.org/api/token/test)"; then
+  echo "Could not verify Lichess token permissions. Check your connection and try again." >&2
+  exit 1
+fi
+if printf '%s\n%s\n' "${TOKEN}" "${scope_response}" | python3 -c '
+import json, sys
+token = sys.stdin.readline().rstrip("\n")
+grant = json.load(sys.stdin)[token]
+if grant is None:
+    sys.exit(2)
+with open(sys.argv[1]) as profile:
+    if grant["userId"] != json.load(profile)["id"]:
+        sys.exit(1)
+if "board:play" not in [scope.strip() for scope in grant["scopes"].split(",")]:
+    sys.exit(3)
+' "$ACCOUNT_RESPONSE" 2>/dev/null; then
+  unset scope_response
+else
+  case "$?" in
+    2) echo "Lichess rejected this token." >&2 ;;
+    3) echo "Create a Lichess token with Board play (board:play) permission." >&2 ;;
+    *) echo "Lichess returned invalid token permissions. Try again." >&2 ;;
+  esac
   exit 1
 fi
 echo "Token OK — signed in as ${USERNAME}"

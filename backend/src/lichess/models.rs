@@ -31,6 +31,14 @@ pub struct Account {
     pub perfs: Option<Perfs>,
 }
 
+#[cfg(any(feature = "transport", test))]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TokenGrant {
+    pub user_id: String,
+    pub scopes: String,
+}
+
 // Inline schema confirmed against lichess-org/api's api-account-playing.yaml
 // (no standalone NowPlayingGame schema file exists) -- `opponent` is still
 // added defensively as fully Option, same posture as Player's fields above,

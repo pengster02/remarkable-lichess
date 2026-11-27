@@ -3,6 +3,8 @@ use crate::lichess::models::{
     GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame,
     PlayingResponse, UserStatus,
 };
+#[cfg(any(feature = "transport", test))]
+use crate::lichess::models::TokenGrant;
 use crate::lichess::stream::parse_ndjson_line;
 use crate::pgn_export::{PgnExport, PgnGameId};
 use crate::protocol::{HistoryCursor, OpeningDatabase, OpeningExplorerData};
@@ -12,7 +14,7 @@ use futures_util::StreamExt;
 #[derive(Clone)]
 pub struct LichessClient {
     http: reqwest::Client,
-    explorer_http: reqwest::Client,
+    no_redirect_http: reqwest::Client,
     base_url: String,
     token: String,
     request_timeout: std::time::Duration,
@@ -151,18 +153,19 @@ impl LichessClient {
         // the full request would kill those by design, not just dead connects.
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
+            .user_agent("remarkable-lichess")
             .build()
             .expect("reqwest client with a timeout always builds");
         Self {
             http,
-            // Rated requests carry the token only to the published origin.
-            // Shared redirects allow another URL, and anonymous rated reads fail.
-            explorer_http: reqwest::Client::builder()
+            // Token metadata carries the credential in the body. Header stripping
+            // cannot protect that body, and rated explorer reads need authentication.
+            no_redirect_http: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
                 .user_agent("remarkable-lichess")
                 .build()
-                .expect("opening explorer HTTP client always builds"),
+                .expect("nonredirecting HTTP client always builds"),
             base_url,
             token,
             request_timeout: ONE_SHOT_REQUEST_TIMEOUT,
@@ -234,6 +237,23 @@ impl LichessClient {
             return Err(error_from_response("get_account", resp).await);
         }
         Ok(resp.json::<Account>().await?)
+    }
+
+    #[cfg(any(feature = "transport", test))]
+    pub(crate) async fn get_token_grant(&self) -> Result<Option<TokenGrant>> {
+        let resp = self.send_logged(
+            "get_token_grant",
+            self.no_redirect_http.post(format!("{}/api/token/test", self.base_url))
+                .header(reqwest::header::CONTENT_TYPE, "text/plain")
+                .body(self.token.clone()),
+        ).await?;
+        if !resp.status().is_success() {
+            // The endpoint can echo the token in its response.
+            return Err(http_response_error("get_token_grant", resp.status(), None));
+        }
+        let mut grants = resp.json::<std::collections::HashMap<String, Option<TokenGrant>>>().await
+            .map_err(|_| anyhow!("Lichess returned invalid token metadata"))?;
+        grants.remove(&self.token).ok_or_else(|| anyhow!("Lichess returned no metadata for this token"))
     }
 
     pub async fn get_playing(&self) -> Result<Vec<PlayingGame>> {
@@ -445,7 +465,7 @@ impl LichessClient {
             OpeningDatabase::Masters => "masters",
             OpeningDatabase::Lichess => "lichess",
         };
-        let mut request = self.explorer_http.get(format!("{base_url}/{route}"))
+        let mut request = self.no_redirect_http.get(format!("{base_url}/{route}"))
             .query(&[("fen", root_fen), ("moves", "12"), ("topGames", "0")]);
         if !play.is_empty() {
             request = request.query(&[("play", play.join(","))]);
@@ -1047,6 +1067,47 @@ mod tests {
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let account = client.get_account().await.unwrap();
         assert_eq!(account.username, "testuser");
+    }
+
+    #[tokio::test]
+    async fn token_metadata_reads_only_the_submitted_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/token/test"))
+            .and(header("Content-Type", "text/plain"))
+            .and(header("User-Agent", "remarkable-lichess"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "test-token": { "userId": "player", "scopes": "challenge:read, board:play" },
+                "other-token": null
+            })))
+            .mount(&server)
+            .await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let grant = client.get_token_grant().await.unwrap().unwrap();
+        assert_eq!(grant.user_id, "player");
+        assert_eq!(grant.scopes, "challenge:read, board:play");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].body, b"test-token");
+        assert!(!requests[0].headers.contains_key("authorization"));
+    }
+
+    #[tokio::test]
+    async fn token_metadata_preserves_neither_redirects_nor_echoed_errors() {
+        let server = MockServer::start().await;
+        let redirected = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/token/test"))
+            .respond_with(ResponseTemplate::new(307)
+                .insert_header("Location", redirected.uri().as_str())
+                .set_body_string("test-token"))
+            .mount(&server)
+            .await;
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let error = client.get_token_grant().await.err().expect("refuse the redirect");
+        assert!(error.to_string().contains("307"));
+        assert!(!error.to_string().contains("test-token"));
+        assert!(redirected.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

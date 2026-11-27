@@ -309,29 +309,44 @@ impl SignInAttempt {
 }
 
 enum SignInError {
-    Account(anyhow::Error),
+    Verification,
+    Rejected,
+    MissingBoardScope,
     Qr(String),
+}
+
+impl From<anyhow::Error> for SignInError {
+    fn from(error: anyhow::Error) -> Self {
+        if is_auth_rejection(&error) { Self::Rejected } else { Self::Verification }
+    }
 }
 
 impl SignInRequest {
     fn failure(self, error: SignInError) -> BackendMessage {
         let reason = match error {
             SignInError::Qr(reason) => reason,
-            SignInError::Account(error) if is_auth_rejection(&error) => {
+            SignInError::Rejected => {
                 if self.method == SignInMethod::Saved || self.request_id.is_none() {
                     return BackendMessage::TokenInvalid { reason: "Lichess rejected the sign-in.".into() };
                 }
                 "Lichess rejected this sign-in. Check the token and its permissions.".into()
             }
-            SignInError::Account(_) if self.method == SignInMethod::Saved => {
+            SignInError::MissingBoardScope => {
+                let reason = "Create a Lichess token with Board play (board:play) permission.".into();
+                if self.request_id.is_none() {
+                    return BackendMessage::TokenInvalid { reason };
+                }
+                reason
+            }
+            SignInError::Verification if self.method == SignInMethod::Saved => {
                 return BackendMessage::AuthenticationCheckFailed {
                     message: "Could not verify your saved Lichess sign-in. Check your connection and try again.".into(),
                 };
             }
-            SignInError::Account(_) if self.request_id.is_none() && self.method == SignInMethod::Token => {
+            SignInError::Verification if self.request_id.is_none() && self.method == SignInMethod::Token => {
                 return BackendMessage::TokenInvalid { reason: "Could not verify the token.".into() };
             }
-            SignInError::Account(_) => "Could not verify your sign-in. Check your connection and try again.".into(),
+            SignInError::Verification => "Could not verify your sign-in. Check your connection and try again.".into(),
         };
         BackendMessage::LoginFailed { reason, request_id: self.request_id }
     }
@@ -1595,7 +1610,16 @@ mod challenge_board_support_tests {
 
 async fn verify_sign_in(token: String) -> Result<VerifiedSignIn, SignInError> {
     let client = LichessClient::new(token.clone());
-    let account = client.get_account().await.map_err(SignInError::Account)?;
+    let account = client.get_account().await?;
+    // Account access needs no scope. A live Board stream needs a game, and
+    // attempting matchmaking to check the scope would change account state.
+    let grant = client.get_token_grant().await?.ok_or(SignInError::Rejected)?;
+    if grant.user_id != account.id {
+        return Err(SignInError::Verification);
+    }
+    if !grant.scopes.split(',').any(|scope| scope.trim() == "board:play") {
+        return Err(SignInError::MissingBoardScope);
+    }
     Ok(VerifiedSignIn { token, client, my_id: account.id, username: account.username })
 }
 
