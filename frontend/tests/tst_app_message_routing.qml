@@ -1517,10 +1517,13 @@ TestCase {
     }
 
     function test_homeRatingsCooldownReplaysRowsAndRetriesOnlyRatings() {
+        width = 620
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
         var request = latestHomeRequest()
-        var cached = [{speed: "rapid", rating: 1510}]
+        var cached = [{speed: "ultraBullet", rating: 1688, provisional: true},
+                      {speed: "rapid", rating: 1510},
+                      {speed: "correspondence", rating: 1960, provisional: false}]
         endpoint.reply({type: "HomeState", request_id: request, wifi_connected: true,
                         ongoing_games: [{game_id: "ongoing", is_my_turn: true}]})
         var resume = findChild(home, "homeResumeButton")
@@ -1530,6 +1533,9 @@ TestCase {
         endpoint.reply({type: "HomeRatings", request_id: request,
                         ratings: cached, message: "Trying ratings again shortly.", retry_after_ms: 150})
         compare(home.ratings, cached)
+        compare(findChild(home, "homeRating_ultraBullet").text, "UltraBullet  <b>1688?</b>")
+        compare(findChild(home, "homeRating_rapid").text, "Rapid  <b>1510</b>")
+        compare(findChild(home, "homeRating_correspondence").text, "Correspondence  <b>1960</b>")
         verify(app.online && resume.enabled && refresh.enabled)
         var status = findChild(home, "homeRatingsStatus")
         verify(status.visible)
@@ -1543,8 +1549,10 @@ TestCase {
 
         endpoint.reply({type: "HomeRatings", request_id: request, ratings: []})
         compare(home.ratings, cached)
-        endpoint.reply({type: "HomeRatings", request_id: retry.request_id, ratings: [{speed: "rapid", rating: 1550}]})
+        endpoint.reply({type: "HomeRatings", request_id: retry.request_id,
+                        ratings: [{speed: "ultraBullet", rating: 1550}]})
         compare(home.ratings[0].rating, 1550)
+        compare(findChild(home, "homeRating_ultraBullet").text, "UltraBullet  <b>1550</b>")
         verify(!status.visible && app.online)
         compare(findChild(home, "homeResumeButton"), resume)
     }

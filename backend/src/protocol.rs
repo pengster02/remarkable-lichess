@@ -284,15 +284,13 @@ pub struct ChallengeInfo {
     pub board_unavailable_reason: Option<String>,
 }
 
-// One of a real account's rated speed categories (bullet/blitz/rapid/classical/
-// correspondence) with at least one game played -- built from Account's `perfs`
-// map (confirmed against lichess-org/api's Perfs.yaml/Perf.yaml schemas). A perf
-// with zero games played is left out entirely rather than shown as "0", same as
-// every reference client's own profile page.
+// A standard speed rating from a category the account has played.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RatingSummary {
     pub speed: String,
     pub rating: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provisional: Option<bool>,
 }
 
 // A now-playing row from the account list or an authenticated gameStart.
