@@ -97,7 +97,7 @@ Rectangle {
     property string variationSaveError: ""
     property bool variationSnapshotFull: false
     readonly property string variationStorageError: variationStoreState === "loading"
-        ? "" : variationLoadError || variationSaveError
+        ? "" : variationLoadError ? variationLoadError + " New lines are temporary." : variationSaveError
     property int pendingVariationSaveId: 0
     readonly property string variationStartFen: variationFens[0] || ""
     readonly property var candidateRows: chessDisplay.moveRows(variationMoves, [], [], variationStartFen)
