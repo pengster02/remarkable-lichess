@@ -72,6 +72,7 @@ Rectangle {
     RequestCooldown { id: historyCooldown }
     RequestCooldown { id: openingCooldown }
     RequestCooldown { id: matchCreationCooldown }
+    RequestCooldown { id: challengeActionCooldown }
     // One timer covers both formats across navigation. Per-dialog timers miss
     // other entry points, while disabling all lookups would block the archive list.
     RequestCooldown { id: gameExportCooldown }
@@ -80,6 +81,7 @@ Rectangle {
     property alias openingExplorerRetryAt: openingCooldown.retryAt
     property alias gameExportRetryAt: gameExportCooldown.retryAt
     property alias matchCreationRetryAt: matchCreationCooldown.retryAt
+    property alias challengeActionRetryAt: challengeActionCooldown.retryAt
 
     // A shared sequence survives screen changes. Per-screen counters can repeat
     // IDs after navigation, and timestamps can collide across rapid requests.
@@ -141,7 +143,7 @@ Rectangle {
     }
 
     function respondToChallenge(action, challengeId) {
-        if (!root.hasToken || root.pendingInvitation || !challengeId) return
+        if (!root.hasToken || root.pendingInvitation || challengeActionCooldown.running || !challengeId) return
         var requestId = root.nextRequestId()
         root.pendingInvitation = {action: action, challengeId: challengeId,
                                   requestId: requestId, openOnSuccess: true}
@@ -478,8 +480,11 @@ Rectangle {
                                             wifi_connected: msg.wifi_connected, message: msg.message})
                 }
                 home.handleMessage(msg)
+            } else if (msg.type === "ChallengeActionCooldown") {
+                challengeActionCooldown.extend(msg.retry_after_ms)
             } else if (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined" ||
                        msg.type === "ChallengeActionFailed") {
+                if (msg.type === "ChallengeActionFailed") challengeActionCooldown.extend(msg.retry_after_ms)
                 root.handleChallengeResponse(msg)
             } else if (msg.type === "GameFinished" || msg.type === "AccountEventsResumed") {
                 var homeForEvent = screenLoader.item
@@ -794,6 +799,7 @@ Rectangle {
             if (item.hasOwnProperty("respondToChallenge")) {
                 item.respondToChallenge = root.respondToChallenge
                 item.pendingInvitation = Qt.binding(function() { return root.pendingInvitation })
+                item.challengeActionCoolingDown = Qt.binding(function() { return challengeActionCooldown.running })
             }
             if (item.hasOwnProperty("requestedGameId")) {
                 item.requestedGameId = Qt.binding(function() { return root.selectedGameId })

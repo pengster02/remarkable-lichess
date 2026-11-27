@@ -85,6 +85,8 @@ Rectangle {
     property bool challengesRetryable: true
     property string actionError: ""
     property var pendingInvitation: null
+    property bool challengeActionCoolingDown: false
+    readonly property bool canRespondToChallenge: !pendingInvitation && !challengeActionCoolingDown
     readonly property string pendingChallengeId: pendingInvitation ? pendingInvitation.challengeId : ""
     readonly property string pendingChallengeAction: pendingInvitation ? pendingInvitation.action : ""
 
@@ -161,7 +163,7 @@ Rectangle {
     }
 
     function submitChallengeAction(action, challengeId) {
-        if (homeScreen.pendingInvitation || !homeScreen.respondToChallenge) return
+        if (!homeScreen.canRespondToChallenge || !homeScreen.respondToChallenge) return
         homeScreen.actionError = ""
         homeScreen.respondToChallenge(action, challengeId)
     }
@@ -351,6 +353,15 @@ Rectangle {
                 title: "Challenges"
                 visible: homeScreen.pendingChallenges.length > 0 || homeScreen.pendingInvitation !== null
                 Text {
+                    objectName: "challengeActionCooldownNotice"
+                    width: parent.width
+                    visible: homeScreen.challengeActionCoolingDown
+                    text: "Lichess is limiting challenge responses. Try again shortly."
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: theme.fontBody
+                    color: theme.textMuted
+                }
+                Text {
                     objectName: "pendingInvitationStatus"
                     width: parent.width
                     visible: homeScreen.pendingInvitation !== null &&
@@ -407,7 +418,7 @@ Rectangle {
                                     ? "Accepting…"
                                     : "Accept"
                                 highlighted: true
-                                enabled: invitationRow.canAccept && homeScreen.pendingChallengeId.length === 0
+                                enabled: invitationRow.canAccept && homeScreen.canRespondToChallenge
                                 onClicked: homeScreen.submitChallengeAction("accept", modelData.id)
                             }
                             AppButton {
@@ -417,7 +428,7 @@ Rectangle {
                                     homeScreen.pendingChallengeAction === "decline"
                                     ? "Declining…"
                                     : "Decline"
-                                enabled: homeScreen.pendingChallengeId.length === 0
+                                enabled: homeScreen.canRespondToChallenge
                                 onClicked: homeScreen.submitChallengeAction("decline", modelData.id)
                             }
                         }
@@ -611,7 +622,9 @@ Rectangle {
                 return challenge.id !== id
             })
         } else if (msg.type === "ChallengeActionFailed") {
-            homeScreen.actionError = msg.message || "Lichess could not complete that action."
+            homeScreen.actionError = msg.retry_after_ms > 0
+                ? ""
+                : msg.message || "Lichess could not complete that action."
         } else if (msg.type === "ConnectivityState") {
             homeScreen.connectivityKnown = true
             homeScreen.online = msg.online || false

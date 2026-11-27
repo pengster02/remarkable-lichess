@@ -617,7 +617,14 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },
-    ChallengeActionFailed { challenge_id: String, request_id: u32, message: String },
+    ChallengeActionFailed {
+        challenge_id: String,
+        request_id: u32,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
+    ChallengeActionCooldown { retry_after_ms: u32 },
     ComputerGameCreated {
         game_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1416,6 +1423,20 @@ mod tests {
             request_id: 9, message: "Try again shortly".into(), retry_after_ms: Some(60000),
         };
         assert_eq!(serde_json::to_value(reply).unwrap()["retry_after_ms"], 60000);
+    }
+
+    #[test]
+    fn invitation_cooldown_does_not_change_ordinary_failure_payload() {
+        let ordinary = BackendMessage::ChallengeActionFailed {
+            challenge_id: "invite01".into(), request_id: 42, message: "Expired".into(), retry_after_ms: None,
+        };
+        assert_eq!(serde_json::to_value(ordinary).unwrap(), serde_json::json!({
+            "type": "ChallengeActionFailed", "challenge_id": "invite01", "request_id": 42, "message": "Expired",
+        }));
+        let limited = BackendMessage::ChallengeActionFailed {
+            challenge_id: "invite01".into(), request_id: 43, message: "Wait".into(), retry_after_ms: Some(60000),
+        };
+        assert_eq!(serde_json::to_value(limited).unwrap()["retry_after_ms"], 60000);
     }
 
     #[test]
