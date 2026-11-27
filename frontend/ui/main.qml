@@ -591,7 +591,8 @@ Rectangle {
                 if (screenLoader.item && screenLoader.item.handleMessage) {
                     screenLoader.item.handleMessage(msg)
                 }
-            } else if (msg.type === "BoardState" || msg.type === "PlayerStatuses" ||
+            } else if (msg.type === "BoardState" || msg.type === "FinalPositionUnavailable" ||
+                       msg.type === "PlayerStatuses" ||
                        msg.type === "GameActionCompleted" || msg.type === "GameActionFailed") {
                 if (msg.type === "GameActionFailed") gameActionCooldown.extend(msg.retry_after_ms)
                 if (!root.hasToken || !root.selectedGameId || msg.game_id !== root.selectedGameId) return

@@ -788,7 +788,16 @@ pub enum BackendMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<Box<GameOutcome>>,
     },
-    GameOver { game_id: String, result: String, reason: String },
+    // An outcome can be valid even when its position cannot be replayed.
+    // BoardState would mislabel the previous position and a stream error loses the result.
+    FinalPositionUnavailable {
+        game_id: String,
+        outcome: Box<GameOutcome>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        your_color: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        opponent: Option<Box<PlayerIdentity>>,
+    },
     GameActionCompleted { game_id: String, #[serde(flatten)] request: GameActionRequest },
     GameActionFailed {
         game_id: String,

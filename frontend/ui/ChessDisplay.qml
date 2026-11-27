@@ -83,6 +83,8 @@ QtObject {
         if (result === "win") return "Win"
         if (result === "loss") return "Loss"
         if (result === "draw") return "Draw"
+        if (result === "white") return "White won"
+        if (result === "black") return "Black won"
         return terminationLabel(result)
     }
 

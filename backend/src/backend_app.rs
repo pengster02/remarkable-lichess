@@ -3211,9 +3211,13 @@ fn spawn_game_stream(
                                             log::warn!("from_game_full failed for game {}: {e}", full.id);
                                             stream_finished = true;
                                             *guard = None;
-                                            Some(BackendMessage::GameStreamFailed {
-                                                game_id: game_id.clone(),
-                                                message: format!("Couldn't load this game: {e}"),
+                                            Some(if is_over {
+                                                GameSession::full_outcome_without_position(&full, &account.player_id)
+                                            } else {
+                                                BackendMessage::GameStreamFailed {
+                                                    game_id: game_id.clone(),
+                                                    message: format!("Couldn't load this game: {e}"),
+                                                }
                                             })
                                         }
                                     }
@@ -3233,11 +3237,7 @@ fn spawn_game_stream(
                                                 log::warn!(
                                                     "couldn't apply gameState for {game_id}: {error}"
                                                 );
-                                                fallback.map(|outcome| BackendMessage::GameOver {
-                                                    game_id: game_id.clone(),
-                                                    result: outcome.result,
-                                                    reason: outcome.reason,
-                                                })
+                                                fallback.map(|outcome| s.outcome_without_position(outcome, &account.player_id))
                                             }
                                         };
                                         if is_over {
