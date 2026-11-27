@@ -4,7 +4,7 @@ use crate::game::replay::OpeningExplorerPosition;
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history, supports_variant};
 use crate::lichess::client::{
-    board_stream_rejection, is_auth_rejection, is_challenge_read_denial, is_rate_limited, LichessClient,
+    board_stream_rejection, is_auth_rejection, is_challenge_read_denial, is_rate_limited, is_unauthorized, LichessClient,
     LICHESS_BASE_URL,
 };
 use crate::lichess::oauth;
@@ -117,6 +117,9 @@ struct AccountStream {
     challenge_refresh: mpsc::Sender<()>,
     challenge_support: Arc<Mutex<HashMap<String, BoardSupport>>>,
     challenge_read_denied: Arc<AtomicBool>,
+    // Each sign-in owns its own flag. A shared flag can invalidate a replacement,
+    // and a username cannot distinguish successive sign-ins to the same account.
+    credential_rejected: Arc<AtomicBool>,
 }
 
 // Preserve the reason for both Home and the preflight reply. A bool loses the
@@ -779,24 +782,30 @@ impl LichessBackend {
     }
 
     async fn start_home_refresh(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>, games_only: bool) {
-        let Some(client) = self.client.clone() else {
-            self.send(replier, &BackendMessage::TokenInvalid { reason: "no token saved".into() });
+        let (Some(client), Some(account)) = (self.client.clone(), self.account_stream.as_ref()) else {
+            // A queued Home refresh must not replace the sign-in message after the account is cleared.
             return;
         };
+        let credential_rejected = account.credential_rejected.clone();
         // A game event replaces just the game-list read. Joining it with ratings
         // can abandon an unrelated read, and fetching ratings again wastes a request.
         stop_task(&mut self.home_games).await;
         self.home_games = Some(tokio::spawn(refresh_home_games(
-            client.clone(), replier.clone(), self.write_lock.clone(), self.home_games_retry_after.clone(), request_id,
+            client.clone(), replier.clone(), self.write_lock.clone(), self.home_games_retry_after.clone(),
+            credential_rejected.clone(), request_id,
         )));
         if !games_only {
             stop_task(&mut self.home_ratings).await;
             let replier = replier.clone();
             let write_lock = self.write_lock.clone();
             self.home_ratings = Some(tokio::spawn(async move {
-                if let Ok(account) = client.get_account().await {
-                    let ratings = ratings_from_perfs(account.perfs);
-                    send_locked(&replier, &write_lock, &BackendMessage::HomeRatings { request_id, ratings });
+                match client.get_account().await {
+                    Ok(account) => {
+                        let ratings = ratings_from_perfs(account.perfs);
+                        send_locked(&replier, &write_lock, &BackendMessage::HomeRatings { request_id, ratings });
+                    }
+                    Err(error) if is_unauthorized(&error) => report_account_rejection(&replier, &credential_rejected),
+                    Err(_) => {}
                 }
             }));
         }
@@ -1298,11 +1307,22 @@ impl LichessBackend {
                 return;
             }
         }
+        self.clear_authenticated_account().await;
+        self.send(replier, &BackendMessage::AuthenticationRequired);
+    }
+
+    async fn reject_authenticated_account(&mut self, replier: &BackendReplier<Self>) {
+        self.clear_authenticated_account().await;
+        self.send(replier, &BackendMessage::TokenInvalid {
+            reason: "Lichess rejected the current sign-in. Sign in again.".into(),
+        });
+    }
+
+    async fn clear_authenticated_account(&mut self) {
         self.stop_authenticated_activity().await;
         self.client = None;
         self.my_id = None;
         self.username = None;
-        self.send(replier, &BackendMessage::AuthenticationRequired);
     }
 
     async fn stop_authenticated_activity(&mut self) {
@@ -1500,6 +1520,8 @@ impl LichessBackend {
         // Guessing from scopes can miss alternate grants, and every 403 is too broad.
         let challenge_read_denied = Arc::new(AtomicBool::new(false));
         let denied = challenge_read_denied.clone();
+        let credential_rejected = Arc::new(AtomicBool::new(false));
+        let rejected = credential_rejected.clone();
         let task = tokio::spawn(async move {
             // Both futures drop together when the account is replaced or signed out.
             let refresh = async {
@@ -1515,9 +1537,11 @@ impl LichessBackend {
                     }
                 }
             };
-            tokio::join!(read_account_events(&client, &replier, &write_lock, &event_refresh), refresh);
+            tokio::join!(read_account_events(&client, &replier, &write_lock, &event_refresh, &rejected), refresh);
         });
-        self.account_stream = Some(AccountStream { task, challenge_refresh, challenge_support, challenge_read_denied });
+        self.account_stream = Some(AccountStream {
+            task, challenge_refresh, challenge_support, challenge_read_denied, credential_rejected,
+        });
     }
 
     fn queue_challenge_refresh(&self, replier: &BackendReplier<Self>) {
@@ -1696,6 +1720,7 @@ async fn read_account_events(
     replier: &BackendReplier<LichessBackend>,
     write_lock: &Arc<std::sync::Mutex<()>>,
     refresh_challenges: &mpsc::Sender<()>,
+    credential_rejected: &Arc<AtomicBool>,
 ) {
     let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(30));
     // Reconnect replays ongoing games. A per-connection set repeats old
@@ -1704,7 +1729,12 @@ async fn read_account_events(
     let mut reconnecting = false;
     loop {
         let mut received_for = Duration::ZERO;
-        if let Ok(mut lines) = client.stream_lines("/api/stream/event").await {
+        let response = client.stream_lines("/api/stream/event").await;
+        if response.as_ref().err().is_some_and(is_unauthorized) {
+            report_account_rejection(replier, credential_rejected);
+            return;
+        }
+        if let Ok(mut lines) = response {
             let connected_at = Instant::now();
             while let Ok(Some(line)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {
                 received_for = connected_at.elapsed();
@@ -1761,6 +1791,21 @@ async fn read_account_events(
         log::warn!("account event stream ended; retrying in {delay:?}");
         tokio::time::sleep(delay).await;
     }
+}
+
+fn report_account_rejection(replier: &BackendReplier<LichessBackend>, rejected: &Arc<AtomicBool>) {
+    if rejected.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let replier = replier.clone();
+    let rejected = rejected.clone();
+    // The reporting worker is on the shutdown list, so it cannot await teardown itself.
+    tokio::spawn(async move {
+        let mut backend = replier.backend.lock().await;
+        if backend.account_stream.as_ref().is_some_and(|account| Arc::ptr_eq(&account.credential_rejected, &rejected)) {
+            backend.reject_authenticated_account(&replier).await;
+        }
+    });
 }
 
 /// Every outgoing send in this file funnels through here -- see write_lock's own
@@ -1957,6 +2002,7 @@ async fn refresh_home_games(
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
     retry_after: Arc<Mutex<Option<Instant>>>,
+    credential_rejected: Arc<AtomicBool>,
     request_id: Option<u32>,
 ) {
     let limited_reply = |remaining: Duration| BackendMessage::HomeLoadFailed {
@@ -1982,6 +2028,10 @@ async fn refresh_home_games(
         Err(error) if is_rate_limited(&error) => {
             *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
             limited_reply(LICHESS_RATE_LIMIT_DELAY)
+        }
+        Err(error) if is_unauthorized(&error) => {
+            report_account_rejection(&replier, &credential_rejected);
+            return;
         }
         Err(error) => {
             log::warn!("couldn't load Home: {error}");
@@ -2628,7 +2678,9 @@ impl AppLoadBackend for LichessBackend {
                 }
             }
             self.handle_request_settings(replier);
-            if self.client.is_none() {
+            if self.account_stream.as_ref().is_some_and(|account| account.credential_rejected.load(Ordering::Relaxed)) {
+                self.reject_authenticated_account(replier).await;
+            } else if self.client.is_none() {
                 self.check_saved_sign_in(replier);
             } else if let Some(username) = self.username.clone() {
                 // The backend process outlives a frontend reload (see deploy.sh's own

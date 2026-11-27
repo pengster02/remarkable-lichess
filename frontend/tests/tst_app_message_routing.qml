@@ -4965,6 +4965,32 @@ TestCase {
         compare(screen.item.errorMessage, "")
     }
 
+    function test_revokedSessionReturnsFromBoardToSignIn() {
+        endpoint.reply({type: "SignInOptions", qr_available: false})
+        app.openGame("old-game")
+        endpoint.reply(boardState("old-game"))
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        var reason = "Lichess rejected the current sign-in. Sign in again."
+
+        endpoint.reply({type: "TokenInvalid", reason: reason})
+        endpoint.reply(boardState("old-game"))
+        verify(String(screen.source).endsWith("LoginScreen.qml"))
+        compare(app.selectedGameId, "")
+        compare(app.username, "")
+        verify(!app.hasToken)
+        var notice = findChild(screen.item, "savedSignInErrorText")
+        verify(notice.visible)
+        compare(notice.text, reason)
+
+        findChild(screen.item, "tokenField").text = "replacement_fixture_token"
+        screen.item.saveToken()
+        var request = screen.item.signInRequestId
+        endpoint.reply({type: "SignInReady", request_id: request})
+        endpoint.reply({type: "TokenVerified", request_id: request, username: "replacement"})
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+        compare(app.username, "replacement")
+    }
+
     function test_finalBoardOpensWithTheLastMoveAndFrozenClocks() {
         app.navigateTo("HomeScreen.qml")
         app.openGame("g1")
