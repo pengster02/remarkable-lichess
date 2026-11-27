@@ -72,6 +72,21 @@ impl StreamReconnectDelay {
     }
 }
 
+#[derive(Clone, Default)]
+struct StreamCooldown(Arc<std::sync::Mutex<Option<Instant>>>);
+
+impl StreamCooldown {
+    fn start(&self) {
+        *self.0.lock().expect("stream cooldown lock poisoned") =
+            Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
+    }
+
+    fn pending_deadline(&self) -> Option<Instant> {
+        self.0.lock().expect("stream cooldown lock poisoned")
+            .filter(|deadline| *deadline > Instant::now())
+    }
+}
+
 struct GameStream {
     game_id: String,
     task: tokio::task::JoinHandle<()>,
@@ -462,6 +477,10 @@ pub struct LichessBackend {
     session: Arc<Mutex<Option<GameSession>>>,
     pending_match: Option<GameRequest>,
     account_stream: Option<AccountStream>,
+    // A task-local deadline is lost on replacement. A shared limit across stream
+    // families could block a Board connection when only account events were limited.
+    account_stream_cooldown: StreamCooldown,
+    game_stream_cooldown: StreamCooldown,
     pending_challenge_action: Option<GameRequest>,
     home_games: Option<tokio::task::JoinHandle<()>>,
     home_ratings: Option<tokio::task::JoinHandle<()>>,
@@ -510,6 +529,8 @@ impl LichessBackend {
             session: Arc::new(Mutex::new(None)),
             pending_match: None,
             account_stream: None,
+            account_stream_cooldown: StreamCooldown::default(),
+            game_stream_cooldown: StreamCooldown::default(),
             pending_challenge_action: None,
             home_games: None,
             home_ratings: None,
@@ -836,6 +857,7 @@ impl LichessBackend {
         self.stop_game_stream().await;
         let task = spawn_game_stream(
             client, game_id.clone(), replier.clone(), self.session.clone(), my_id, self.write_lock.clone(),
+            self.game_stream_cooldown.clone(),
         );
         self.game_stream = Some(GameStream { game_id, task });
     }
@@ -1522,6 +1544,7 @@ impl LichessBackend {
         let denied = challenge_read_denied.clone();
         let credential_rejected = Arc::new(AtomicBool::new(false));
         let rejected = credential_rejected.clone();
+        let cooldown = self.account_stream_cooldown.clone();
         let task = tokio::spawn(async move {
             // Both futures drop together when the account is replaced or signed out.
             let refresh = async {
@@ -1537,7 +1560,10 @@ impl LichessBackend {
                     }
                 }
             };
-            tokio::join!(read_account_events(&client, &replier, &write_lock, &event_refresh, &rejected), refresh);
+            tokio::join!(
+                read_account_events(&client, &replier, &write_lock, &event_refresh, &rejected, &cooldown),
+                refresh,
+            );
         });
         self.account_stream = Some(AccountStream {
             task, challenge_refresh, challenge_support, challenge_read_denied, credential_rejected,
@@ -1721,6 +1747,7 @@ async fn read_account_events(
     write_lock: &Arc<std::sync::Mutex<()>>,
     refresh_challenges: &mpsc::Sender<()>,
     credential_rejected: &Arc<AtomicBool>,
+    cooldown: &StreamCooldown,
 ) {
     let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(30));
     // Reconnect replays ongoing games. A per-connection set repeats old
@@ -1728,11 +1755,21 @@ async fn read_account_events(
     let mut announced_games = HashSet::new();
     let mut reconnecting = false;
     loop {
+        if let Some(deadline) = cooldown.pending_deadline() {
+            reconnecting = true;
+            tokio::time::sleep_until(deadline.into()).await;
+        }
         let mut received_for = Duration::ZERO;
         let response = client.stream_lines("/api/stream/event").await;
-        if response.as_ref().err().is_some_and(is_unauthorized) {
-            report_account_rejection(replier, credential_rejected);
-            return;
+        if let Err(error) = &response {
+            if is_unauthorized(error) {
+                report_account_rejection(replier, credential_rejected);
+                return;
+            }
+            if is_rate_limited(error) {
+                cooldown.start();
+                continue;
+            }
         }
         if let Ok(mut lines) = response {
             let connected_at = Instant::now();
@@ -2366,6 +2403,7 @@ fn spawn_game_stream(
     session_handle: Arc<Mutex<Option<GameSession>>>,
     my_id: String,
     write_lock: Arc<std::sync::Mutex<()>>,
+    cooldown: StreamCooldown,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
@@ -2373,8 +2411,19 @@ fn spawn_game_stream(
         // Waiting inline stalls moves. A detached lookup outlives a game switch.
         let mut player_status_requests = tokio::task::JoinSet::new();
         while !stream_finished {
+            if let Some(deadline) = cooldown.pending_deadline() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                announce_game_reconnect(&replier, &write_lock, &session_handle, &game_id,
+                    Some(remaining.as_millis().max(1) as u32)).await;
+                tokio::time::sleep_until(deadline.into()).await;
+                announce_game_reconnect(&replier, &write_lock, &session_handle, &game_id, None).await;
+            }
             let mut received_for = Duration::ZERO;
             let response = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await;
+            if response.as_ref().err().is_some_and(is_rate_limited) {
+                cooldown.start();
+                continue;
+            }
             if let Some(message) = response.as_ref().err().and_then(board_stream_rejection) {
                 *session_handle.lock().await = None;
                 send_locked(&replier, &write_lock, &BackendMessage::GameStreamFailed {
@@ -2527,20 +2576,26 @@ fn spawn_game_stream(
             }
             let delay = reconnect.after_attempt(received_for);
             log::warn!("game stream {game_id} ended; retrying in {delay:?}");
-            {
-                let mut guard = session_handle.lock().await;
-                if let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) {
-                    session.mark_stream_disconnected();
-                }
-                send_locked(
-                    &replier,
-                    &write_lock,
-                    &BackendMessage::GameStreamReconnecting { game_id: game_id.clone() },
-                );
-            }
+            announce_game_reconnect(&replier, &write_lock, &session_handle, &game_id, None).await;
             tokio::time::sleep(delay).await;
         }
     })
+}
+
+async fn announce_game_reconnect(
+    replier: &BackendReplier<LichessBackend>,
+    write_lock: &Arc<std::sync::Mutex<()>>,
+    session_handle: &Mutex<Option<GameSession>>,
+    game_id: &str,
+    retry_after_ms: Option<u32>,
+) {
+    let mut guard = session_handle.lock().await;
+    if let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) {
+        session.mark_stream_disconnected();
+    }
+    send_locked(replier, write_lock, &BackendMessage::GameStreamReconnecting {
+        game_id: game_id.to_owned(), retry_after_ms,
+    });
 }
 
 #[cfg(test)]

@@ -221,6 +221,10 @@ impl LichessClient {
             return Ok(response);
         }
 
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            // A replacement task must inherit the limit even if the response body stalls.
+            return Err(http_response_error(context, status, None));
+        }
         let error = tokio::time::timeout_at(deadline, error_from_response(context, response))
             .await
             .unwrap_or_else(|_| http_response_error(context, status, None));
