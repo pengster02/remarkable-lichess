@@ -8,12 +8,12 @@ TOKEN_FILE="${TOKEN_FILE:-${ROOT}/.lichess-token}"
 TOKEN="${1:-${LICHESS_TOKEN:-}}"
 if [ -z "${TOKEN}" ]; then
   if [ -t 0 ]; then
-    echo "Paste your Lichess personal access token (lip_...), then Enter:"
+    echo "Paste your Lichess personal access token, then Enter:"
     read -r -s TOKEN
     printf '\n'
   else
-    echo "Usage: $0 lip_your_token" >&2
-    echo "Or:    LICHESS_TOKEN=lip_... $0" >&2
+    echo "Usage: $0 YOUR_TOKEN" >&2
+    echo "Or:    LICHESS_TOKEN=YOUR_TOKEN $0" >&2
     echo "Create one at:" >&2
     echo "  https://lichess.org/account/oauth/token/create?description=remarkable-lichess&scopes[]=board:play&scopes[]=challenge:read&scopes[]=challenge:write&scopes[]=preference:read" >&2
     exit 1
@@ -21,13 +21,11 @@ if [ -z "${TOKEN}" ]; then
 fi
 
 TOKEN="$(printf '%s' "${TOKEN}" | tr -d ' \t\r\n')"
-case "${TOKEN}" in
-  lip_*) ;;
-  *)
-    echo "Token should start with lip_" >&2
-    exit 1
-    ;;
-esac
+# Lichess guarantees ASCII syntax. A fixed prefix can change, and deferring validation sends malformed input.
+if ! (export LC_ALL=C; [[ "${TOKEN}" =~ ^[A-Za-z0-9_]+$ ]]); then
+  echo "A Lichess token must contain only letters A-Z, digits, and underscores." >&2
+  exit 1
+fi
 
 # Quick live check before wasting a rebuild cycle.
 ACCOUNT_RESPONSE="$(mktemp)"
