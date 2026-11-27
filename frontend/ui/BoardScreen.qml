@@ -36,6 +36,7 @@ Rectangle {
     property string requestedGameId: ""
     property string streamError: ""
     property bool streamReconnecting: false
+    property bool streamRateLimited: false
     // The selection exists before its first snapshot. Using gameId would enable
     // an empty board, and a timer would guess when the user needs a way back.
     readonly property bool awaitingBoard: boardScreen.requestedGameId.length > 0 &&
@@ -226,7 +227,7 @@ Rectangle {
     readonly property bool gameplayAvailable: !boardScreen.gameOver && !boardScreen.awaitingGameStart
     property bool showGameOverDialog: false
     readonly property bool canNavigateHome: boardScreen.gameOver || boardScreen.awaitingBoard ||
-        boardScreen.awaitingGameStart || boardScreen.streamError.length > 0
+        boardScreen.awaitingGameStart || boardScreen.streamRateLimited || boardScreen.streamError.length > 0
     property string gameResult: ""
     property string gameReason: ""
     property bool annotationMode: false
@@ -558,6 +559,8 @@ Rectangle {
     function topStatusText() {
         if (boardScreen.gameOver && boardScreen.showGameOverDialog) return ""
         if (boardScreen.streamError.length > 0) return boardScreen.streamError
+        if (boardScreen.streamReconnecting && boardScreen.streamRateLimited)
+            return "Lichess is limiting game updates"
         if (boardScreen.awaitingGameStart) return "Waiting for game to start"
         if (boardScreen.streamReconnecting) {
             return boardScreen.statusText.length > 0
@@ -1887,6 +1890,7 @@ Rectangle {
         boardScreen.gameOver = true
         boardScreen.awaitingGameStart = false
         boardScreen.streamReconnecting = false
+        boardScreen.streamRateLimited = false
         boardScreen.gameReason = reason
         boardScreen.legalMoves = []
         boardScreen.clearMovePrompts()
@@ -1928,8 +1932,10 @@ Rectangle {
             }
             if (!gameChanged && boardScreen.gameOver) return
             boardScreen.streamError = ""
-            if (typeof msg.game_stream_connected === "boolean")
+            if (typeof msg.game_stream_connected === "boolean") {
                 boardScreen.streamReconnecting = !msg.game_stream_connected
+                if (msg.game_stream_connected) boardScreen.streamRateLimited = false
+            }
             var positionChanged = boardScreen.liveFen !== msg.fen ||
                 gameChanged
             var fullPositions = msg.position_history
@@ -2132,6 +2138,7 @@ Rectangle {
             // waiting for every POST before moving a piece, both making slow links
             // directly visible in gameplay.
             boardScreen.streamReconnecting = true
+            boardScreen.streamRateLimited = msg.retry_after_ms > 0
             boardScreen.opponentDeparture = null
         } else if (msg.type === "GameStreamFailed") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
@@ -2144,6 +2151,7 @@ Rectangle {
             boardScreen.boardNotice = null
             boardScreen.showGameActions = false
             boardScreen.streamReconnecting = false
+            boardScreen.streamRateLimited = false
             boardScreen.streamError = msg.message || "Could not load this game."
         } else if (msg.type === "OpponentGone") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return

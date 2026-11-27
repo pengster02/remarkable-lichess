@@ -3780,6 +3780,34 @@ TestCase {
         compare(screen.item.topStatusText(), "Your move")
     }
 
+    function test_boardShowsRateLimitOnlyForTheSelectedGame() {
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("selected")
+        var board = screen.item
+        var back = findChild(board, "boardBackButton")
+        var notice = "Lichess is limiting game updates"
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "older", retry_after_ms: 60000})
+        compare(board.topStatusText(), "Loading game...")
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "selected", retry_after_ms: 59999})
+        compare(board.topStatusText(), notice)
+
+        var snapshot = boardState("selected")
+        snapshot.game_stream_connected = true
+        endpoint.reply(snapshot)
+        compare(board.topStatusText(), "Your move")
+        verify(!back.visible)
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "selected", retry_after_ms: 60000})
+        compare(board.topStatusText(), notice)
+        verify(back.visible && back.enabled)
+        snapshot.game_stream_connected = false
+        endpoint.reply(snapshot)
+        compare(board.topStatusText(), notice)
+
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "selected"})
+        compare(board.topStatusText(), "Reconnecting...")
+        verify(!back.visible)
+    }
+
     function test_cachedOpponentDepartureRestoresClaimsAndRespectsTheServerCountdown() {
         app.navigateTo("HomeScreen.qml")
         app.openGame("selected")

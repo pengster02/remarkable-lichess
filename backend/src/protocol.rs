@@ -763,7 +763,11 @@ pub enum BackendMessage {
         request_id: Option<u32>,
         reason: String,
     },
-    GameStreamReconnecting { game_id: String },
+    GameStreamReconnecting {
+        game_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
     GameStreamFailed { game_id: String, message: String },
     ErrorMsg { message: String },
     // Lichess refreshes the countdown in these events. Zero enables the claim
@@ -1374,8 +1378,14 @@ mod tests {
 
     #[test]
     fn reconnect_signal_is_scoped_to_the_game_stream() {
-        let json = serde_json::to_string(&BackendMessage::GameStreamReconnecting { game_id: "g1".into() }).unwrap();
+        let json = serde_json::to_string(&BackendMessage::GameStreamReconnecting {
+            game_id: "g1".into(), retry_after_ms: None,
+        }).unwrap();
         assert_eq!(json, r#"{"type":"GameStreamReconnecting","game_id":"g1"}"#);
+        let json = serde_json::to_value(BackendMessage::GameStreamReconnecting {
+            game_id: "g1".into(), retry_after_ms: Some(60000),
+        }).unwrap();
+        assert_eq!(json["retry_after_ms"], 60000);
     }
 
     #[test]
