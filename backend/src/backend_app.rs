@@ -47,6 +47,7 @@ const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.
 const OPENING_RATE_LIMIT_MESSAGE: &str = "Lichess limited opening statistics requests.";
 const GAME_EXPORT_RATE_LIMIT_MESSAGE: &str = "Lichess limited game export requests.";
 const MOVE_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting moves. Wait before trying again.";
+const GAME_ACTION_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting game actions. Wait before trying again.";
 const BOARD_BLITZ_MIN_ESTIMATE_SECONDS: u64 = 180;
 const BOARD_RAPID_MIN_ESTIMATE_SECONDS: u64 = 480;
 
@@ -550,6 +551,28 @@ struct MoveSubmission {
     canceled: oneshot::Receiver<()>,
 }
 
+// Callers need the remaining wait alongside the usual scoped failure.
+// Parsing an error string is brittle, and an unscoped notice cannot settle the action.
+enum GameActionFailure {
+    Rejected(String),
+    RateLimited(u32),
+}
+
+impl GameActionFailure {
+    fn reply(self, game_id: Option<&str>, request: GameActionRequest) -> BackendMessage {
+        let (message, retry_after_ms) = match self {
+            Self::Rejected(message) => (message, None),
+            Self::RateLimited(ms) => (GAME_ACTION_RATE_LIMIT_MESSAGE.into(), Some(ms)),
+        };
+        match game_id {
+            Some(id) => BackendMessage::GameActionFailed {
+                game_id: id.to_owned(), request, message, retry_after_ms,
+            },
+            None => BackendMessage::ErrorMsg { message },
+        }
+    }
+}
+
 fn game_for_request<'a>(
     active: Option<&'a GameSession>,
     expected_game_id: Option<&str>,
@@ -642,6 +665,9 @@ pub struct LichessBackend {
     // with streams or other actions would block updates or leaving the game.
     move_submission_cooldown: RateLimitCooldown,
     game_action: Option<tokio::task::JoinHandle<()>>,
+    // Switching actions or games can repeat a wait scoped to one operation.
+    // Sharing the wait with moves would interfere with play during the pause.
+    game_action_cooldown: RateLimitCooldown,
     game_stream: Option<GameStream>,
     // appload-client's own send_message does two unsynchronized raw libc::send()
     // calls (header, then payload) with no locking at all -- confirmed by reading
@@ -692,6 +718,7 @@ impl LichessBackend {
             move_submission: None,
             move_submission_cooldown: RateLimitCooldown::default(),
             game_action: None,
+            game_action_cooldown: RateLimitCooldown::default(),
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
         }
@@ -1541,42 +1568,43 @@ impl LichessBackend {
         F: FnOnce(LichessClient, String) -> Fut + Send + 'static,
         Fut: Future<Output = anyhow::Result<()>> + Send,
     {
-        let fail = |message| {
-            let reply = match expected_game_id {
-                Some(id) => BackendMessage::GameActionFailed {
-                    game_id: id.to_owned(), request, message,
-                },
-                None => BackendMessage::ErrorMsg { message },
-            };
-            self.send(replier, &reply);
+        let rejected = |reason: &str| GameActionFailure::Rejected(reason.into());
+        let fail = |reason| {
+            self.send(replier, &rejected(reason).reply(expected_game_id, request));
         };
         let Some(client) = self.client.clone() else {
-            fail("Not connected to Lichess".into());
+            fail("Not connected to Lichess");
             return;
         };
         if request.seconds.is_some_and(|seconds| !(5..=60).contains(&seconds)) {
-            fail("Time gift must be between 5 and 60 seconds".into());
+            fail("Time gift must be between 5 and 60 seconds");
             return;
         }
         let offer = offer.filter(|offer| offer.offer_intent.is_some() || offer.expected_position_id.is_some());
+        let scoped = expected_game_id.is_some() || request.request_id.is_some();
         let (game_id, mut canceled) = {
             let mut guard = self.session.lock().await;
             match game_for_request(guard.as_ref(), expected_game_id) {
                 Ok(_) => {}
                 Err(reason) => {
-                    fail(reason.into());
+                    fail(reason);
                     return;
                 }
             }
             let game = guard.as_mut().expect("active game checked above");
             if let Some(offer) = offer {
                 if let Err(reason) = game.validate_offer(request.action, offer) {
-                    fail(reason.into());
+                    fail(reason);
                     return;
                 }
             }
+            if let Some(retry_after_ms) = self.game_action_cooldown.remaining_ms() {
+                self.send(replier, &GameActionFailure::RateLimited(retry_after_ms)
+                    .reply(scoped.then_some(game.game_id.as_str()), request));
+                return;
+            }
             let Some(canceled) = game.begin_game_action(request) else {
-                fail("A board action is already in progress.".into());
+                fail("A board action is already in progress.");
                 return;
             };
             (game.game_id.clone(), canceled)
@@ -1585,7 +1613,7 @@ impl LichessBackend {
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
         let session = self.session.clone();
-        let scoped = expected_game_id.is_some() || request.request_id.is_some();
+        let cooldown = self.game_action_cooldown.clone();
         self.game_action = Some(tokio::spawn(async move {
             let result = tokio::select! {
                 biased;
@@ -1597,10 +1625,23 @@ impl LichessBackend {
                         // HTTP would block authoritative board updates.
                         let guard = session.lock().await;
                         let game = game_for_request(guard.as_ref(), Some(&game_id))
-                            .map_err(anyhow::Error::msg)?;
-                        game.validate_offer(request.action, offer).map_err(anyhow::Error::msg)?;
+                            .map_err(rejected)?;
+                        game.validate_offer(request.action, offer).map_err(rejected)?;
                     }
-                    post(client, game_id.clone()).await
+                    if let Some(retry_after_ms) = cooldown.remaining_ms() {
+                        return Err(GameActionFailure::RateLimited(retry_after_ms));
+                    }
+                    post(client, game_id.clone()).await.map_err(|error| {
+                        if is_rate_limited(&error) {
+                            // Record and publish before the Board can settle this action.
+                            cooldown.start();
+                            let retry_after_ms = LICHESS_RATE_LIMIT_DELAY.as_millis() as u32;
+                            send_locked(&replier, &write_lock, &BackendMessage::GameActionCooldown { retry_after_ms });
+                            GameActionFailure::RateLimited(retry_after_ms)
+                        } else {
+                            GameActionFailure::Rejected(error.to_string())
+                        }
+                    })
                 } => result,
             };
             let mut guard = session.lock().await;
@@ -1616,10 +1657,7 @@ impl LichessBackend {
                     }
                     BackendMessage::GameActionCompleted { game_id, request }
                 }
-                Err(error) if scoped => BackendMessage::GameActionFailed {
-                    game_id, request, message: error.to_string(),
-                },
-                Err(error) => BackendMessage::ErrorMsg { message: error.to_string() },
+                Err(error) => error.reply(scoped.then_some(game_id.as_str()), request),
             };
             send_locked(&replier, &write_lock, &reply);
         }));
@@ -3078,6 +3116,9 @@ impl AppLoadBackend for LichessBackend {
             }
             if let Some(retry_after_ms) = self.move_submission_cooldown.remaining_ms() {
                 self.send(replier, &BackendMessage::MoveSubmissionCooldown { retry_after_ms });
+            }
+            if let Some(retry_after_ms) = self.game_action_cooldown.remaining_ms() {
+                self.send(replier, &BackendMessage::GameActionCooldown { retry_after_ms });
             }
             if self.account_stream.as_ref().is_some_and(|account| account.credential_rejected.load(Ordering::Relaxed)) {
                 self.reject_authenticated_account(replier).await;
