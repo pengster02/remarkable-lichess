@@ -2,7 +2,7 @@ use crate::credentials;
 use crate::game::outcome::outcome;
 use crate::game::replay::OpeningExplorerPosition;
 use crate::game::session::GameSession;
-use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history, supports_variant};
+use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_game_from_position, starting_position, supports_variant};
 use crate::lichess::client::{
     board_stream_rejection, is_auth_rejection, is_challenge_read_denial, is_rate_limited, is_unauthorized, LichessClient,
     LICHESS_BASE_URL,
@@ -26,6 +26,7 @@ use crate::qr::QrMatrix;
 use crate::variations::{self, ReviewVariations};
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
+use shakmaty::Position;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -511,6 +512,13 @@ struct CloudEvaluationRequest {
 }
 
 impl CloudEvaluationRequest {
+    fn unavailable(self) -> BackendMessage {
+        BackendMessage::CloudEvaluationUnavailable {
+            request_id: self.request_id,
+            requested_fen: self.requested_fen,
+        }
+    }
+
     fn failed(self, message: String, retry_after: Option<Duration>) -> BackendMessage {
         BackendMessage::CloudEvaluationFailed {
             request_id: self.request_id,
@@ -1507,12 +1515,24 @@ impl LichessBackend {
         match client.get_cloud_evaluation(&request.requested_fen).await {
             Ok(Some(cloud)) => {
                 let Some(pv) = cloud.pvs.into_iter().next() else {
-                    return BackendMessage::CloudEvaluationUnavailable {
-                        request_id: request.request_id, requested_fen: request.requested_fen,
-                    };
+                    return request.unavailable();
                 };
-                match replay_uci_moves_with_history(&request.requested_fen, &pv.moves) {
-                    Ok((_, best_line)) => BackendMessage::CloudEvaluation {
+                let Ok(position) = starting_position(&request.requested_fen) else {
+                    return request.failed("Could not read this position.".into(), None);
+                };
+                // The legacy MateGiven score omits both fields. Check the position
+                // before rejecting it, without guessing a score or trusting that omission.
+                if position.legal_moves().is_empty() {
+                    return request.unavailable();
+                }
+                if pv.cp.is_some() == pv.mate.is_some() || pv.mate == Some(0) {
+                    return request.failed("Lichess returned an unusable cloud score. Try again.".into(), None);
+                }
+                if pv.moves.trim().is_empty() {
+                    return request.failed("Lichess returned an empty best line. Try again.".into(), None);
+                }
+                match replay_uci_game_from_position(position, &pv.moves) {
+                    Ok(replay) => BackendMessage::CloudEvaluation {
                         request_id: request.request_id,
                         requested_fen: request.requested_fen,
                         evaluation: CloudEvaluationLine {
@@ -1520,15 +1540,13 @@ impl LichessBackend {
                             mate_in: pv.mate,
                             depth: cloud.depth,
                             knodes: cloud.knodes,
-                            best_line,
+                            best_line: replay.move_history,
                         },
                     },
                     Err(e) => request.failed(format!("couldn't read cloud best line: {e}"), None),
                 }
             }
-            Ok(None) => BackendMessage::CloudEvaluationUnavailable {
-                request_id: request.request_id, requested_fen: request.requested_fen,
-            },
+            Ok(None) => request.unavailable(),
             Err(error) if is_rate_limited(&error) => {
                 *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
                 request.failed(CLOUD_RATE_LIMIT_MESSAGE.into(), Some(LICHESS_RATE_LIMIT_DELAY))
@@ -3802,9 +3820,78 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
 #[cfg(test)]
 mod cloud_evaluation_tests {
     use super::{CloudEvaluationRequest, LichessBackend, LichessClient, Mutex};
+    use serde_json::json;
     use std::time::{Duration, Instant};
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn cloud_evaluation_publishes_only_playable_scored_lines() {
+        let server = MockServer::start().await;
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let cooldown = Mutex::new(None);
+        let cases = [
+            (json!({"moves": "e2e4"}), "CloudEvaluationFailed"),
+            (json!({"cp": 22, "mate": -2, "moves": "e2e4"}), "CloudEvaluationFailed"),
+            (json!({"cp": 22, "moves": "  "}), "CloudEvaluationFailed"),
+            (json!({"mate": 0, "moves": "e2e4"}), "CloudEvaluationFailed"),
+            (json!({"cp": 22, "moves": "e2e5"}), "CloudEvaluationFailed"),
+            (json!({"cp": 0, "moves": "e2e4"}), "CloudEvaluation"),
+            (json!({"mate": 2, "moves": "e2e4"}), "CloudEvaluation"),
+            (json!({"mate": -2, "moves": "e2e4"}), "CloudEvaluation"),
+        ];
+        for (pv, expected) in cases {
+            let _mock = Mock::given(method("GET"))
+                .and(path("/api/cloud-eval"))
+                .and(query_param("fen", start))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "fen": start, "depth": 23, "knodes": 34, "pvs": [pv],
+                })))
+                .expect(1)
+                .mount_as_scoped(&server)
+                .await;
+            let request = CloudEvaluationRequest { requested_fen: start.into(), request_id: Some(27) };
+            let reply = serde_json::to_value(LichessBackend::fetch_cloud_evaluation(&client, request, &cooldown).await).unwrap();
+            assert_eq!(reply["type"], expected, "{pv}");
+            assert_eq!(reply["request_id"], 27);
+            assert_eq!(reply["requested_fen"], start);
+            assert!(reply.get("retry_after_ms").is_none());
+            if expected == "CloudEvaluation" {
+                assert_eq!(reply["evaluation"]["eval_cp"], pv["cp"]);
+                assert_eq!(reply["evaluation"]["mate_in"], pv["mate"]);
+                assert_eq!(reply["evaluation"]["best_line"], json!(["e4"]));
+            } else {
+                assert!(reply.get("evaluation").is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_evaluation_of_checkmate_or_stalemate_has_no_playable_line() {
+        let server = MockServer::start().await;
+        let cases = [
+            ("7k/6Q1/5K2/8/8/8/8/8 b - - 0 1", json!({"moves": "h8g8"})),
+            ("8/8/8/8/8/5k2/6q1/7K w - - 0 1", json!({"mate": 0, "moves": ""})),
+            ("7k/5K2/6Q1/8/8/8/8/8 b - - 0 1", json!({"cp": 0, "moves": ""})),
+        ];
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let cooldown = Mutex::new(None);
+        for (fen, pv) in cases {
+            let _mock = Mock::given(method("GET"))
+                .and(path("/api/cloud-eval"))
+                .and(query_param("fen", fen))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "fen": fen, "depth": 23, "knodes": 34, "pvs": [pv],
+                })))
+                .expect(1)
+                .mount_as_scoped(&server)
+                .await;
+            let request = CloudEvaluationRequest { requested_fen: fen.into(), request_id: Some(28) };
+            let reply = serde_json::to_value(LichessBackend::fetch_cloud_evaluation(&client, request, &cooldown).await).unwrap();
+            assert_eq!(reply, json!({"type": "CloudEvaluationUnavailable", "request_id": 28, "requested_fen": fen}));
+        }
+    }
 
     #[tokio::test]
     async fn cloud_cooldown_reports_the_remaining_wait_and_resumes_after_expiry() {
