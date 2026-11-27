@@ -210,6 +210,25 @@ impl LichessClient {
         self.send_with_logging(context, builder.timeout(self.request_timeout)).await
     }
 
+    // Following redirects can drop the bearer or replay a write. Reading a
+    // direct 401's body can delay sign-out, so only other failures need details.
+    async fn send_direct_authenticated(
+        &self,
+        context: &str,
+        method: reqwest::Method,
+        url: impl reqwest::IntoUrl,
+    ) -> Result<reqwest::Response> {
+        let response = self.send_logged(context, self.bearer(self.no_redirect_http.request(method, url))).await?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(http_response_error(context, status, None));
+        }
+        if !status.is_success() {
+            return Err(error_from_response(context, response).await);
+        }
+        Ok(response)
+    }
+
     async fn send_stream_logged(
         &self,
         context: &str,
@@ -509,77 +528,63 @@ impl LichessClient {
         Ok(response.json().await?)
     }
 
-    async fn post_board_action(&self, context: &str, path: &str) -> Result<()> {
-        // A redirect can replay the action or drop its bearer. Waiting for a
-        // direct 401's body can leave the rejected sign-in usable during the wait.
-        let response = self
-            .send_logged(context, self.bearer(self.no_redirect_http.post(format!("{}{path}", self.base_url))))
-            .await?;
-        let status = response.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(http_response_error(context, status, None));
-        }
-        if !status.is_success() {
-            return Err(error_from_response(context, response).await);
-        }
-        Ok(())
+    async fn post_direct_authenticated(&self, context: &str, path: &str) -> Result<()> {
+        self.send_direct_authenticated(context, reqwest::Method::POST, format!("{}{path}", self.base_url))
+            .await.map(drop)
     }
 
     pub async fn make_move(&self, game_id: &str, uci: &str) -> Result<()> {
-        self.post_board_action("make_move", &format!("/api/board/game/{game_id}/move/{uci}")).await
+        self.post_direct_authenticated("make_move", &format!("/api/board/game/{game_id}/move/{uci}")).await
     }
 
     pub async fn resign(&self, game_id: &str) -> Result<()> {
-        self.post_board_action("resign", &format!("/api/board/game/{game_id}/resign")).await
+        self.post_direct_authenticated("resign", &format!("/api/board/game/{game_id}/resign")).await
     }
 
     /// Same endpoint handles both offering a draw (when none is pending) and
     /// responding to the opponent's (accept=true to take it, false to decline) --
     /// confirmed against lichess-org/api's `api-board-game-gameId-draw-accept.yaml`.
     pub async fn draw(&self, game_id: &str, accept: bool) -> Result<()> {
-        self.post_board_action("draw", &format!("/api/board/game/{game_id}/draw/{accept}")).await
+        self.post_direct_authenticated("draw", &format!("/api/board/game/{game_id}/draw/{accept}")).await
     }
 
     /// Offer/accept/decline takeback -- same offer-or-respond split as `draw`.
     pub async fn takeback(&self, game_id: &str, accept: bool) -> Result<()> {
-        self.post_board_action("takeback", &format!("/api/board/game/{game_id}/takeback/{accept}")).await
+        self.post_direct_authenticated("takeback", &format!("/api/board/game/{game_id}/takeback/{accept}")).await
     }
 
     /// Only legal before either side has made a move; Lichess itself rejects a
     /// late abort rather than us trying to replicate that rule client-side.
     pub async fn abort(&self, game_id: &str) -> Result<()> {
-        self.post_board_action("abort", &format!("/api/board/game/{game_id}/abort")).await
+        self.post_direct_authenticated("abort", &format!("/api/board/game/{game_id}/abort")).await
     }
 
     pub async fn berserk(&self, game_id: &str) -> Result<()> {
-        self.post_board_action("berserk", &format!("/api/board/game/{game_id}/berserk")).await
+        self.post_direct_authenticated("berserk", &format!("/api/board/game/{game_id}/berserk")).await
     }
 
     pub async fn add_time(&self, game_id: &str, seconds: u32) -> Result<()> {
-        self.post_board_action("add_time", &format!("/api/round/{game_id}/add-time/{seconds}")).await
+        self.post_direct_authenticated("add_time", &format!("/api/round/{game_id}/add-time/{seconds}")).await
     }
 
     /// Only legal after Lichess's own `opponentGone` stream event has fired and
     /// its `claimWinInSeconds` has elapsed -- same "let the server be the
     /// authority" approach as `abort`, rather than running a local countdown.
     pub async fn claim_victory(&self, game_id: &str) -> Result<()> {
-        self.post_board_action("claim_victory", &format!("/api/board/game/{game_id}/claim-victory")).await
+        self.post_direct_authenticated("claim_victory", &format!("/api/board/game/{game_id}/claim-victory")).await
     }
 
     /// Only legal after Lichess reports that the opponent has left.
     pub async fn claim_draw(&self, game_id: &str) -> Result<()> {
-        self.post_board_action("claim_draw", &format!("/api/board/game/{game_id}/claim-draw")).await
+        self.post_direct_authenticated("claim_draw", &format!("/api/board/game/{game_id}/claim-draw")).await
     }
 
     /// GET /api/challenge returns {"in": [...], "out": [...]} -- only "in"
     /// (challenges targeted at you) matters here.
     pub async fn get_challenges(&self) -> Result<Vec<IncomingChallenge>> {
         let resp = self
-            .send_logged("get_challenges", self.bearer(self.http.get(format!("{}/api/challenge", self.base_url))))
+            .send_direct_authenticated("get_challenges", reqwest::Method::GET, format!("{}/api/challenge", self.base_url))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("get_challenges", resp).await);
-        }
         let parsed = resp.json::<ChallengeListResponse>().await?;
         Ok(parsed.incoming)
     }
@@ -588,33 +593,18 @@ impl LichessClient {
         let mut url = reqwest::Url::parse(&self.base_url)?;
         url.path_segments_mut().map_err(|_| anyhow!("Invalid Lichess URL"))?
             .pop_if_empty().extend(["api", "challenge", id, "show"]);
-        let resp = self.send_logged("get_challenge_terms", self.bearer(self.http.get(url))).await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("get_challenge_terms", resp).await);
-        }
+        let resp = self.send_direct_authenticated("get_challenge_terms", reqwest::Method::GET, url).await?;
         let detail = resp.json::<ChallengeDetails>().await?;
         anyhow::ensure!(detail.id == id, "Lichess returned details for another challenge");
         Ok(detail.terms)
     }
 
     pub async fn accept_challenge(&self, id: &str) -> Result<()> {
-        let resp = self
-            .send_logged("accept_challenge", self.bearer(self.http.post(format!("{}/api/challenge/{}/accept", self.base_url, id))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("accept_challenge", resp).await);
-        }
-        Ok(())
+        self.post_direct_authenticated("accept_challenge", &format!("/api/challenge/{id}/accept")).await
     }
 
     pub async fn decline_challenge(&self, id: &str) -> Result<()> {
-        let resp = self
-            .send_logged("decline_challenge", self.bearer(self.http.post(format!("{}/api/challenge/{}/decline", self.base_url, id))))
-            .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("decline_challenge", resp).await);
-        }
-        Ok(())
+        self.post_direct_authenticated("decline_challenge", &format!("/api/challenge/{id}/decline")).await
     }
 
     /// `/api/board/seek` is a long-poll endpoint, confirmed live against production:
@@ -1968,6 +1958,33 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         client.claim_draw("g1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invitation_requests_do_not_follow_redirects() {
+        let server = MockServer::start().await;
+        for (verb, route) in [
+            ("GET", "/api/challenge"),
+            ("GET", "/api/challenge/invite01/show"),
+            ("POST", "/api/challenge/invite01/accept"),
+            ("POST", "/api/challenge/invite01/decline"),
+        ] {
+            Mock::given(method(verb)).and(path(route))
+                .and(header("Authorization", "Bearer test-token"))
+                .respond_with(ResponseTemplate::new(307).insert_header("Location", "/unexpected"))
+                .expect(1).mount(&server).await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for error in [
+            client.get_challenges().await.unwrap_err(),
+            client.get_challenge_terms("invite01").await.unwrap_err(),
+            client.accept_challenge("invite01").await.unwrap_err(),
+            client.decline_challenge("invite01").await.unwrap_err(),
+        ] {
+            assert_eq!(error.downcast_ref::<HttpResponseError>().unwrap().status,
+                reqwest::StatusCode::TEMPORARY_REDIRECT);
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 4);
     }
 
     #[tokio::test]
