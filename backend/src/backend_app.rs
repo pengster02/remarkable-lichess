@@ -144,6 +144,13 @@ struct AccountStream {
     credential_rejected: Arc<AtomicBool>,
 }
 
+// Bind a Board worker to the sign-in that opened it. Looking up the current
+// account at finish can mutate a replacement, and a Board-local cache misses Home.
+struct BoardStreamAccount {
+    player_id: String,
+    home_games: Arc<std::sync::Mutex<HomeGameList>>,
+}
+
 // The account owns the last read. A screen-local cache misses reloads, and
 // persisting it on disk would retain game data after sign-out.
 #[derive(Default)]
@@ -160,11 +167,12 @@ impl HomeGameList {
         games
     }
 
-    fn finish(&mut self, id: &str) {
-        self.finished.insert(id.to_owned());
+    fn finish(&mut self, id: &str) -> bool {
+        let first = self.finished.insert(id.to_owned());
         if let Some((_, games)) = self.snapshot.as_mut() {
             games.retain(|game| game.game_id != id);
         }
+        first
     }
 
     fn replay(&self, now: Instant) -> Option<CachedHomeGames> {
@@ -928,8 +936,10 @@ impl LichessBackend {
     }
 
     async fn handle_resume_game(&mut self, replier: &BackendReplier<Self>, game_id: String) {
-        let Some(client) = self.client.clone() else { return };
-        let Some(my_id) = self.my_id.clone() else { return };
+        let (Some(client), Some(player_id), Some(account)) =
+            (self.client.clone(), self.my_id.clone(), self.account_stream.as_ref())
+        else { return };
+        let account = BoardStreamAccount { player_id, home_games: account.home_games.clone() };
         {
             let current = self.session.lock().await;
             if let Some(session) = current.as_ref().filter(|session| session.game_id == game_id) {
@@ -951,7 +961,7 @@ impl LichessBackend {
         }
         self.stop_game_stream().await;
         let task = spawn_game_stream(
-            client, game_id.clone(), replier.clone(), self.session.clone(), my_id, self.write_lock.clone(),
+            client, game_id.clone(), replier.clone(), self.session.clone(), account, self.write_lock.clone(),
             self.game_stream_cooldown.clone(),
         );
         self.game_stream = Some(GameStream { game_id, task });
@@ -1949,14 +1959,7 @@ async fn read_account_events(
                     }
                     Some(EventStreamMessage::GameFinish { game }) => {
                         announced_games.remove(&game.id);
-                        {
-                            // Keep the finish and any published snapshot in the same order.
-                            let mut list = game_list.lock().expect("home game list lock poisoned");
-                            list.finish(&game.id);
-                            send_locked(replier, write_lock, &BackendMessage::GameFinished {
-                                game_id: game.id.clone(),
-                            });
-                        }
+                        report_game_finish(replier, write_lock, game_list, &game.id);
                         if let Some(rating_diff) = game.rating_diff {
                             send_locked(replier, write_lock, &BackendMessage::RatingDiff {
                                 game_id: game.id,
@@ -1972,6 +1975,20 @@ async fn read_account_events(
         let delay = reconnect.after_attempt(received_for);
         log::warn!("account event stream ended; retrying in {delay:?}");
         tokio::time::sleep(delay).await;
+    }
+}
+
+fn report_game_finish(
+    replier: &BackendReplier<LichessBackend>,
+    write_lock: &Arc<std::sync::Mutex<()>>,
+    game_list: &std::sync::Mutex<HomeGameList>,
+    game_id: &str,
+) {
+    // Serialize the first notice with Home snapshots. Sending after unlocking
+    // can reorder them, and publishing both stream notices can repeat the read.
+    let mut list = game_list.lock().expect("home game list lock poisoned");
+    if list.finish(game_id) {
+        send_locked(replier, write_lock, &BackendMessage::GameFinished { game_id: game_id.to_owned() });
     }
 }
 
@@ -2324,7 +2341,8 @@ mod game_board_support_tests {
             "gameId": id, "isMyTurn": true, "speed": "correspondence", "secondsLeft": 1200,
         })).unwrap());
 
-        list.finish("finished");
+        assert!(list.finish("finished"));
+        assert!(!list.finish("finished"));
         let active = game("active");
         let finished = game("finished");
         let rows = list.record(received_at, vec![finished.clone(), active.clone()]);
@@ -2334,7 +2352,7 @@ mod game_board_support_tests {
         assert_eq!(replay.games, rows);
         assert_eq!(replay.age_ms, 1234);
 
-        list.finish("active");
+        assert!(list.finish("active"));
         assert!(list.replay(later).unwrap().games.is_empty());
         assert!(list.record(later, vec![finished, active]).is_empty());
         assert!(list.record(later, vec![]).is_empty());
@@ -2600,13 +2618,14 @@ fn spawn_game_stream(
     game_id: String,
     replier: BackendReplier<LichessBackend>,
     session_handle: Arc<Mutex<Option<GameSession>>>,
-    my_id: String,
+    account: BoardStreamAccount,
     write_lock: Arc<std::sync::Mutex<()>>,
     cooldown: RateLimitCooldown,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
         let mut stream_finished = false;
+        let finish = || report_game_finish(&replier, &write_lock, &account.home_games, &game_id);
         // Waiting inline stalls moves. A detached lookup outlives a game switch.
         let mut player_status_requests = tokio::task::JoinSet::new();
         while !stream_finished {
@@ -2654,7 +2673,11 @@ fn spawn_game_stream(
                                 // A finished game can send only one Full snapshot
                                 // before EOF, which would otherwise trigger a retry.
                                 GameStreamMessage::Full(full) => {
-                                    match GameSession::from_game_full(&full, &my_id) {
+                                    let is_over = full.state.is_terminal();
+                                    if is_over {
+                                        finish();
+                                    }
+                                    match GameSession::from_game_full(&full, &account.player_id) {
                                         Ok((mut s, mut board_msg)) => {
                                             readiness.accept_state(full.state.awaiting_start(), Instant::now());
                                             if let Some(previous) = guard.as_mut().filter(|session| {
@@ -2674,7 +2697,7 @@ fn spawn_game_stream(
                                             }) {
                                                 s.inherit_pending_requests(previous, &mut board_msg);
                                             }
-                                            if full.state.is_terminal() {
+                                            if is_over {
                                                 stream_finished = true;
                                                 *guard = None;
                                                 Some(board_msg)
@@ -2724,6 +2747,7 @@ fn spawn_game_stream(
                                             }
                                         };
                                         if is_over {
+                                            finish();
                                             stream_finished = true;
                                             *guard = None;
                                         } else if result.is_none() {
