@@ -33,6 +33,7 @@ Rectangle {
     property var seekPreferences: null
     property bool seekEnded: false
     readonly property bool connectingMatch: pendingAction === "seek" || pendingAction === "challenge"
+    readonly property bool trackingDirectChallenge: pendingAction === "challenge" || waitingChallengeGameId.length > 0
     readonly property bool creatingMatch: pendingAction === "open" || pendingAction === "computer"
     readonly property bool canCancelMatch: matchRequestId > 0 && (connectingMatch || waiting)
     readonly property bool showingSetup: !waiting && !connectingMatch && !seekEnded
@@ -596,9 +597,21 @@ Rectangle {
         AppButton {
             objectName: "cancelMatchButton"
             width: parent.width
-            text: "Cancel"
+            // Closing the local request leaves a brief acceptance window.
+            // "Cancel" implies server confirmation, and the cancel API can abort a game.
+            text: seekScreen.trackingDirectChallenge ? "Stop waiting" : "Cancel"
             visible: seekScreen.canCancelMatch
             onClicked: seekScreen.cancelWaiting()
+        }
+
+        Text {
+            objectName: "stopWaitingHint"
+            width: parent.width
+            visible: seekScreen.canCancelMatch && seekScreen.trackingDirectChallenge
+            text: "If you stop waiting, your opponent may still accept. Check Home for the game."
+            font.pixelSize: theme.fontBody
+            wrapMode: Text.WordWrap
+            color: theme.textMuted
         }
         }
     }
@@ -669,7 +682,7 @@ Rectangle {
             seekScreen.clearWaiting()
             seekScreen.showSetupError(msg.message || "Lichess could not create that game.", retry)
         } else if (msg.type === "GameStarted") {
-            if (seekScreen.pendingAction === "challenge" || seekScreen.waitingChallengeGameId) {
+            if (seekScreen.trackingDirectChallenge) {
                 if (msg.board_supported === false || !msg.game_id) return
                 if (seekScreen.waitingChallengeGameId && msg.game_id !== seekScreen.waitingChallengeGameId) return
                 if (seekScreen.challengeConnectionError) seekScreen.finishChallenge(msg.game_id)

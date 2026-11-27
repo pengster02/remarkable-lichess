@@ -3955,16 +3955,21 @@ TestCase {
         verify(first > 0)
         var cancel = findChild(seek, "cancelMatchButton")
         verify(cancel && cancel.visible && cancel.enabled)
+        compare(cancel.text, data.direct ? "Stop waiting" : "Cancel")
+        var hint = findChild(seek, "stopWaitingHint")
+        compare(hint.visible, data.direct)
         verify(!findChild(seek, "findOpponentButton").visible)
         tryVerify(function() {
             return cancel.mapToItem(pager, 0, 0).y >= 0 &&
-                cancel.mapToItem(pager, 0, cancel.height).y <= pager.pageHeight
+                cancel.mapToItem(pager, 0, cancel.height).y <= pager.pageHeight &&
+                (!data.direct || hint.mapToItem(pager, 0, hint.height).y <= pager.pageHeight)
         })
         cancel.clicked()
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "CancelMatch", request_id: first})
         compare(seek.pendingAction, "")
         verify(seek.showingSetup)
+        verify(!hint.visible)
 
         var second = submit()
         verify(first !== second)
@@ -3976,6 +3981,8 @@ TestCase {
         compare(seek.formError, "")
         endpoint.reply({type: createdType, game_id: "current", request_id: second})
         verify(seek.waiting)
+        compare(cancel.text, data.direct ? "Stop waiting" : "Cancel")
+        compare(hint.visible, data.direct)
     }
 
     function test_seekMatchBeforeTheAckWaitsForSuccess() {
@@ -4119,7 +4126,9 @@ TestCase {
         var lost = {type: "ChallengeResolved", game_id: "direct01", request_id: request,
                     error: "Lost the challenge connection.", connection_lost: true}
         endpoint.reply(lost)
-        findChild(screen.item, "cancelMatchButton").clicked()
+        var stopWaiting = findChild(screen.item, "cancelMatchButton")
+        compare(stopWaiting.text, "Stop waiting")
+        stopWaiting.clicked()
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
                 {type: "CancelMatch", request_id: request})
         endpoint.reply({type: "GameStarted", game_id: "direct01", board_supported: true})
