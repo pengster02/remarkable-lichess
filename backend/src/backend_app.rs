@@ -10,7 +10,7 @@ use crate::lichess::client::{
 use crate::lichess::oauth;
 use crate::lichess::models::{
     ChallengeResolution, ChallengeResult, ChallengeTerms, EventGame, EventStreamMessage, GameStreamMessage,
-    Account, PlayingGame, PlayingOpponent, Variant,
+    Account, IncomingChallenge, PlayingGame, PlayingOpponent, Variant,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
@@ -1780,7 +1780,14 @@ impl LichessBackend {
                         // The one queued event is covered by this fresh snapshot.
                         let _ = refreshes.try_recv();
                     }
-                    let reply = load_pending_challenges(&client, &list).await;
+                    let result = client.get_challenges().await;
+                    // Report before mapping to a list failure. A generic error
+                    // keeps a revoked session active, and treating 403 as global loses Board access.
+                    if result.as_ref().err().is_some_and(is_unauthorized) {
+                        report_account_rejection(&replier, &rejected);
+                        break;
+                    }
+                    let reply = challenge_list_reply(result, &list);
                     let missing_scope = matches!(reply, BackendMessage::ChallengesLoadFailed { retryable: Some(false), .. });
                     retry_queued = matches!(reply, BackendMessage::ChallengesLoadFailed { retry_after_ms: Some(_), .. });
                     if retry_queued {
@@ -1830,10 +1837,13 @@ impl LichessBackend {
         replier: &BackendReplier<Self>,
         request: ChallengeRequest,
     ) {
-        let Some(client) = self.client.clone() else {
+        let (Some(client), Some(account)) = (self.client.clone(), self.account_stream.as_ref()) else {
             self.send(replier, &request.failure("Sign in to Lichess to respond to challenges.".into()));
             return;
         };
+        let refresh = account.challenge_refresh.clone();
+        let list = account.challenge_list.clone();
+        let credential_rejected = account.credential_rejected.clone();
         if let Some(pending) = self.pending_challenge_action.as_mut() {
             if pending.matches(request.request_id) {
                 return;
@@ -1851,17 +1861,19 @@ impl LichessBackend {
         let request_id = request.request_id;
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
-        let refresh = self.account_stream.as_ref().map(|account| account.challenge_refresh.clone());
-        let list = self.account_stream.as_ref().map(|account| account.challenge_list.clone());
         let cooldown = self.challenge_action_cooldown.clone();
         let (done, completion) = oneshot::channel();
         let task = tokio::spawn(async move {
             let result = match request.action {
                 ChallengeAction::Accept => {
-                    accept_playable_challenge(&client, list.as_deref(), &request.challenge_id).await
+                    accept_playable_challenge(&client, &list, &request.challenge_id).await
                 }
                 ChallengeAction::Decline => client.decline_challenge(&request.challenge_id).await,
             };
+            if result.as_ref().err().is_some_and(is_unauthorized) {
+                report_account_rejection(&replier, &credential_rejected);
+                return;
+            }
             let failure = result.err().map(|error| {
                 if is_rate_limited(&error) {
                     cooldown.start();
@@ -1876,18 +1888,14 @@ impl LichessBackend {
                 return;
             }
             let challenge_id = request.challenge_id;
-            if let Some(list) = list {
-                list.lock().expect("challenge list lock poisoned").resolve(&challenge_id);
-            }
+            list.lock().expect("challenge list lock poisoned").resolve(&challenge_id);
             drop(done);
             let reply = match request.action {
                 ChallengeAction::Accept => BackendMessage::ChallengeAccepted { game_id: challenge_id, request_id },
                 ChallengeAction::Decline => BackendMessage::ChallengeDeclined { challenge_id, request_id },
             };
             send_locked(&replier, &write_lock, &reply);
-            if let Some(refresh) = refresh {
-                let _ = refresh.try_send(());
-            }
+            let _ = refresh.try_send(());
         });
         self.pending_challenge_action = Some(GameRequest { request_id, task, completion: Some(completion) });
     }
@@ -1895,15 +1903,12 @@ impl LichessBackend {
 
 async fn accept_playable_challenge(
     client: &LichessClient,
-    list: Option<&std::sync::Mutex<ChallengeList>>,
+    list: &std::sync::Mutex<ChallengeList>,
     id: &str,
 ) -> anyhow::Result<()> {
     // Challenge IDs keep their terms. Reading every invite again adds latency,
     // while trusting the frontend can accept a game the board cannot open.
-    let cached = match list {
-        Some(list) => list.lock().expect("challenge list lock poisoned").support.get(id).cloned(),
-        None => None,
-    };
+    let cached = list.lock().expect("challenge list lock poisoned").support.get(id).cloned();
     let board_support = match cached {
         Some(support) => support,
         None => {
@@ -2133,15 +2138,12 @@ fn send_locked(replier: &BackendReplier<LichessBackend>, lock: &Arc<std::sync::M
     let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, &json);
 }
 
-/// Shared by the RequestChallenges dispatch and the account event stream's
-/// challenge/challengeCanceled/challengeDeclined handling below -- both just need
-/// a fresh GET /api/challenge snapshot pushed to the frontend.
-async fn load_pending_challenges(
-    client: &LichessClient,
+fn challenge_list_reply(
+    result: anyhow::Result<Vec<IncomingChallenge>>,
     list: &std::sync::Mutex<ChallengeList>,
 ) -> BackendMessage {
     use crate::protocol::ChallengeTimeControlKind;
-    match client.get_challenges().await {
+    match result {
         Ok(challenges) => {
             let mut known_support = HashMap::new();
             let mut challenges: Vec<_> = challenges
