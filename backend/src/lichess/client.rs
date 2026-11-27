@@ -49,6 +49,12 @@ pub(crate) fn is_auth_rejection(error: &anyhow::Error) -> bool {
     })
 }
 
+#[cfg(feature = "transport")]
+pub(crate) fn is_unauthorized(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<HttpResponseError>()
+        .is_some_and(|error| error.status == reqwest::StatusCode::UNAUTHORIZED)
+}
+
 #[cfg(any(feature = "transport", test))]
 pub(crate) fn is_challenge_read_denial(error: &anyhow::Error) -> bool {
     error.downcast_ref::<HttpResponseError>().is_some_and(|error| {
@@ -241,7 +247,7 @@ impl LichessClient {
 
     pub async fn get_account(&self) -> Result<Account> {
         let resp = self
-            .send_logged("get_account", self.bearer(self.http.get(format!("{}/api/account", self.base_url))))
+            .send_logged("get_account", self.bearer(self.no_redirect_http.get(format!("{}/api/account", self.base_url))))
             .await?;
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(http_response_error("get_account", resp.status(), None));
@@ -273,7 +279,7 @@ impl LichessClient {
         // One maximal read keeps Lichess's urgent order. The default truncates
         // at nine, and additional reads repeat the list without a cursor.
         let resp = self
-            .send_logged("get_playing", self.bearer(self.http
+            .send_logged("get_playing", self.bearer(self.no_redirect_http
                 .get(format!("{}/api/account/playing", self.base_url))
                 .query(&[("nb", 50)])))
             .await?;
@@ -800,8 +806,9 @@ impl LichessClient {
         &self,
         url_path: &str,
     ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
+        // A redirected request could drop its bearer and make a valid account look unauthorized.
         let resp = self
-            .send_stream_logged(&format!("stream {url_path}"), self.bearer(self.http.get(format!("{}{}", self.base_url, url_path))))
+            .send_stream_logged(&format!("stream {url_path}"), self.bearer(self.no_redirect_http.get(format!("{}{}", self.base_url, url_path))))
             .await?;
         Ok(response_to_lines(resp))
     }
@@ -1136,6 +1143,29 @@ mod tests {
             let error = client.get_account().await.unwrap_err();
             assert_eq!(is_auth_rejection(&error), rejected, "HTTP {status}");
         }
+    }
+
+    #[tokio::test]
+    async fn account_reads_refuse_redirects_before_classifying_rejection() {
+        let server = MockServer::start().await;
+        let other = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(401)).mount(&other).await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(307).insert_header("Location", other.uri().as_str()))
+            .mount(&server)
+            .await;
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let errors = [
+            client.get_account().await.err(),
+            client.get_playing().await.err(),
+            client.stream_lines("/api/stream/event").await.err(),
+        ];
+        for error in errors {
+            let error = error.expect("account read must refuse the redirect");
+            assert_eq!(error.downcast_ref::<HttpResponseError>().unwrap().status,
+                reqwest::StatusCode::TEMPORARY_REDIRECT);
+        }
+        assert!(other.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
