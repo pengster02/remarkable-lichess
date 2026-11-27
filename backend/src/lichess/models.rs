@@ -368,16 +368,32 @@ pub struct LightUser {
     pub name: Option<String>,
 }
 
-// The per-player summary from Lichess's computer analysis.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+// Missing counters stay unknown. Defaulting them to zero invents a result,
+// and dropping the whole report loses independently valid measurements.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlayerAnalysisSummary {
-    pub inaccuracy: u32,
-    pub mistake: u32,
-    pub blunder: u32,
-    // Lichess omits ACPL without paired evaluations. Requiring it drops
-    // the whole game, while defaulting to zero invents a score.
+    pub inaccuracy: Option<u32>,
+    pub mistake: Option<u32>,
+    pub blunder: Option<u32>,
     pub acpl: Option<u32>,
     pub accuracy: Option<u32>,
+}
+
+fn deserialize_player_analysis<'de, D>(deserializer: D) -> Result<Option<PlayerAnalysisSummary>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let analysis = serde_json::Value::deserialize(deserializer)?;
+    let number = |field| analysis.get(field).and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let summary = PlayerAnalysisSummary {
+        inaccuracy: number("inaccuracy"),
+        mistake: number("mistake"),
+        blunder: number("blunder"),
+        acpl: number("acpl"),
+        accuracy: number("accuracy").filter(|percent| *percent <= 100),
+    };
+    Ok((summary != PlayerAnalysisSummary::default()).then_some(summary))
 }
 
 // Confirmed against lichess-org/api's GamePlayerUser.yaml. `user` is absent for
@@ -396,6 +412,7 @@ pub struct GamePlayerUser {
     pub ai_level: Option<u8>,
     #[serde(rename = "ratingDiff")]
     pub rating_diff: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_player_analysis")]
     pub analysis: Option<PlayerAnalysisSummary>,
 }
 
@@ -774,7 +791,7 @@ mod tests {
         let json = r#"{"id":"abcd1234","rated":true,"variant":"standard","speed":"blitz","perf":"blitz","createdAt":1,"lastMoveAt":2,"status":"mate","players":{"white":{"user":{"id":"myuser","name":"MyUser"},"rating":1600,"analysis":{"inaccuracy":5,"mistake":2,"blunder":1,"acpl":26,"accuracy":90}},"black":{"user":{"id":"bob","name":"Bob"},"rating":1580}},"winner":"white"}"#;
         let game: HistoryGame = serde_json::from_str(json).unwrap();
         let summary = game.players.white.analysis.unwrap();
-        assert_eq!(summary.blunder, 1);
+        assert_eq!(summary.blunder, Some(1));
         assert_eq!(summary.accuracy, Some(90));
         assert_eq!(game.players.black.analysis, None);
     }
@@ -817,6 +834,31 @@ mod tests {
         // for the (common) case of an untimed or never-analyzed game.
         assert!(export.clocks.is_empty());
         assert_eq!(export.analysis, Vec::new());
+    }
+
+    #[test]
+    fn player_analysis_keeps_available_measurements_without_affecting_identity() {
+        for (analysis, expected) in [
+            (r#"{"inaccuracy":2,"mistake":0,"accuracy":100,"acpl":"invalid"}"#, Some(PlayerAnalysisSummary {
+                inaccuracy: Some(2), mistake: Some(0), accuracy: Some(100), ..PlayerAnalysisSummary::default()
+            })),
+            (r#"{"accuracy":0,"acpl":0,"blunder":-1,"mistake":1.5}"#, Some(PlayerAnalysisSummary {
+                acpl: Some(0), accuracy: Some(0), ..PlayerAnalysisSummary::default()
+            })),
+            (r#"{"accuracy":101,"blunder":7}"#, Some(PlayerAnalysisSummary {
+                blunder: Some(7), ..PlayerAnalysisSummary::default()
+            })),
+            (r#"{"accuracy":-1,"inaccuracy":4294967296,"blunder":null}"#, None),
+            (r#"["invalid"]"#, None),
+            ("null", None),
+            ("{}", None),
+        ] {
+            let json = format!(r#"{{"user":{{"id":"player"}},"ratingDiff":-7,"analysis":{analysis}}}"#);
+            let player: GamePlayerUser = serde_json::from_str(&json).unwrap();
+            assert_eq!(player.user.unwrap().id.as_deref(), Some("player"));
+            assert_eq!(player.rating_diff, Some(-7));
+            assert_eq!(player.analysis, expected, "{analysis}");
+        }
     }
 
     #[test]

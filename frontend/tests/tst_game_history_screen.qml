@@ -162,6 +162,10 @@ TestCase {
             {tag: "explicit null", fields: {your_analysis: null}, text: ""},
             {tag: "accuracy zero", fields: {your_analysis: {accuracy: 0, blunders: 0, mistakes: 2}},
                 text: "Accuracy 0% · 0 blunders, 2 mistakes"},
+            {tag: "partial counter", fields: {your_analysis: {accuracy: 100, blunders: null, mistakes: 0}},
+                text: "Accuracy 100% · 0 mistakes"},
+            {tag: "percent only", fields: {your_analysis: {accuracy: 90}}, text: "Accuracy 90%"},
+            {tag: "no displayable data", fields: {your_analysis: {accuracy: 101, acpl: 12}}, text: ""},
             {tag: "accuracy unknown", fields: {your_analysis: {accuracy: null, blunders: 1, mistakes: 0}},
                 text: "Accuracy n/a · 1 blunders, 0 mistakes"}
         ]
