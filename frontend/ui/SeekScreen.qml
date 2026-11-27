@@ -230,6 +230,11 @@ Rectangle {
             showSetupError("Enter the Lichess username you want to challenge.", challengePlayerButton)
             return
         }
+        if (!/^[A-Za-z0-9_-]{2,30}$/.test(username)) {
+            showSetupError("Enter a Lichess username with 2–30 letters, digits, underscores, or hyphens.",
+                           challengePlayerButton)
+            return
+        }
         dismissKeyboard()
         matchRequestId = nextRequestId()
         waitingLabel = "Sending challenge…"

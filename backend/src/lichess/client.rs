@@ -677,6 +677,21 @@ impl LichessClient {
         rated: bool,
         color: &str,
     ) -> Result<(String, std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>)> {
+        let username = username.trim();
+        // Lichess uses its historical syntax for existing names. Signup
+        // rules reject some legacy names, and URL encoding allows invalid ones.
+        anyhow::ensure!(
+            (2..=30).contains(&username.len()) &&
+                username.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')),
+            "Enter a Lichess username with 2–30 letters, digits, underscores, or hyphens."
+        );
+        // The literal routes are case-sensitive and user lookup is not.
+        // Blocking both names loses valid targets, while URL escapes may be normalized.
+        let username = match username {
+            "ai" => "AI",
+            "open" => "Open",
+            _ => username,
+        };
         let resp = self
             .send_stream_logged("create_challenge", self.bearer(self.http.post(format!("{}/api/challenge/{}", self.base_url, username)))
                 .form(&[
@@ -1632,6 +1647,40 @@ mod tests {
         let (id, mut lines) = client.create_challenge("opponent", 10, 5, false, "random").await.unwrap();
         assert_eq!(id, "direct01");
         assert_eq!(lines.next().await.as_deref(), Some(r#"{"done":"accepted"}"#));
+    }
+
+    #[tokio::test]
+    async fn direct_challenge_checks_usernames_before_sending() {
+        let server = MockServer::start().await;
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for username in ["", "a", "two words", "José", "chess.example", &"a".repeat(31)] {
+            let result = client.create_challenge(username, 10, 0, false, "white").await;
+            assert!(result.err().is_some_and(|error| error.to_string().contains("username")), "{username:?}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn direct_challenge_names_use_the_player_route() {
+        let server = MockServer::start().await;
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let longest_name = "abcdefghijklmnopqrstuvwxy12345";
+        for (username, expected) in [
+            ("ai", "AI"),
+            ("open", "Open"),
+            ("oPeN", "oPeN"),
+            (" 1_Friend- ", "1_Friend-"),
+            (longest_name, longest_name),
+        ] {
+            Mock::given(method("POST"))
+                .and(path(format!("/api/challenge/{expected}")))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{\"id\":\"direct01\"}\n"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let (id, _) = client.create_challenge(username, 10, 0, false, "white").await.unwrap();
+            assert_eq!(id, "direct01");
+        }
     }
 
     #[tokio::test]
