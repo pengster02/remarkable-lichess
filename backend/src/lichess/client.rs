@@ -50,6 +50,14 @@ pub(crate) fn is_auth_rejection(error: &anyhow::Error) -> bool {
 }
 
 #[cfg(any(feature = "transport", test))]
+pub(crate) fn is_challenge_read_denial(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<HttpResponseError>().is_some_and(|error| {
+        error.status == reqwest::StatusCode::FORBIDDEN &&
+            error.reason.as_deref() == Some("Missing scope: challenge:read")
+    })
+}
+
+#[cfg(any(feature = "transport", test))]
 pub(crate) fn board_stream_rejection(error: &anyhow::Error) -> Option<&str> {
     let error = error.downcast_ref::<HttpResponseError>()?;
     let fallback = match error.status {
@@ -1955,6 +1963,25 @@ mod tests {
         assert_eq!(clocks[2].kind.as_deref(), Some("unlimited"));
         assert_eq!(clocks[3].kind.as_deref(), Some("future"));
         assert_eq!(challenges[4].terms.time_control, None);
+    }
+
+    #[tokio::test]
+    async fn only_a_challenge_read_scope_denial_stops_list_retries() {
+        for (status, reason, denied) in [
+            (403, "Missing scope: challenge:read", true),
+            (403, "Missing scope: board:play", false),
+            (403, "Access denied", false),
+            (503, "Missing scope: challenge:read", false),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/challenge"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({"error": reason})))
+                .mount(&server)
+                .await;
+            let client = LichessClient::with_base_url("test-token".into(), server.uri());
+            assert_eq!(is_challenge_read_denial(&client.get_challenges().await.unwrap_err()), denied);
+        }
     }
 
     #[tokio::test]

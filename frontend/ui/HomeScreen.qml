@@ -82,6 +82,7 @@ Rectangle {
     property string connectionMessage: ""
     property string loadError: ""
     property string challengesError: ""
+    property bool challengesRetryable: true
     property string actionError: ""
     property var pendingInvitation: null
     readonly property string pendingChallengeId: pendingInvitation ? pendingInvitation.challengeId : ""
@@ -123,9 +124,10 @@ Rectangle {
     }
 
     function refresh() {
-        homeScreen.challengesError = ""
+        if (homeScreen.challengesRetryable) homeScreen.challengesError = ""
         homeScreen.actionError = ""
-        if (homeScreen.refreshGames()) homeScreen.backendSender({type: "RequestChallenges"})
+        if (homeScreen.refreshGames() && homeScreen.challengesRetryable)
+            homeScreen.backendSender({type: "RequestChallenges"})
     }
 
     function refreshGames(gamesOnly) {
@@ -153,6 +155,7 @@ Rectangle {
     }
 
     function refreshChallenges() {
+        if (!homeScreen.challengesRetryable) return
         homeScreen.challengesError = ""
         homeScreen.backendSender({type: "RequestChallenges"})
     }
@@ -311,8 +314,10 @@ Rectangle {
                     color: theme.errorText
                 }
                 AppButton {
+                    objectName: "retryChallengesButton"
                     width: parent.width
                     text: "Retry challenges"
+                    visible: homeScreen.challengesRetryable
                     onClicked: homeScreen.refreshChallenges()
                 }
             }
@@ -597,6 +602,7 @@ Rectangle {
         } else if (msg.type === "AccountEventsResumed") {
             homeScreen.queueGamesRefresh()
         } else if (msg.type === "PendingChallenges") {
+            homeScreen.challengesRetryable = true
             homeScreen.challengesError = ""
             homeScreen.pendingChallenges = msg.challenges || []
         } else if (msg.type === "ChallengeAccepted" || msg.type === "ChallengeDeclined") {
@@ -627,6 +633,8 @@ Rectangle {
                 homeScreen.queueGamesRefresh()
             }
         } else if (msg.type === "ChallengesLoadFailed") {
+            homeScreen.challengesRetryable = msg.retryable !== false
+            if (!homeScreen.challengesRetryable) homeScreen.pendingChallenges = []
             homeScreen.challengesError = msg.message ||
                 "Couldn't load challenges."
         } else if (msg.type === "ErrorMsg") {
