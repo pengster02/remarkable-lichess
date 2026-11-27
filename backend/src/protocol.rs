@@ -908,6 +908,7 @@ pub enum BackendMessage {
     // game that's actually been through its computer review, so the frontend
     // must index defensively rather than assume equal length.
     GameMoves {
+        game_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
         moves: Vec<String>,
@@ -1378,6 +1379,7 @@ mod tests {
             FrontendMessage::CancelGameReview { request_id: 7 }
         );
         let json = serde_json::to_string(&BackendMessage::GameMoves {
+            game_id: "abcd1234".into(),
             request_id: Some(7),
             moves: vec!["e4".into(), "e5".into()],
             fens: vec!["startpos".into(), "after-e4".into(), "after-e5".into()],
@@ -1389,6 +1391,7 @@ mod tests {
         })
         .unwrap();
         assert!(json.contains(r#""type":"GameMoves""#));
+        assert!(json.contains(r#""game_id":"abcd1234""#));
         assert!(json.contains(r#""request_id":7"#));
         assert!(json.contains(r#""moves":["e4","e5"]"#));
         assert!(json.contains(r#""initial_in_check":false"#));
@@ -1415,6 +1418,7 @@ mod tests {
     #[test]
     fn game_moves_serializes_clock_and_analysis_when_present() {
         let json = serde_json::to_string(&BackendMessage::GameMoves {
+            game_id: "abcd1234".into(),
             request_id: None,
             moves: vec!["e4".into()],
             fens: vec!["startpos".into(), "after-e4".into()],
