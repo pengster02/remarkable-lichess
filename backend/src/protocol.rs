@@ -793,6 +793,9 @@ pub enum BackendMessage {
     FinalPositionUnavailable {
         game_id: String,
         outcome: Box<GameOutcome>,
+        // Use the same verdict as Review. A UI allowlist could drift, while
+        // treating all failed positions as unsupported would hide valid reviews.
+        review_supported: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         your_color: Option<&'static str>,
         #[serde(skip_serializing_if = "Option::is_none")]

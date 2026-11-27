@@ -396,6 +396,7 @@ impl GameSession {
         BackendMessage::FinalPositionUnavailable {
             game_id: full.id.clone(),
             outcome: Box::new(result),
+            review_supported: supports_variant(&full.variant.key),
             your_color,
             opponent: your_color.map(|color| Box::new(player_identity(opponent(full, color)))),
         }
@@ -407,6 +408,7 @@ impl GameSession {
         BackendMessage::FinalPositionUnavailable {
             game_id: self.game_id.clone(),
             outcome: Box::new(result),
+            review_supported: true,
             your_color,
             opponent: your_color.map(|_| Box::new(self.opponent_player.clone())),
         }
@@ -837,16 +839,20 @@ mod tests {
             ("unknown", None, None, None),
         ] {
             let message = GameSession::full_outcome_without_position(&full, id);
-            let BackendMessage::FinalPositionUnavailable { game_id, outcome, your_color, opponent } = message else {
+            let BackendMessage::FinalPositionUnavailable { game_id, outcome, your_color, opponent, review_supported } = message else {
                 panic!("expected outcome without position");
             };
             assert_eq!(game_id, "g1");
             assert_eq!(outcome.result, "black");
             assert_eq!(outcome.reason, "Resignation");
+            assert!(review_supported);
             assert_eq!(outcome.rating_diff, expected_diff);
             assert_eq!(your_color, expected_color);
             assert_eq!(opponent.as_deref().and_then(|player| player.name.as_deref()), expected_opponent);
         }
+        full.variant.key = "atomic".into();
+        assert!(matches!(GameSession::full_outcome_without_position(&full, "my-id"),
+            BackendMessage::FinalPositionUnavailable { review_supported: false, .. }));
     }
 
     #[test]

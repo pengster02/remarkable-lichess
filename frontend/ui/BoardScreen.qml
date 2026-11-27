@@ -16,6 +16,7 @@ Rectangle {
     property var navigateTo
     property var openGameReview: function() {}
     property var cancelGameReview: function() {}
+    property var openPgnExport
     property bool openingReview: false
     property bool gameExportCoolingDown: false
     // Keep review errors by Retry. A board notice replaces the result, and a separate dialog hides the summary.
@@ -238,6 +239,9 @@ Rectangle {
         }
     }
     property bool gameOver: false
+    property bool finishedReviewSupported: true
+    readonly property bool finishedGameSelected: boardScreen.gameOver && boardScreen.gameId.length > 0 &&
+        (!boardScreen.requestedGameId || boardScreen.requestedGameId === boardScreen.gameId)
     property bool awaitingGameStart: false
     property string finalPositionGameId: ""
     readonly property bool awaitingFinalPosition: boardScreen.finalPositionGameId.length > 0 &&
@@ -1363,19 +1367,20 @@ Rectangle {
         }
     }
 
-    component FinishedReviewAction: Column {
-        id: reviewAction
-        property string idleText
-        property alias buttonName: reviewButton.objectName
-        property alias highlighted: reviewButton.highlighted
+    component FinishedGameAction: Column {
+        id: finishedAction
+        property string reviewText
+        property string reviewButtonName
+        property string exportButtonName
+        property alias highlighted: actionButton.highlighted
         width: parent.width
-        visible: boardScreen.gameOver && boardScreen.gameId.length > 0
+        visible: boardScreen.finishedGameSelected && (boardScreen.finishedReviewSupported || !!boardScreen.openPgnExport)
         spacing: theme.spacingXs
 
         Text {
             objectName: "finishedReviewError"
             width: parent.width
-            visible: text.length > 0
+            visible: boardScreen.finishedReviewSupported && text.length > 0
             text: boardScreen.reviewOpenError
             color: theme.errorText
             font.pixelSize: theme.fontSmall
@@ -1383,13 +1388,15 @@ Rectangle {
             textFormat: Text.PlainText
         }
         AppButton {
-            id: reviewButton
+            id: actionButton
+            objectName: boardScreen.finishedReviewSupported ? finishedAction.reviewButtonName : finishedAction.exportButtonName
             width: parent.width
-            text: boardScreen.openingReview ? "Opening game…"
+            text: !boardScreen.finishedReviewSupported ? "Export PGN"
+                : boardScreen.openingReview ? "Opening game…"
                 : boardScreen.gameExportCoolingDown ? "Retry available shortly"
-                : boardScreen.reviewOpenError ? "Retry review" : reviewAction.idleText
-            enabled: !boardScreen.openingReview && !boardScreen.gameExportCoolingDown
-            onClicked: boardScreen.openFinishedGameReview()
+                : boardScreen.reviewOpenError ? "Retry review" : finishedAction.reviewText
+            enabled: !boardScreen.finishedReviewSupported || (!boardScreen.openingReview && !boardScreen.gameExportCoolingDown)
+            onClicked: boardScreen.openFinishedGame()
         }
     }
 
@@ -1434,9 +1441,10 @@ Rectangle {
             color: theme.textMuted
         }
 
-        FinishedReviewAction {
-            buttonName: "reviewFinishedActionButton"
-            idleText: "Review this game"
+        FinishedGameAction {
+            reviewButtonName: "reviewFinishedActionButton"
+            exportButtonName: "exportFinishedActionButton"
+            reviewText: "Review this game"
             highlighted: true
         }
         AppButton {
@@ -1875,9 +1883,10 @@ Rectangle {
                         boardScreen.navigateTo("HomeScreen.qml")
                     }
                 }
-                FinishedReviewAction {
-                    buttonName: "reviewFinishedGameButton"
-                    idleText: "Review game"
+                FinishedGameAction {
+                    reviewButtonName: "reviewFinishedGameButton"
+                    exportButtonName: "exportFinishedGameButton"
+                    reviewText: "Review game"
                 }
                 AppButton {
                     width: parent.width
@@ -2021,12 +2030,17 @@ Rectangle {
         }
         boardScreen.streamError = ""
         boardScreen.finalPositionUnavailable = true
+        boardScreen.finishedReviewSupported = msg.review_supported !== false
         boardScreen.completeGame(msg.outcome.result, msg.outcome.reason, color)
     }
 
-    function openFinishedGameReview() {
-        if (!boardScreen.gameOver || boardScreen.gameId.length === 0 ||
-                boardScreen.openingReview || boardScreen.gameExportCoolingDown) return
+    function openFinishedGame() {
+        if (!boardScreen.finishedGameSelected) return
+        if (!boardScreen.finishedReviewSupported) {
+            if (boardScreen.openPgnExport) boardScreen.openPgnExport(boardScreen.gameId, false)
+            return
+        }
+        if (boardScreen.openingReview || boardScreen.gameExportCoolingDown) return
         boardScreen.reviewOpenError = ""
         boardScreen.openGameReview(boardScreen.gameId, {
             game_id: boardScreen.gameId,
@@ -2053,6 +2067,7 @@ Rectangle {
             }
             if (!gameChanged && boardScreen.gameOver && (!boardScreen.finalPositionUnavailable || !msg.outcome)) return
             boardScreen.finalPositionUnavailable = false
+            boardScreen.finishedReviewSupported = true
             boardScreen.streamError = ""
             if (typeof msg.game_stream_connected === "boolean") {
                 boardScreen.streamReconnecting = !msg.game_stream_connected
