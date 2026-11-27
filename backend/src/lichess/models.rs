@@ -2,9 +2,6 @@ use serde::Deserialize;
 #[cfg(feature = "transport")]
 use shakmaty::Color;
 
-// Confirmed against lichess-org/api's Perf.yaml (games/rating/rd/prog required,
-// prov/rank only appear conditionally). Only the four fields this app actually
-// displays are modeled -- prov/rank aren't shown anywhere yet.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Perf {
     pub games: u32,
@@ -12,12 +9,17 @@ pub struct Perf {
     pub rd: u32,
     #[serde(default)]
     pub prog: i32,
+    // Preserve Lichess's flag. Defaulting to false loses absence, and inferring
+    // it from deviation would duplicate a server-side rule.
+    #[serde(rename = "prov")]
+    pub provisional: Option<bool>,
 }
 
-// Confirmed against lichess-org/api's Perfs.yaml -- only the 5 standard (non-variant,
-// non-puzzle) speed categories are modeled, matching what Home actually shows.
+// Only standard speed categories appear in Home's ratings.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct Perfs {
+    #[serde(rename = "ultraBullet")]
+    pub ultra_bullet: Option<Perf>,
     pub bullet: Option<Perf>,
     pub blitz: Option<Perf>,
     pub rapid: Option<Perf>,
@@ -761,10 +763,21 @@ mod tests {
 
     #[test]
     fn parses_account_with_perfs() {
-        let json = r#"{"id":"myid","username":"MyUser","perfs":{"rapid":{"games":42,"rating":1600,"rd":45,"prog":12},"puzzle":{"games":1,"rating":1000,"rd":300,"prog":0}}}"#;
+        let json = r#"{"id":"myid","username":"MyUser","perfs":{
+            "ultraBullet":{"games":3,"rating":1688,"rd":364,"prov":true},
+            "blitz":{"games":44,"rating":1510,"rd":65,"prov":false},
+            "rapid":{"games":42,"rating":1600,"rd":45,"prog":12},
+            "puzzle":{"games":1,"rating":1000,"rd":300,"prog":0}
+        }}"#;
         let account: Account = serde_json::from_str(json).unwrap();
         let perfs = account.perfs.unwrap();
-        assert_eq!(perfs.rapid.unwrap().rating, 1600);
+        let ultra_bullet = perfs.ultra_bullet.unwrap();
+        assert_eq!(ultra_bullet.rating, 1688);
+        assert_eq!(ultra_bullet.provisional, Some(true));
+        assert_eq!(perfs.blitz.unwrap().provisional, Some(false));
+        let rapid = perfs.rapid.unwrap();
+        assert_eq!(rapid.rating, 1600);
+        assert_eq!(rapid.provisional, None);
         // bullet wasn't in the payload at all -- must default to None, not error.
         assert_eq!(perfs.bullet, None);
     }

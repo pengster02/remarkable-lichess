@@ -3807,14 +3807,10 @@ impl AppLoadBackend for LichessBackend {
     }
 }
 
-/// Canonical Lichess display order for the standard speed categories (matches
-/// the order their own profile page lists Bullet/Blitz/Rapid/Classical/
-/// Correspondence in). A perf the account has never played comes back with
-/// `games: 0` rather than being absent entirely -- filtered out here so Home
-/// doesn't show a wall of "0" ratings for variants nobody's touched.
 fn ratings_from_perfs(perfs: Option<Perfs>) -> Vec<RatingSummary> {
     let Some(perfs) = perfs else { return Vec::new() };
     [
+        ("ultraBullet", perfs.ultra_bullet),
         ("bullet", perfs.bullet),
         ("blitz", perfs.blitz),
         ("rapid", perfs.rapid),
@@ -3824,7 +3820,11 @@ fn ratings_from_perfs(perfs: Option<Perfs>) -> Vec<RatingSummary> {
     .into_iter()
     .filter_map(|(speed, perf)| {
         let perf = perf?;
-        (perf.games > 0).then_some(RatingSummary { speed: speed.to_string(), rating: perf.rating })
+        (perf.games > 0).then_some(RatingSummary {
+            speed: speed.to_string(),
+            rating: perf.rating,
+            provisional: perf.provisional,
+        })
     })
     .collect()
 }

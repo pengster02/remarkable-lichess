@@ -38,10 +38,6 @@ Rectangle {
         }
         return isFinite(next) ? Math.max(1, next) : 0
     }
-    // {speed, rating} pairs for whichever standard speed categories this
-    // account has actually played at least one game of (see backend_app.rs's
-    // ratings_from_perfs) -- shown so Home isn't just a blank slate between
-    // games, matching every reference client's own home/profile screen.
     property var ratings: []
     property var pendingChallenges: []
     readonly property real offscreenChallengeY: {
@@ -582,7 +578,9 @@ Rectangle {
                         model: homeScreen.ratings
                         Text {
                             required property var modelData
-                            text: chessDisplay.speedLabel(modelData.speed) + "  <b>" + modelData.rating + "</b>"
+                            objectName: "homeRating_" + modelData.speed
+                            text: chessDisplay.speedLabel(modelData.speed) + "  <b>" + modelData.rating +
+                                (modelData.provisional === true ? "?" : "") + "</b>"
                             textFormat: Text.StyledText
                             font.pixelSize: theme.fontBody
                             color: theme.text
