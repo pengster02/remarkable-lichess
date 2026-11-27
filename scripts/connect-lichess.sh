@@ -4,6 +4,7 @@ set -euo pipefail
 # Save a Lichess PAT and (re)start the local AppLoad emulator.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TOKEN_FILE="${TOKEN_FILE:-${ROOT}/.lichess-token}"
+RATE_LIMIT_MESSAGE="Lichess is limiting sign-in requests. Wait at least one minute before trying again."
 
 TOKEN="${1:-${LICHESS_TOKEN:-}}"
 if [ -z "${TOKEN}" ]; then
@@ -44,6 +45,10 @@ case "${HTTP_CODE}" in
     echo "Lichess rejected that token (HTTP ${HTTP_CODE})." >&2
     exit 1
     ;;
+  429)
+    echo "${RATE_LIMIT_MESSAGE}" >&2
+    exit 1
+    ;;
   *)
     echo "Lichess could not verify the token (HTTP ${HTTP_CODE})." >&2
     exit 1
@@ -61,13 +66,26 @@ print(account["username"])
 fi
 
 # Keep the raw token out of curl arguments and prevent curlrc from redirecting the POST body.
+# A redirect can carry valid JSON, while --fail hides the difference between HTTP and transfer failures.
 unset scope_response
 if ! scope_response="$(printf '%s' "${TOKEN}" | \
-  curl -q -fsS --connect-timeout 5 --max-time 15 -A remarkable-lichess \
+  curl -q -sS --connect-timeout 5 --max-time 15 -w '\n%{http_code}' -A remarkable-lichess \
     -H 'Content-Type: text/plain' --data-binary @- https://lichess.org/api/token/test)"; then
   echo "Could not verify Lichess token permissions. Check your connection and try again." >&2
   exit 1
 fi
+scope_status="${scope_response##*$'\n'}"
+case "${scope_status}" in
+  200) scope_response="${scope_response%$'\n'*}" ;;
+  429)
+    echo "${RATE_LIMIT_MESSAGE}" >&2
+    exit 1
+    ;;
+  *)
+    echo "Could not verify Lichess token permissions (HTTP ${scope_status})." >&2
+    exit 1
+    ;;
+esac
 if printf '%s\n%s\n' "${TOKEN}" "${scope_response}" | python3 -c '
 import json, sys
 token = sys.stdin.readline().rstrip("\n")
