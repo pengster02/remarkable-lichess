@@ -16,7 +16,7 @@ use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::pgn_export::PgnGameId;
 use crate::protocol::{
-    BackendMessage, ChallengeInfo, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
+    BackendMessage, CachedHomeGames, ChallengeInfo, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
     GameAction, GameActionRequest, HistoryCursor, HistoryGameSummary, MoveAnalysis, OngoingGameSummary,
     OpeningExplorerRequest, RatingSummary,
     MoveRequest, OfferRequest, OpenChallengeQrCodes, OpponentDeparture, PlayerStatusSummary,
@@ -138,9 +138,42 @@ struct AccountStream {
     challenge_refresh: mpsc::Sender<()>,
     challenge_list: Arc<std::sync::Mutex<ChallengeList>>,
     challenge_read_denied: Arc<AtomicBool>,
+    home_games: Arc<std::sync::Mutex<HomeGameList>>,
     // Each sign-in owns its own flag. A shared flag can invalidate a replacement,
     // and a username cannot distinguish successive sign-ins to the same account.
     credential_rejected: Arc<AtomicBool>,
+}
+
+// The account owns the last read. A screen-local cache misses reloads, and
+// persisting it on disk would retain game data after sign-out.
+#[derive(Default)]
+struct HomeGameList {
+    snapshot: Option<(Instant, Vec<OngoingGameSummary>)>,
+    finished: HashSet<String>,
+}
+
+impl HomeGameList {
+    fn record(&mut self, received_at: Instant, games: Vec<OngoingGameSummary>) -> Vec<OngoingGameSummary> {
+        self.finished.retain(|id| games.iter().any(|game| &game.game_id == id));
+        let games: Vec<_> = games.into_iter().filter(|game| !self.finished.contains(&game.game_id)).collect();
+        self.snapshot = Some((received_at, games.clone()));
+        games
+    }
+
+    fn finish(&mut self, id: &str) {
+        self.finished.insert(id.to_owned());
+        if let Some((_, games)) = self.snapshot.as_mut() {
+            games.retain(|game| game.game_id != id);
+        }
+    }
+
+    fn replay(&self, now: Instant) -> Option<CachedHomeGames> {
+        self.snapshot.as_ref().map(|(received_at, games)| CachedHomeGames {
+            games: games.clone(),
+            // Replaying original times resets clocks. Wall time can jump when Wi-Fi returns.
+            age_ms: now.saturating_duration_since(*received_at).as_millis() as u64,
+        })
+    }
 }
 
 // Keep replay and acceptance on the same snapshot. A UI-only copy loses reloads,
@@ -542,7 +575,7 @@ pub struct LichessBackend {
     challenge_list_cooldown: RateLimitCooldown,
     home_games: Option<tokio::task::JoinHandle<()>>,
     home_ratings: Option<tokio::task::JoinHandle<()>>,
-    home_games_retry_after: Arc<Mutex<Option<Instant>>>,
+    home_games_cooldown: RateLimitCooldown,
     history_load: Option<GameRequest>,
     // Keep the export cooldown across screen visits. A QML-only timer misses
     // reentry, while an API-wide gate could interrupt live play.
@@ -595,7 +628,7 @@ impl LichessBackend {
             challenge_list_cooldown: RateLimitCooldown::default(),
             home_games: None,
             home_ratings: None,
-            home_games_retry_after: Arc::new(Mutex::new(None)),
+            home_games_cooldown: RateLimitCooldown::default(),
             history_load: None,
             history_retry_after: Arc::new(Mutex::new(None)),
             pgn_export: None,
@@ -869,12 +902,13 @@ impl LichessBackend {
             return;
         };
         let credential_rejected = account.credential_rejected.clone();
+        let game_list = account.home_games.clone();
         // A game event replaces just the game-list read. Joining it with ratings
         // can abandon an unrelated read, and fetching ratings again wastes a request.
         stop_task(&mut self.home_games).await;
         self.home_games = Some(tokio::spawn(refresh_home_games(
-            client.clone(), replier.clone(), self.write_lock.clone(), self.home_games_retry_after.clone(),
-            credential_rejected.clone(), request_id,
+            client.clone(), replier.clone(), self.write_lock.clone(), self.home_games_cooldown.clone(),
+            game_list, credential_rejected.clone(), request_id,
         )));
         if !games_only {
             stop_task(&mut self.home_ratings).await;
@@ -1604,6 +1638,8 @@ impl LichessBackend {
         let event_refresh = challenge_refresh.clone();
         let challenge_list = Arc::new(std::sync::Mutex::new(ChallengeList::default()));
         let list = challenge_list.clone();
+        let home_games = Arc::new(std::sync::Mutex::new(HomeGameList::default()));
+        let games = home_games.clone();
         // Only an explicit server denial proves the list is unavailable.
         // Guessing from scopes can miss alternate grants, and every 403 is too broad.
         let challenge_read_denied = Arc::new(AtomicBool::new(false));
@@ -1641,12 +1677,12 @@ impl LichessBackend {
                 }
             };
             tokio::join!(
-                read_account_events(&client, &replier, &write_lock, &event_refresh, &rejected, &cooldown),
+                read_account_events(&client, &replier, &write_lock, &event_refresh, &games, &rejected, &cooldown),
                 refresh,
             );
         });
         self.account_stream = Some(AccountStream {
-            task, challenge_refresh, challenge_list, challenge_read_denied, credential_rejected,
+            task, challenge_refresh, challenge_list, challenge_read_denied, home_games, credential_rejected,
         });
     }
 
@@ -1849,6 +1885,7 @@ async fn read_account_events(
     replier: &BackendReplier<LichessBackend>,
     write_lock: &Arc<std::sync::Mutex<()>>,
     refresh_challenges: &mpsc::Sender<()>,
+    game_list: &std::sync::Mutex<HomeGameList>,
     credential_rejected: &Arc<AtomicBool>,
     cooldown: &RateLimitCooldown,
 ) {
@@ -1912,9 +1949,14 @@ async fn read_account_events(
                     }
                     Some(EventStreamMessage::GameFinish { game }) => {
                         announced_games.remove(&game.id);
-                        send_locked(replier, write_lock, &BackendMessage::GameFinished {
-                            game_id: game.id.clone(),
-                        });
+                        {
+                            // Keep the finish and any published snapshot in the same order.
+                            let mut list = game_list.lock().expect("home game list lock poisoned");
+                            list.finish(&game.id);
+                            send_locked(replier, write_lock, &BackendMessage::GameFinished {
+                                game_id: game.id.clone(),
+                            });
+                        }
                         if let Some(rating_diff) = game.rating_diff {
                             send_locked(replier, write_lock, &BackendMessage::RatingDiff {
                                 game_id: game.id,
@@ -2159,54 +2201,58 @@ async fn refresh_home_games(
     client: LichessClient,
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
-    retry_after: Arc<Mutex<Option<Instant>>>,
+    cooldown: RateLimitCooldown,
+    game_list: Arc<std::sync::Mutex<HomeGameList>>,
     credential_rejected: Arc<AtomicBool>,
     request_id: Option<u32>,
 ) {
-    let limited_reply = |remaining: Duration| BackendMessage::HomeLoadFailed {
-        request_id,
-        message: "Lichess is limiting game-list requests. Trying again shortly.".into(),
-        wifi_connected: None,
-        retry_after_ms: Some(remaining.as_millis().max(1) as u32),
+    let send_limited = |retry_after_ms| {
+        let list = game_list.lock().expect("home game list lock poisoned");
+        send_locked(&replier, &write_lock, &BackendMessage::HomeLoadFailed {
+            request_id,
+            message: "Lichess is limiting game-list requests. Trying again shortly.".into(),
+            wifi_connected: None,
+            retry_after_ms: Some(retry_after_ms),
+            cached_games: list.replay(Instant::now()),
+        });
     };
-    let remaining = retry_after.lock().await
-        .and_then(|until| until.checked_duration_since(Instant::now()));
-    if let Some(remaining) = remaining {
-        send_locked(&replier, &write_lock, &limited_reply(remaining));
+    if let Some(retry_after_ms) = cooldown.remaining_ms() {
+        send_limited(retry_after_ms);
         return;
     }
-    let playing = client.get_playing().await;
-    let wifi_connected = wifi_link_state();
-    let reply = match playing {
-        Ok(games) => BackendMessage::HomeState {
-            request_id,
-            wifi_connected,
-            ongoing_games: games.into_iter().map(ongoing_game_summary).collect(),
-        },
+    match client.get_playing().await {
+        Ok(games) => {
+            let received_at = Instant::now();
+            let wifi_connected = wifi_link_state();
+            let games = games.into_iter().map(ongoing_game_summary).collect();
+            let mut list = game_list.lock().expect("home game list lock poisoned");
+            let ongoing_games = list.record(received_at, games);
+            send_locked(&replier, &write_lock, &BackendMessage::HomeState { request_id, wifi_connected, ongoing_games });
+        }
         Err(error) if is_rate_limited(&error) => {
-            *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
-            limited_reply(LICHESS_RATE_LIMIT_DELAY)
+            cooldown.start();
+            send_limited(LICHESS_RATE_LIMIT_DELAY.as_millis() as u32);
         }
         Err(error) if is_unauthorized(&error) => {
             report_account_rejection(&replier, &credential_rejected);
-            return;
         }
         Err(error) => {
             log::warn!("couldn't load Home: {error}");
+            let wifi_connected = wifi_link_state();
             let message = if wifi_connected == Some(false) {
                 "Wi-Fi is disconnected"
             } else {
                 "Can't reach Lichess"
             };
-            BackendMessage::HomeLoadFailed {
+            send_locked(&replier, &write_lock, &BackendMessage::HomeLoadFailed {
                 request_id,
                 message: format!("{message}. Check your connection and retry."),
                 wifi_connected,
                 retry_after_ms: None,
-            }
+                cached_games: None,
+            });
         }
-    };
-    send_locked(&replier, &write_lock, &reply);
+    }
 }
 
 fn game_start_board_support(game: &EventGame) -> Option<bool> {
@@ -2268,6 +2314,33 @@ fn ongoing_game_summary(game: PlayingGame) -> OngoingGameSummary {
 mod game_board_support_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn home_replay_keeps_the_snapshot_age_and_removes_finished_games() {
+        let mut list = HomeGameList::default();
+        let received_at = Instant::now();
+        assert!(list.replay(received_at).is_none());
+        let game = |id| ongoing_game_summary(serde_json::from_value(json!({
+            "gameId": id, "isMyTurn": true, "speed": "correspondence", "secondsLeft": 1200,
+        })).unwrap());
+
+        list.finish("finished");
+        let active = game("active");
+        let finished = game("finished");
+        let rows = list.record(received_at, vec![finished.clone(), active.clone()]);
+        assert_eq!(rows, vec![active.clone()]);
+        let later = received_at + Duration::from_millis(1234);
+        let replay = list.replay(later).unwrap();
+        assert_eq!(replay.games, rows);
+        assert_eq!(replay.age_ms, 1234);
+
+        list.finish("active");
+        assert!(list.replay(later).unwrap().games.is_empty());
+        assert!(list.record(later, vec![finished, active]).is_empty());
+        assert!(list.record(later, vec![]).is_empty());
+        assert!(list.finished.is_empty());
+        assert_eq!(list.replay(later).unwrap().age_ms, 0);
+    }
 
     #[test]
     fn game_start_uses_reported_compatibility_and_the_local_variant() {

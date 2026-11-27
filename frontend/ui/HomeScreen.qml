@@ -27,8 +27,9 @@ Rectangle {
     // taps, while one timer per row wakes independently for the same snapshot.
     property var correspondenceSecondsLeft: ({})
     property double gamesReceivedAtMs: 0
+    property double gamesAgeAtReceiptMs: 0
     property double correspondenceNowMs: Date.now()
-    readonly property double correspondenceAgeMs: Math.max(0, correspondenceNowMs - gamesReceivedAtMs)
+    readonly property double correspondenceAgeMs: gamesAgeAtReceiptMs + Math.max(0, correspondenceNowMs - gamesReceivedAtMs)
     readonly property double nextCorrespondenceRefreshMs: {
         var next = Infinity
         for (var i = 0; i < homeScreen.ongoingGames.length; ++i) {
@@ -81,6 +82,7 @@ Rectangle {
     property var wifiConnected: null
     property string connectionMessage: ""
     property string loadError: ""
+    property bool gamesRateLimited: false
     property string challengesError: ""
     property bool challengesRetryable: true
     property bool challengeListCoolingDown: false
@@ -118,8 +120,8 @@ Rectangle {
     function correspondenceTimeLeftMs(gameId) {
         var seconds = homeScreen.correspondenceSecondsLeft[gameId]
         if (typeof seconds !== "number") return null
-        var elapsed = homeScreen.liveClockEnabled ? Math.floor(homeScreen.correspondenceAgeMs / 1000) * 1000 : 0
-        return Math.max(0, seconds * 1000 - elapsed)
+        var age = homeScreen.liveClockEnabled ? homeScreen.correspondenceAgeMs : homeScreen.gamesAgeAtReceiptMs
+        return Math.max(0, (seconds - Math.floor(age / 1000)) * 1000)
     }
 
     function acceptsHomeReply(msg) {
@@ -447,9 +449,11 @@ Rectangle {
                 title: "Your games"
                 visible: homeScreen.loadedOnce || homeScreen.ongoingGames.length > 0
                 Text {
+                    objectName: "homeGamesLoadStatus"
                     width: parent.width
                     visible: homeScreen.loadError.length > 0
-                    text: homeScreen.loadError
+                    text: homeScreen.loadError + (homeScreen.gamesRateLimited && homeScreen.ongoingGames.length > 0
+                        ? "\nShowing the last loaded games." : "")
                     wrapMode: Text.WordWrap
                     font.pixelSize: theme.fontBody
                     color: theme.errorText
@@ -561,36 +565,42 @@ Rectangle {
         }
     }
 
+    function updateGames(games, ageMs) {
+        var next = games.filter(function(game) {
+            return homeScreen.finishedGameIds.indexOf(game.game_id) === -1
+        })
+        var secondsLeft = {}
+        for (var i = 0; i < next.length; ++i) {
+            var game = next[i]
+            if (game.is_my_turn && typeof game.correspondence_seconds_left === "number") {
+                secondsLeft[game.game_id] = game.correspondence_seconds_left
+            }
+        }
+        homeScreen.gamesReceivedAtMs = Date.now()
+        homeScreen.correspondenceNowMs = homeScreen.gamesReceivedAtMs
+        homeScreen.gamesAgeAtReceiptMs = ageMs
+        homeScreen.correspondenceSecondsLeft = secondsLeft
+        var shown = homeScreen.ongoingGames
+        // An equal snapshot should keep the Resume delegates and their input state.
+        if (next.length !== shown.length || next.some(function(game, index) {
+            var old = shown[index]
+            return game.game_id !== old.game_id || game.opponent_name !== old.opponent_name ||
+                game.opponent_rating !== old.opponent_rating || game.is_my_turn !== old.is_my_turn ||
+                game.variant !== old.variant || game.board_supported !== old.board_supported ||
+                game.board_unavailable_reason !== old.board_unavailable_reason
+        })) homeScreen.ongoingGames = next
+    }
+
     function handleMessage(msg) {
         if (msg.type === "HomeState") {
             if (!homeScreen.acceptsHomeReply(msg)) return
             homeScreen.gamesLoadPending = false
             homeScreen.loadedOnce = true
             homeScreen.loadError = ""
+            homeScreen.gamesRateLimited = false
             gameRetryDelay.stop()
             var games = msg.ongoing_games || []
-            var next = games.filter(function(game) {
-                return homeScreen.finishedGameIds.indexOf(game.game_id) === -1
-            })
-            var secondsLeft = {}
-            for (var i = 0; i < next.length; ++i) {
-                var game = next[i]
-                if (game.is_my_turn && typeof game.correspondence_seconds_left === "number") {
-                    secondsLeft[game.game_id] = game.correspondence_seconds_left
-                }
-            }
-            homeScreen.gamesReceivedAtMs = Date.now()
-            homeScreen.correspondenceNowMs = homeScreen.gamesReceivedAtMs
-            homeScreen.correspondenceSecondsLeft = secondsLeft
-            var shown = homeScreen.ongoingGames
-            // An equal snapshot should keep the Resume delegates and their input state.
-            if (next.length !== shown.length || next.some(function(game, index) {
-                var old = shown[index]
-                return game.game_id !== old.game_id || game.opponent_name !== old.opponent_name ||
-                    game.opponent_rating !== old.opponent_rating || game.is_my_turn !== old.is_my_turn ||
-                    game.variant !== old.variant || game.board_supported !== old.board_supported ||
-                    game.board_unavailable_reason !== old.board_unavailable_reason
-            })) homeScreen.ongoingGames = next
+            homeScreen.updateGames(games, 0)
             if (homeScreen.gamesRefreshQueued) {
                 homeScreen.queueGamesRefresh()
             } else {
@@ -643,7 +653,9 @@ Rectangle {
             homeScreen.loadedOnce = true
             homeScreen.loadError = msg.message ||
                 "Couldn't load your games. Check Wi-Fi and retry."
-            if (msg.retry_after_ms > 0) {
+            homeScreen.gamesRateLimited = msg.retry_after_ms > 0
+            if (homeScreen.gamesRateLimited) {
+                if (msg.cached_games) homeScreen.updateGames(msg.cached_games.games, msg.cached_games.age_ms)
                 gameRetryDelay.interval = msg.retry_after_ms
                 gameRetryDelay.restart()
                 homeScreen.gamesRefreshQueued = true
