@@ -902,7 +902,8 @@ pub enum BackendMessage {
     // game::replay::replay_export). Sent once per RequestGameMoves, not
     // streamed -- a finished game's move list never changes. `clock_ms`/
     // `analysis` are each aligned with `moves` (not `fens` -- no entry for the
-    // starting position) and may be shorter than `moves` or empty entirely:
+    // starting position) and may be shorter than `moves` or empty entirely.
+    // `clock_ms` may have null entries to preserve the ply of later readings.
     // Lichess only has clock data for timed games and only has analysis for a
     // game that's actually been through its computer review, so the frontend
     // must index defensively rather than assume equal length.
@@ -913,7 +914,7 @@ pub enum BackendMessage {
         moves: Vec<String>,
         fens: Vec<String>,
         initial_in_check: bool,
-        clock_ms: Vec<u32>,
+        clock_ms: Vec<Option<u64>>,
         analysis: Vec<MoveAnalysis>,
         // The same export can recover a rating after a missed account event.
         // Waiting for that event can leave it blank, and a separate lookup adds latency.
@@ -1419,11 +1420,11 @@ mod tests {
         let json = serde_json::to_string(&BackendMessage::GameMoves {
             game_id: "abcd1234".into(),
             request_id: None,
-            moves: vec!["e4".into()],
-            fens: vec!["startpos".into(), "after-e4".into()],
+            moves: vec!["e4".into(), "e5".into(), "Nf3".into()],
+            fens: vec!["startpos".into(), "after-e4".into(), "after-e5".into(), "after-nf3".into()],
             initial_in_check: true,
             variation_storage: None,
-            clock_ms: vec![29900],
+            clock_ms: vec![Some(4_294_967_300), None, Some(29_900)],
             analysis: vec![MoveAnalysis {
                 eval_cp: None,
                 mate_in: Some(3),
@@ -1435,7 +1436,7 @@ mod tests {
         .unwrap();
         assert!(!json.contains("request_id"));
         assert!(json.contains(r#""initial_in_check":true"#));
-        assert!(json.contains(r#""clock_ms":[29900]"#));
+        assert!(json.contains(r#""clock_ms":[4294967300,null,29900]"#));
         assert!(json.contains(r#""mate_in":3"#));
         assert!(json.contains(r#""judgment":"Blunder""#));
     }

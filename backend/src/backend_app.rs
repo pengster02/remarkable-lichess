@@ -1352,10 +1352,13 @@ impl LichessBackend {
                 return;
             }
         };
-        // Centiseconds (Lichess's own export unit, confirmed against
-        // game-export-gameId.yaml) -> ms, matching every other clock field in
-        // this protocol (white_time_ms/black_time_ms/initial_clock_ms/...).
-        let clock_ms: Vec<u32> = export.clocks.iter().map(|cs| cs * 10).collect();
+        // Widen before scaling. A 32-bit product wraps, and saturating would
+        // display the wrong duration. The full result is exact in QML.
+        let mut clock_ms: Vec<Option<u64>> = export.clocks.into_iter().take(moves.len())
+            .map(|clock| clock.map(|cs| u64::from(cs) * 10)).collect();
+        while clock_ms.last() == Some(&None) {
+            clock_ms.pop();
+        }
         let analysis: Vec<MoveAnalysis> = export
             .analysis
             .into_iter()
