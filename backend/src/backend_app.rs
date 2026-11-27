@@ -317,12 +317,19 @@ enum SignInError {
     Verification,
     Rejected,
     MissingBoardScope,
+    RateLimited(Duration),
     Qr(String),
 }
 
 impl From<anyhow::Error> for SignInError {
     fn from(error: anyhow::Error) -> Self {
-        if is_auth_rejection(&error) { Self::Rejected } else { Self::Verification }
+        if is_rate_limited(&error) {
+            Self::RateLimited(LICHESS_RATE_LIMIT_DELAY)
+        } else if is_auth_rejection(&error) {
+            Self::Rejected
+        } else {
+            Self::Verification
+        }
     }
 }
 
@@ -330,6 +337,17 @@ impl SignInRequest {
     fn failure(self, error: SignInError) -> BackendMessage {
         let reason = match error {
             SignInError::Qr(reason) => reason,
+            SignInError::RateLimited(remaining) => {
+                let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+                let reason = format!("Lichess is limiting sign-in requests. Wait {seconds}s before trying again.");
+                if self.method == SignInMethod::Saved {
+                    return BackendMessage::AuthenticationCheckFailed { message: reason };
+                }
+                if self.method == SignInMethod::Token && self.request_id.is_none() {
+                    return BackendMessage::TokenInvalid { reason };
+                }
+                reason
+            }
             SignInError::Rejected => {
                 if self.method == SignInMethod::Saved || self.request_id.is_none() {
                     return BackendMessage::TokenInvalid { reason: "Lichess rejected the sign-in.".into() };
@@ -459,6 +477,8 @@ pub struct LichessBackend {
     opening_retry_after: Arc<Mutex<Option<Instant>>>,
     cloud_evaluations: Option<CloudEvaluationQueue>,
     cloud_retry_after: Arc<Mutex<Option<Instant>>>,
+    // A screen timer misses reloads and separate timers let method switches bypass the wait.
+    sign_in_retry_after: Arc<std::sync::Mutex<Option<Instant>>>,
     pending_sign_in: Option<SignInAttempt>,
     move_submission: Option<tokio::task::JoinHandle<()>>,
     game_action: Option<tokio::task::JoinHandle<()>>,
@@ -501,6 +521,7 @@ impl LichessBackend {
             opening_retry_after: Arc::new(Mutex::new(None)),
             cloud_evaluations: None,
             cloud_retry_after: Arc::new(Mutex::new(None)),
+            sign_in_retry_after: Arc::new(std::sync::Mutex::new(None)),
             pending_sign_in: None,
             move_submission: None,
             game_action: None,
@@ -525,8 +546,13 @@ impl LichessBackend {
         verify: impl Future<Output = Result<VerifiedSignIn, SignInError>> + Send + 'static,
     ) {
         let replier = replier.clone();
+        let retry_after = self.sign_in_retry_after.clone();
         let task = tokio::spawn(async move {
             let result = verify.await;
+            // The worker must record a received limit before a screen switch can abort it at the backend lock.
+            if let Err(SignInError::RateLimited(wait)) = &result {
+                *retry_after.lock().expect("sign-in retry deadline lock poisoned") = Some(Instant::now() + *wait);
+            }
             // AppLoad also uses this mutex for incoming commands. A worker
             // waits for it only after network I/O, so stop_sign_in can abort it
             // while it waits, and completion cannot overtake account teardown.
@@ -593,6 +619,16 @@ impl LichessBackend {
         self.pending_sign_in.as_ref().is_some_and(|pending| pending.request() == request)
     }
 
+    fn sign_in_allowed(&self, replier: &BackendReplier<Self>, request: SignInRequest) -> bool {
+        let deadline = *self.sign_in_retry_after.lock().expect("sign-in retry deadline lock poisoned");
+        let Some(remaining) = deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()))
+            .filter(|remaining| !remaining.is_zero()) else {
+            return true;
+        };
+        self.send(replier, &request.failure(SignInError::RateLimited(remaining)));
+        false
+    }
+
     async fn start_token_sign_in(&mut self, replier: &BackendReplier<Self>, mut token: String, request_id: Option<u32>) {
         let request = SignInRequest { method: SignInMethod::Token, request_id };
         if self.is_current_sign_in(request) {
@@ -606,6 +642,9 @@ impl LichessBackend {
             self.send(replier, &BackendMessage::LoginFailed {
                 request_id, reason: "Enter a personal access token.".into(),
             });
+            return;
+        }
+        if !self.sign_in_allowed(replier, request) {
             return;
         }
         self.spawn_sign_in(replier, request, verify_sign_in(token));
@@ -653,6 +692,9 @@ impl LichessBackend {
             return;
         }
         self.stop_sign_in(None).await;
+        if !self.sign_in_allowed(replier, request) {
+            return;
+        }
         self.spawn_connectivity_report(replier);
         let pending = match oauth::begin(LICHESS_BASE_URL).await {
             Ok(pending) => pending,
@@ -686,6 +728,9 @@ impl LichessBackend {
         self.spawn_sign_in(replier, request, async move {
             let token = match tokio::time::timeout(oauth::LOGIN_TIMEOUT, pending.complete(LICHESS_BASE_URL)).await {
                 Ok(Ok(token)) => token,
+                Ok(Err(error)) if is_rate_limited(&error) => {
+                    return Err(SignInError::RateLimited(LICHESS_RATE_LIMIT_DELAY));
+                }
                 Ok(Err(error)) => return Err(SignInError::Qr(error.to_string())),
                 Err(_) => return Err(SignInError::Qr("The sign-in code expired. Start again.".into())),
             };
@@ -716,7 +761,9 @@ impl LichessBackend {
         match std::fs::read_to_string(&self.token_path) {
             Ok(token) if !token.trim().is_empty() => {
                 let request = SignInRequest { method: SignInMethod::Saved, request_id: None };
-                self.spawn_sign_in(replier, request, verify_sign_in(token.trim().to_owned()));
+                if self.sign_in_allowed(replier, request) {
+                    self.spawn_sign_in(replier, request, verify_sign_in(token.trim().to_owned()));
+                }
             }
             Ok(_) => self.send(replier, &BackendMessage::AuthenticationRequired),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

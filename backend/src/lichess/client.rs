@@ -139,7 +139,7 @@ async fn error_from_response(context: &str, resp: reqwest::Response) -> anyhow::
     http_response_error(context, status, reason)
 }
 
-fn http_response_error(
+pub(super) fn http_response_error(
     context: &str,
     status: reqwest::StatusCode,
     reason: Option<String>,
@@ -243,6 +243,9 @@ impl LichessClient {
         let resp = self
             .send_logged("get_account", self.bearer(self.http.get(format!("{}/api/account", self.base_url))))
             .await?;
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(http_response_error("get_account", resp.status(), None));
+        }
         if !resp.status().is_success() {
             return Err(error_from_response("get_account", resp).await);
         }
