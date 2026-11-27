@@ -804,7 +804,12 @@ pub enum BackendMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
         reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
     },
+    // A late rejection may no longer have a Board to roll back. A scoped
+    // reply alone misses that case, and a board snapshot may never arrive.
+    MoveSubmissionCooldown { retry_after_ms: u32 },
     GameStreamReconnecting {
         game_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

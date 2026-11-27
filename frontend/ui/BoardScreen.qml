@@ -37,6 +37,13 @@ Rectangle {
     property string streamError: ""
     property bool streamReconnecting: false
     property bool streamRateLimited: false
+    property bool moveSubmissionCoolingDown: false
+    onMoveSubmissionCoolingDownChanged: {
+        if (boardScreen.moveSubmissionCoolingDown) {
+            boardScreen.clearMovePrompts()
+            boardScreen.cancelPremove()
+        }
+    }
     // The selection exists before its first snapshot. Using gameId would enable
     // an empty board, and a timer would guess when the user needs a way back.
     readonly property bool awaitingBoard: boardScreen.requestedGameId.length > 0 &&
@@ -225,9 +232,11 @@ Rectangle {
     property bool gameOver: false
     property bool awaitingGameStart: false
     readonly property bool gameplayAvailable: !boardScreen.gameOver && !boardScreen.awaitingGameStart
+    readonly property bool moveInputAvailable: boardScreen.gameplayAvailable && !boardScreen.moveSubmissionCoolingDown
     property bool showGameOverDialog: false
     readonly property bool canNavigateHome: boardScreen.gameOver || boardScreen.awaitingBoard ||
-        boardScreen.awaitingGameStart || boardScreen.streamRateLimited || boardScreen.streamError.length > 0
+        boardScreen.awaitingGameStart || boardScreen.streamRateLimited || boardScreen.moveSubmissionCoolingDown ||
+        boardScreen.streamError.length > 0
     property string gameResult: ""
     property string gameReason: ""
     property bool annotationMode: false
@@ -270,7 +279,7 @@ Rectangle {
     // directly, so the confirmation gate can't accidentally be bypassed by
     // one call site while another respects it.
     function requestMove(from, to, promotion) {
-        if (moveRequestGate.pending !== null) return
+        if (!boardScreen.moveInputAvailable || moveRequestGate.pending !== null) return
         if (boardScreen.moveConfirmation) {
             boardScreen.pendingMoveConfirmation = {from: from, to: to, promotion: promotion}
         } else {
@@ -279,7 +288,7 @@ Rectangle {
     }
 
     function submitMove(from, to, promotion) {
-        if (!boardScreen.nextRequestId || moveRequestGate.pending !== null) return false
+        if (!boardScreen.moveInputAvailable || !boardScreen.nextRequestId || moveRequestGate.pending !== null) return false
         if (!moveRequestGate.submit(from, to, promotion,
                 boardScreen.nextRequestId(), boardScreen.livePositionId)) return false
         boardScreen.selectedSquare = ""
@@ -575,6 +584,7 @@ Rectangle {
             return "Viewing move " + boardScreen.historyIndex + " of " +
                 boardScreen.moveHistory.length
         }
+        if (boardScreen.moveSubmissionCoolingDown) return "Lichess is limiting moves"
         if (moveRequestGate.pending !== null) {
             return "Submitting " + moveRequestGate.pending.from + "–" +
                 moveRequestGate.pending.to +
@@ -830,6 +840,7 @@ Rectangle {
     }
 
     function beginMove(from, to) {
+        if (!boardScreen.moveInputAvailable) return false
         if (boardScreen.destinationsFrom(from).indexOf(to) === -1) return false
         var promoOptions = boardScreen.promotionOptionsFor(from, to)
         if (promoOptions.length > 0 && boardScreen.autoQueenPromotion && promoOptions.indexOf("q") !== -1) {
@@ -849,6 +860,7 @@ Rectangle {
     }
 
     function queuePremove(from, to, promotion) {
+        if (!boardScreen.moveInputAvailable) return
         boardScreen.pendingPremove = {
             from: from,
             to: to,
@@ -858,7 +870,7 @@ Rectangle {
     }
 
     function beginPremove(from, to) {
-        if (!boardScreen.isOwnPiece(boardScreen.pieceAt(from)) ||
+        if (!boardScreen.moveInputAvailable || !boardScreen.isOwnPiece(boardScreen.pieceAt(from)) ||
                 boardScreen.isOwnPiece(boardScreen.pieceAt(to)) || from === to) {
             return false
         }
@@ -907,7 +919,7 @@ Rectangle {
     }
 
     function onSquareTapped(squareName) {
-        if (!boardScreen.gameplayAvailable || boardScreen.viewingHistory ||
+        if (!boardScreen.moveInputAvailable || boardScreen.viewingHistory ||
                 moveRequestGate.pending !== null) return
         // Not a correctness fix (legalMoves is always keyed to whoever's turn it
         // actually is, per the current FEN, so a tap during the opponent's turn
@@ -965,7 +977,7 @@ Rectangle {
             boardScreen.onSquareTapped(to)
             return
         }
-        if (!boardScreen.gameplayAvailable || boardScreen.pendingMoveConfirmation !== null ||
+        if (!boardScreen.moveInputAvailable || boardScreen.pendingMoveConfirmation !== null ||
                 moveRequestGate.pending !== null ||
                 !boardScreen.isOwnPiece(boardScreen.pieceAt(from))) {
             return
@@ -1134,7 +1146,8 @@ Rectangle {
                 MouseArea {
                     id: boardInput
                     anchors.fill: grid
-                    enabled: boardScreen.streamError.length === 0
+                    enabled: boardScreen.streamError.length === 0 &&
+                        (!boardScreen.moveSubmissionCoolingDown || boardScreen.annotationMode)
                     property string pressSquare: ""
                     property real pressX: 0
                     property real pressY: 0
@@ -2104,7 +2117,7 @@ Rectangle {
             }
         } else if (msg.type === "MovePreview") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.liveFen.length === 0 ||
-                    boardScreen.viewingHistory || boardScreen.gameOver || boardScreen.streamError.length > 0) return
+                    boardScreen.viewingHistory || !boardScreen.moveInputAvailable || boardScreen.streamError.length > 0) return
             if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
             var previousPreview = boardScreen.captureBoardAppearance()
             boardScreen.previewFen = msg.fen
@@ -2125,7 +2138,8 @@ Rectangle {
             if (boardScreen.gameOver || (msg.game_id && msg.game_id !== boardScreen.gameId)) return
             if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
             boardScreen.rollbackMovePreview()
-            boardScreen.boardNotice = {text: "Move rejected: " + msg.reason, positionBound: true}
+            boardScreen.boardNotice = msg.retry_after_ms > 0 ? null
+                : {text: "Move rejected: " + msg.reason, positionBound: true}
             boardScreen.selectedSquare = ""
             moveRequestGate.clear()
         } else if (msg.type === "GameStreamReconnecting") {

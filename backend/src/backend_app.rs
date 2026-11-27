@@ -46,6 +46,7 @@ const CLOUD_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting cloud evaluations. T
 const HISTORY_RATE_LIMIT_MESSAGE: &str = "Lichess limited game history requests.";
 const OPENING_RATE_LIMIT_MESSAGE: &str = "Lichess limited opening statistics requests.";
 const GAME_EXPORT_RATE_LIMIT_MESSAGE: &str = "Lichess limited game export requests.";
+const MOVE_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting moves. Wait before trying again.";
 const BOARD_BLITZ_MIN_ESTIMATE_SECONDS: u64 = 180;
 const BOARD_RAPID_MIN_ESTIMATE_SECONDS: u64 = 480;
 
@@ -637,6 +638,9 @@ pub struct LichessBackend {
     sign_in_retry_after: Arc<std::sync::Mutex<Option<Instant>>>,
     pending_sign_in: Option<SignInAttempt>,
     move_submission: Option<tokio::task::JoinHandle<()>>,
+    // Per-game waits let a Board change repeat the limit. Sharing this wait
+    // with streams or other actions would block updates or leaving the game.
+    move_submission_cooldown: RateLimitCooldown,
     game_action: Option<tokio::task::JoinHandle<()>>,
     game_stream: Option<GameStream>,
     // appload-client's own send_message does two unsynchronized raw libc::send()
@@ -686,6 +690,7 @@ impl LichessBackend {
             sign_in_retry_after: Arc::new(std::sync::Mutex::new(None)),
             pending_sign_in: None,
             move_submission: None,
+            move_submission_cooldown: RateLimitCooldown::default(),
             game_action: None,
             game_stream: None,
             write_lock: Arc::new(std::sync::Mutex::new(())),
@@ -1628,7 +1633,7 @@ impl LichessBackend {
     ) {
         let request_id = request.request_id;
         let reject = |game_id, reason| BackendMessage::MoveRejected {
-            game_id, request_id, reason,
+            game_id, request_id, reason, retry_after_ms: None,
         };
         let Some(client) = self.client.clone() else {
             self.send(replier, &reject(expected_game_id.map(str::to_owned), "Not connected to Lichess".into()));
@@ -1654,6 +1659,10 @@ impl LichessBackend {
                     return;
                 }
             };
+            if let Some(retry_after_ms) = self.move_submission_cooldown.remaining_ms() {
+                self.send(replier, &move_rate_limited(&session.game_id, request_id, retry_after_ms));
+                return;
+            }
             let (preview, canceled) = match session.begin_move(&uci, request_id) {
                 Ok(pending) => pending,
                 Err(error) => {
@@ -1675,6 +1684,7 @@ impl LichessBackend {
         stop_task(&mut self.move_submission).await;
         self.move_submission = Some(tokio::spawn(submit_move(
             client, submission, self.session.clone(), replier.clone(), self.write_lock.clone(),
+            self.move_submission_cooldown.clone(),
         )));
     }
 
@@ -2498,52 +2508,74 @@ mod game_board_support_tests {
     }
 }
 
+fn move_rate_limited(game_id: &str, request_id: Option<u32>, retry_after_ms: u32) -> BackendMessage {
+    BackendMessage::MoveRejected {
+        game_id: Some(game_id.to_owned()), request_id, reason: MOVE_RATE_LIMIT_MESSAGE.into(),
+        retry_after_ms: Some(retry_after_ms),
+    }
+}
+
 async fn submit_move(
     client: LichessClient,
     submission: MoveSubmission,
     session: Arc<Mutex<Option<GameSession>>>,
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
+    cooldown: RateLimitCooldown,
 ) {
     let MoveSubmission { game_id, expected_moves, uci, request, mut canceled } = submission;
     let MoveRequest { request_id, from, to, promotion, .. } = request;
-    let submitted_at = Instant::now();
-    let response = tokio::select! {
-        biased;
-        _ = &mut canceled => return,
-        response = client.make_move(&game_id, &uci) => response,
-    };
-    let elapsed = submitted_at.elapsed();
-    if elapsed >= Duration::from_millis(750) {
-        log::warn!("make_move {game_id} {uci} took {}ms", elapsed.as_millis());
+    let rejection = if let Some(retry_after_ms) = cooldown.remaining_ms() {
+        // A settled worker may have received a 429 while the new move was being queued.
+        Some(move_rate_limited(&game_id, request_id, retry_after_ms))
     } else {
-        log::debug!("make_move {game_id} {uci} took {}ms", elapsed.as_millis());
-    }
+        let submitted_at = Instant::now();
+        let response = tokio::select! {
+            biased;
+            _ = &mut canceled => return,
+            response = client.make_move(&game_id, &uci) => response,
+        };
+        let elapsed = submitted_at.elapsed();
+        let rejection = response.err().map(|error| {
+            if is_rate_limited(&error) {
+                // The Board can settle the move or close before this reply takes the session lock.
+                cooldown.start();
+                let retry_after_ms = LICHESS_RATE_LIMIT_DELAY.as_millis() as u32;
+                send_locked(&replier, &write_lock, &BackendMessage::MoveSubmissionCooldown { retry_after_ms });
+                move_rate_limited(&game_id, request_id, retry_after_ms)
+            } else {
+                BackendMessage::MoveRejected {
+                    game_id: Some(game_id.clone()), request_id, reason: error.to_string(), retry_after_ms: None,
+                }
+            }
+        });
+        if elapsed >= Duration::from_millis(750) {
+            log::warn!("make_move {game_id} {uci} took {}ms", elapsed.as_millis());
+        } else {
+            log::debug!("make_move {game_id} {uci} took {}ms", elapsed.as_millis());
+        }
+        rejection
+    };
     let mut guard = session.lock().await;
     let Some(session) = guard.as_mut().filter(|session| session.game_id == game_id) else { return };
     // An authoritative board can settle the move between HTTP completion and this lock.
     if canceled.try_recv() != Err(oneshot::error::TryRecvError::Empty) {
         return;
     }
-    match response {
-        Ok(()) => {
-            send_locked(&replier, &write_lock, &BackendMessage::MoveSubmitted {
-                game_id, from, to, promotion,
-            });
-            match session.apply_accepted_move(&expected_moves, &uci) {
-                Ok(Some(board)) => send_locked(&replier, &write_lock, &board),
-                Ok(None) => session.cancel_move(),
-                Err(error) => {
-                    session.cancel_move();
-                    log::warn!("couldn't apply accepted move locally: {error}");
-                }
-            }
-        }
+    if let Some(reply) = rejection {
+        session.cancel_move();
+        send_locked(&replier, &write_lock, &reply);
+        return;
+    }
+    send_locked(&replier, &write_lock, &BackendMessage::MoveSubmitted {
+        game_id, from, to, promotion,
+    });
+    match session.apply_accepted_move(&expected_moves, &uci) {
+        Ok(Some(board)) => send_locked(&replier, &write_lock, &board),
+        Ok(None) => session.cancel_move(),
         Err(error) => {
             session.cancel_move();
-            send_locked(&replier, &write_lock, &BackendMessage::MoveRejected {
-                game_id: Some(game_id), request_id, reason: error.to_string(),
-            });
+            log::warn!("couldn't apply accepted move locally: {error}");
         }
     }
 }
@@ -3043,6 +3075,9 @@ impl AppLoadBackend for LichessBackend {
             }
             if let Some(retry_after_ms) = self.challenge_list_cooldown.remaining_ms() {
                 self.send(replier, &challenge_list_rate_limited(retry_after_ms));
+            }
+            if let Some(retry_after_ms) = self.move_submission_cooldown.remaining_ms() {
+                self.send(replier, &BackendMessage::MoveSubmissionCooldown { retry_after_ms });
             }
             if self.account_stream.as_ref().is_some_and(|account| account.credential_rejected.load(Ordering::Relaxed)) {
                 self.reject_authenticated_account(replier).await;

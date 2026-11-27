@@ -3410,6 +3410,96 @@ TestCase {
         compare(screen.item.topStatusText(), "Submitting g1–f3")
     }
 
+    function test_moveCooldownRollsBackThePreviewAndSurvivesAnotherBoard() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        snapshot.position_id = 40
+        endpoint.reply(snapshot)
+        var board = screen.item
+        var preview = showPendingMovePreview()
+        verify(board.previewFen.length > 0)
+        endpoint.reply({type: "MoveSubmissionCooldown", retry_after_ms: 1200})
+        endpoint.reply({type: "MoveRejected", game_id: "active", request_id: preview.request_id,
+                        reason: "Lichess is limiting moves.", retry_after_ms: 1200})
+        compare(board.fen, snapshot.fen)
+        compare(board.previewClock, null)
+        compare(board.topStatusText(), "Lichess is limiting moves")
+        verify(findChild(board, "boardBackButton").visible)
+        var sent = endpoint.sentMessages.length
+        board.onSquareTapped("e2")
+        board.onBoardGesture("e2", "e4")
+        verify(!board.submitMove("e2", "e4", null))
+        compare(board.selectedSquare, "")
+        compare(endpoint.sentMessages.length, sent)
+
+        board.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        var otherAction = endpoint.sentMessages[sent]
+        compare(otherAction.type, "AddTime")
+        compare(otherAction.expected_game_id, "active")
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("other")
+        var other = boardState("other")
+        other.position_id = 50
+        other.legal_moves = [{from: "g1", to: "f3"}]
+        endpoint.reply(other)
+        board = screen.item
+        verify(board.moveSubmissionCoolingDown)
+        compare(board.topStatusText(), "Lichess is limiting moves")
+        other.white_time_ms = 570000
+        endpoint.reply(other)
+        compare(board.whiteTimeMs, 570000)
+        sent = endpoint.sentMessages.length
+        var sourceSquare = findChild(board, "boardSquare-g1")
+        var targetSquare = findChild(board, "boardSquare-f3")
+        verify(sourceSquare && targetSquare && waitForRendering(sourceSquare))
+        mousePress(sourceSquare, sourceSquare.width / 2, sourceSquare.height / 2)
+        tryCompare(board, "moveSubmissionCoolingDown", false)
+        mouseRelease(targetSquare, targetSquare.width / 2, targetSquare.height / 2)
+        compare(endpoint.sentMessages.length, sent)
+        compare(board.topStatusText(), "Your move")
+        board.onBoardGesture("g1", "f3")
+        var move = endpoint.sentMessages[sent]
+        compare(move.type, "MakeMove")
+        compare(move.expected_game_id, "other")
+        compare(move.expected_position_id, 50)
+    }
+
+    function test_moveCooldownClearsQueuedMovesAndConfirmationPrompts() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        var afterWhite = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        snapshot.fen = afterWhite
+        snapshot.turn = "black"
+        snapshot.position_history = [startFen, afterWhite]
+        snapshot.move_history = ["e4"]
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.premovesEnabled = true
+        board.onBoardGesture("g1", "f3")
+        verify(board.pendingPremove !== null)
+        endpoint.reply({type: "MoveSubmissionCooldown", retry_after_ms: 240})
+        compare(board.pendingPremove, null)
+        var sent = endpoint.sentMessages.length
+        snapshot.fen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+        snapshot.turn = "white"
+        snapshot.position_history = [startFen, afterWhite, snapshot.fen]
+        snapshot.move_history = ["e4", "e5"]
+        snapshot.legal_moves = [{from: "g1", to: "f3"}]
+        endpoint.reply(snapshot)
+        tryCompare(board, "moveSubmissionCoolingDown", false)
+        compare(endpoint.sentMessages.length, sent)
+
+        board.moveConfirmation = true
+        board.onBoardGesture("g1", "f3")
+        verify(board.pendingMoveConfirmation !== null)
+        endpoint.reply({type: "MoveRejected", game_id: "old", request_id: 99,
+                        reason: "Lichess is limiting moves.", retry_after_ms: 240})
+        compare(board.pendingMoveConfirmation, null)
+        board.confirmPendingMove()
+        tryCompare(board, "moveSubmissionCoolingDown", false)
+        compare(endpoint.sentMessages.length, sent)
+    }
+
     function test_homeShowsAndUpdatesCorrespondenceTimeWithoutRebuildingTheButton() {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item
