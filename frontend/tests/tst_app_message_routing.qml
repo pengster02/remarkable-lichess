@@ -1156,6 +1156,25 @@ TestCase {
         compare(review.currentFen(), base)
     }
 
+    function test_reviewKeepsSparseAnalysisWithItsMove() {
+        var requestId = choose("sparse-analysis")
+        endpoint.reply({type: "GameMoves", request_id: requestId,
+                        fens: [startFen, startFen, startFen, startFen], moves: ["e4", "e5", "Nf3"],
+                        analysis: [{eval_cp: 0}, {}, {mate_in: 0, judgment: "Mistake"}]})
+        var review = screen.item
+        var judgment = findChild(review, "reviewMoveJudgment")
+        review.goNext()
+        compare(review.evalLabel(review.displayedArchiveAnalysis), "0.00")
+        verify(!judgment.visible)
+        review.goNext()
+        compare(review.evalLabel(review.displayedArchiveAnalysis), "")
+        verify(!judgment.visible)
+        review.goNext()
+        compare(review.evalLabel(review.displayedArchiveAnalysis), "M0")
+        compare(judgment.text, "Mistake")
+        verify(judgment.visible)
+    }
+
     function test_exploreJudgmentFollowsTheArchivedMove() {
         var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
         var archiveE4 = afterE4.replace(" - ", " e3 ")
