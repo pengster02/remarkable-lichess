@@ -560,17 +560,17 @@ struct MoveSubmission {
     canceled: oneshot::Receiver<()>,
 }
 
-// Callers need the remaining wait alongside the usual scoped failure.
-// Parsing an error string is brittle, and an unscoped notice cannot settle the action.
+// Keep the typed HTTP failure until the worker decides its scope. Formatting
+// it early loses the status, and treating every denial as sign-out loses valid sessions.
 enum GameActionFailure {
-    Rejected(String),
+    Rejected(anyhow::Error),
     RateLimited(u32),
 }
 
 impl GameActionFailure {
     fn reply(self, game_id: Option<&str>, request: GameActionRequest) -> BackendMessage {
         let (message, retry_after_ms) = match self {
-            Self::Rejected(message) => (message, None),
+            Self::Rejected(error) => (error.to_string(), None),
             Self::RateLimited(ms) => (GAME_ACTION_RATE_LIMIT_MESSAGE.into(), Some(ms)),
         };
         match game_id {
@@ -1584,14 +1584,15 @@ impl LichessBackend {
         F: FnOnce(LichessClient, String) -> Fut + Send + 'static,
         Fut: Future<Output = anyhow::Result<()>> + Send,
     {
-        let rejected = |reason: &str| GameActionFailure::Rejected(reason.into());
+        let rejected = |reason: &str| GameActionFailure::Rejected(anyhow::anyhow!(reason.to_owned()));
         let fail = |reason| {
             self.send(replier, &rejected(reason).reply(expected_game_id, request));
         };
-        let Some(client) = self.client.clone() else {
+        let (Some(client), Some(account)) = (self.client.clone(), self.account_stream.as_ref()) else {
             fail("Not connected to Lichess");
             return;
         };
+        let credential_rejected = account.credential_rejected.clone();
         if request.seconds.is_some_and(|seconds| !(5..=60).contains(&seconds)) {
             fail("Time gift must be between 5 and 60 seconds");
             return;
@@ -1655,11 +1656,15 @@ impl LichessBackend {
                             send_locked(&replier, &write_lock, &BackendMessage::GameActionCooldown { retry_after_ms });
                             GameActionFailure::RateLimited(retry_after_ms)
                         } else {
-                            GameActionFailure::Rejected(error.to_string())
+                            GameActionFailure::Rejected(error)
                         }
                     })
                 } => result,
             };
+            if matches!(&result, Err(GameActionFailure::Rejected(error)) if is_unauthorized(error)) {
+                report_account_rejection(&replier, &credential_rejected);
+                return;
+            }
             let mut guard = session.lock().await;
             let Some(game) = guard.as_mut().filter(|game| game.game_id == game_id) else { return };
             if canceled.try_recv() != Err(oneshot::error::TryRecvError::Empty) {
@@ -1689,10 +1694,11 @@ impl LichessBackend {
         let reject = |game_id, reason| BackendMessage::MoveRejected {
             game_id, request_id, reason, retry_after_ms: None,
         };
-        let Some(client) = self.client.clone() else {
+        let (Some(client), Some(account)) = (self.client.clone(), self.account_stream.as_ref()) else {
             self.send(replier, &reject(expected_game_id.map(str::to_owned), "Not connected to Lichess".into()));
             return;
         };
+        let credential_rejected = account.credential_rejected.clone();
         let submission = {
             let mut guard = self.session.lock().await;
             if let Err(reason) = game_for_request(guard.as_ref(), expected_game_id) {
@@ -1738,7 +1744,7 @@ impl LichessBackend {
         stop_task(&mut self.move_submission).await;
         self.move_submission = Some(tokio::spawn(submit_move(
             client, submission, self.session.clone(), replier.clone(), self.write_lock.clone(),
-            self.move_submission_cooldown.clone(),
+            self.move_submission_cooldown.clone(), credential_rejected,
         )));
     }
 
@@ -2576,6 +2582,7 @@ async fn submit_move(
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
     cooldown: RateLimitCooldown,
+    credential_rejected: Arc<AtomicBool>,
 ) {
     let MoveSubmission { game_id, expected_moves, uci, request, mut canceled } = submission;
     let MoveRequest { request_id, from, to, promotion, .. } = request;
@@ -2589,6 +2596,10 @@ async fn submit_move(
             _ = &mut canceled => return,
             response = client.make_move(&game_id, &uci) => response,
         };
+        if response.as_ref().err().is_some_and(is_unauthorized) {
+            report_account_rejection(&replier, &credential_rejected);
+            return;
+        }
         let elapsed = submitted_at.elapsed();
         let rejection = response.err().map(|error| {
             if is_rate_limited(&error) {
