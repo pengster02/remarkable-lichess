@@ -96,6 +96,14 @@ impl RateLimitCooldown {
     }
 }
 
+// Keep the optional lookup's wait across Boards. A per-Board wait lets a switch
+// repeat the 429, and sharing the stream's wait could delay live updates.
+#[derive(Clone, Default)]
+struct BoardReadCooldowns {
+    stream: RateLimitCooldown,
+    player_statuses: RateLimitCooldown,
+}
+
 // Home and sign-in share the same profile route. Independent waits let one
 // repeat the other's 429, and a global gate would also interrupt Board work.
 #[derive(Default)]
@@ -633,7 +641,7 @@ pub struct LichessBackend {
     // A task-local deadline is lost on replacement. A shared limit across stream
     // families could block a Board connection when only account events were limited.
     account_stream_cooldown: RateLimitCooldown,
-    game_stream_cooldown: RateLimitCooldown,
+    board_read_cooldowns: BoardReadCooldowns,
     pending_challenge_action: Option<GameRequest>,
     // Per-invitation deadlines let the next response bypass the wait. Sharing
     // this deadline with list reads would also prevent Home from refreshing.
@@ -695,7 +703,7 @@ impl LichessBackend {
             match_creation_cooldown: RateLimitCooldown::default(),
             account_stream: None,
             account_stream_cooldown: RateLimitCooldown::default(),
-            game_stream_cooldown: RateLimitCooldown::default(),
+            board_read_cooldowns: BoardReadCooldowns::default(),
             pending_challenge_action: None,
             challenge_action_cooldown: RateLimitCooldown::default(),
             challenge_list_cooldown: RateLimitCooldown::default(),
@@ -1033,7 +1041,7 @@ impl LichessBackend {
         self.stop_game_stream().await;
         let task = spawn_game_stream(
             client, game_id.clone(), replier.clone(), self.session.clone(), account, self.write_lock.clone(),
-            self.game_stream_cooldown.clone(),
+            self.board_read_cooldowns.clone(),
         );
         self.game_stream = Some(GameStream { game_id, task });
     }
@@ -2729,16 +2737,34 @@ async fn read_challenge_result(mut lines: LineStream) -> Option<ChallengeResolut
 async fn refresh_player_statuses(
     client: LichessClient,
     game_id: String,
-    user_ids: Vec<String>,
     replier: BackendReplier<LichessBackend>,
     session_handle: Arc<Mutex<Option<GameSession>>>,
     write_lock: Arc<std::sync::Mutex<()>>,
+    cooldown: RateLimitCooldown,
 ) {
-    let rows = match client.get_user_statuses(&user_ids).await {
-        Ok(rows) => rows,
-        Err(error) => {
-            log::debug!("optional player status lookup failed: {error}");
+    let rows = loop {
+        let user_ids = {
+            let guard = session_handle.lock().await;
+            let Some(session) = guard.as_ref().filter(|session| session.game_id == game_id) else {
+                return;
+            };
+            [session.your_player.id.clone(), session.opponent_player.id.clone()]
+                .into_iter().flatten().collect::<Vec<_>>()
+        };
+        if user_ids.is_empty() {
             return;
+        }
+        if let Some(deadline) = cooldown.pending_deadline() {
+            tokio::time::sleep_until(deadline.into()).await;
+            continue;
+        }
+        match client.get_user_statuses(&user_ids).await {
+            Ok(rows) => break rows,
+            Err(error) if is_rate_limited(&error) => { cooldown.start(); }
+            Err(error) => {
+                log::debug!("optional player status lookup failed: {error}");
+                return;
+            }
         }
     };
     let players = rows
@@ -2769,16 +2795,16 @@ fn spawn_game_stream(
     session_handle: Arc<Mutex<Option<GameSession>>>,
     account: BoardStreamAccount,
     write_lock: Arc<std::sync::Mutex<()>>,
-    cooldown: RateLimitCooldown,
+    cooldowns: BoardReadCooldowns,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
         let mut stream_finished = false;
         let finish = || report_game_finish(&replier, &write_lock, &account.home_games, &game_id);
-        // Waiting inline stalls moves. A detached lookup outlives a game switch.
+        // Waiting inline stalls moves. A detached lookup can retry after the Board closes.
         let mut player_status_requests = tokio::task::JoinSet::new();
         while !stream_finished {
-            if let Some(deadline) = cooldown.pending_deadline() {
+            if let Some(deadline) = cooldowns.stream.pending_deadline() {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 announce_game_reconnect(&replier, &write_lock, &session_handle, &game_id,
                     Some(remaining.as_millis().max(1) as u32)).await;
@@ -2788,7 +2814,7 @@ fn spawn_game_stream(
             let mut received_for = Duration::ZERO;
             let response = client.stream_lines(&format!("/api/board/game/stream/{}", game_id)).await;
             if response.as_ref().err().is_some_and(is_rate_limited) {
-                cooldown.start();
+                cooldowns.stream.start();
                 continue;
             }
             if let Some(message) = response.as_ref().err().and_then(board_stream_rejection) {
@@ -2811,7 +2837,7 @@ fn spawn_game_stream(
                     let Ok(Some(line)) = next_stream_line(&mut lines, timeout).await else { break };
                     received_for = connected_at.elapsed();
                     if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
-                            let mut status_ids = None;
+                            let mut request_statuses = false;
                             let mut guard = session_handle.lock().await;
                             let board_msg = match msg {
                                 GameStreamMessage::Full(full) if full.id != game_id => {
@@ -2852,12 +2878,8 @@ fn spawn_game_stream(
                                                 Some(board_msg)
                                             } else {
                                                 let _ = player_status_requests.try_join_next();
-                                                if s.player_statuses.is_none() && player_status_requests.is_empty() {
-                                                    status_ids = Some([s.your_player.id.clone(), s.opponent_player.id.clone()]
-                                                        .into_iter()
-                                                        .flatten()
-                                                        .collect::<Vec<_>>());
-                                                }
+                                                request_statuses = s.player_statuses.is_none() && player_status_requests.is_empty() &&
+                                                    (s.your_player.id.is_some() || s.opponent_player.id.is_some());
                                                 *guard = Some(s);
                                                 Some(board_msg)
                                             }
@@ -2927,14 +2949,14 @@ fn spawn_game_stream(
                                 send_locked(&replier, &write_lock, &m);
                             }
                             drop(guard);
-                            if let Some(ids) = status_ids.filter(|ids| !ids.is_empty()) {
+                            if request_statuses {
                                 player_status_requests.spawn(refresh_player_statuses(
                                     client.clone(),
                                     game_id.clone(),
-                                    ids,
                                     replier.clone(),
                                     session_handle.clone(),
                                     write_lock.clone(),
+                                    cooldowns.player_statuses.clone(),
                                 ));
                             }
                         if stream_finished {
