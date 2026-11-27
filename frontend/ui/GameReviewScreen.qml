@@ -713,8 +713,10 @@ Rectangle {
         }
 
         Text {
+            objectName: "reviewGameDetails"
             visible: gameReviewScreen.game !== null
             text: gameReviewScreen.gameDetailsLabel()
+            textFormat: Text.PlainText
             font.pixelSize: theme.fontSmall
             wrapMode: Text.WordWrap
             width: parent.width
