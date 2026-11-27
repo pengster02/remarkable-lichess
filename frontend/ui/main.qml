@@ -71,6 +71,7 @@ Rectangle {
     RequestCooldown { id: cloudCooldown }
     RequestCooldown { id: historyCooldown }
     RequestCooldown { id: openingCooldown }
+    RequestCooldown { id: matchCreationCooldown }
     // One timer covers both formats across navigation. Per-dialog timers miss
     // other entry points, while disabling all lookups would block the archive list.
     RequestCooldown { id: gameExportCooldown }
@@ -78,6 +79,7 @@ Rectangle {
     property alias historyRetryAt: historyCooldown.retryAt
     property alias openingExplorerRetryAt: openingCooldown.retryAt
     property alias gameExportRetryAt: gameExportCooldown.retryAt
+    property alias matchCreationRetryAt: matchCreationCooldown.retryAt
 
     // A shared sequence survives screen changes. Per-screen counters can repeat
     // IDs after navigation, and timestamps can collide across rapid requests.
@@ -484,6 +486,8 @@ Rectangle {
                 if (root.hasToken && homeForEvent && homeForEvent.acceptsHomeReply) {
                     homeForEvent.handleMessage(msg)
                 }
+            } else if (msg.type === "MatchCreationCooldown") {
+                matchCreationCooldown.extend(msg.retry_after_ms)
             } else if (msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "ChallengeCreateFailed" ||
@@ -496,6 +500,10 @@ Rectangle {
                        msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
                 if (msg.type === "GameStarted" && !root.hasToken) return
                 if (msg.type === "GameHistoryFailed") historyCooldown.extend(msg.retry_after_ms)
+                if (msg.type === "SeekFailed" || msg.type === "ChallengeCreateFailed" ||
+                        msg.type === "MatchCreationFailed") {
+                    matchCreationCooldown.extend(msg.retry_after_ms)
+                }
                 if (root.hasToken && msg.type === "PendingChallenges" && root.resolvedChallengeIds.length > 0) {
                     var pending = msg.challenges || []
                     var ids = pending.map(function(challenge) { return challenge.id })
@@ -776,6 +784,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("gameExportCoolingDown")) {
                 item.gameExportCoolingDown = Qt.binding(function() { return gameExportCooldown.running })
+            }
+            if (item.hasOwnProperty("matchCreationCoolingDown")) {
+                item.matchCreationCoolingDown = Qt.binding(function() { return matchCreationCooldown.running })
             }
             if (item.hasOwnProperty("openGame")) {
                 item.openGame = root.openGame

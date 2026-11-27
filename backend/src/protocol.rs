@@ -576,7 +576,12 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },
-    SeekFailed { request_id: u32, message: String },
+    SeekFailed {
+        request_id: u32,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
     SeekEnded {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
@@ -586,7 +591,12 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },
-    ChallengeCreateFailed { request_id: u32, message: String },
+    ChallengeCreateFailed {
+        request_id: u32,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
     ChallengeResolved {
         game_id: String,
         error: Option<String>,
@@ -613,7 +623,13 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },
-    MatchCreationFailed { request_id: u32, message: String },
+    MatchCreationFailed {
+        request_id: u32,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
+    MatchCreationCooldown { retry_after_ms: u32 },
     // Keep compatibility separate from origin. Filtering events would drop Home
     // refreshes, and reusing the lobby flag would hide why a link cannot open.
     GameStarted {
@@ -1386,6 +1402,20 @@ mod tests {
             game_id: "g1".into(), retry_after_ms: Some(60000),
         }).unwrap();
         assert_eq!(json["retry_after_ms"], 60000);
+    }
+
+    #[test]
+    fn game_creation_cooldown_preserves_ordinary_failure_messages() {
+        let reply = BackendMessage::SeekFailed {
+            request_id: 9, message: "Denied".into(), retry_after_ms: None,
+        };
+        assert_eq!(serde_json::to_value(reply).unwrap(), serde_json::json!({
+            "type": "SeekFailed", "request_id": 9, "message": "Denied",
+        }));
+        let reply = BackendMessage::MatchCreationFailed {
+            request_id: 9, message: "Try again shortly".into(), retry_after_ms: Some(60000),
+        };
+        assert_eq!(serde_json::to_value(reply).unwrap()["retry_after_ms"], 60000);
     }
 
     #[test]

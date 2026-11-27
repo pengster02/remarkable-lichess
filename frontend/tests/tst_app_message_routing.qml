@@ -4324,6 +4324,65 @@ TestCase {
         compare(retry, Object.assign({}, first, {request_id: retry.request_id}))
     }
 
+    function test_gameCreationCooldownBlocksAllActionsUntilExpiry_data() {
+        return [
+            {tag: "seek", button: "findOpponentButton", request: "CreateSeek", failure: "SeekFailed"},
+            {tag: "direct", button: "challengePlayerButton", request: "CreateChallenge", failure: "ChallengeCreateFailed"},
+            {tag: "computer", button: "computerGameButton", request: "ChallengeAi", failure: "MatchCreationFailed"},
+            {tag: "link", button: "openChallengeButton", request: "CreateOpenChallenge", failure: "MatchCreationFailed"}
+        ]
+    }
+
+    function test_gameCreationCooldownBlocksAllActionsUntilExpiry(data) {
+        function creationRequests() {
+            var types = ["CreateSeek", "CreateChallenge", "ChallengeAi", "CreateOpenChallenge"]
+            return Array.prototype.filter.call(endpoint.sentMessages, function(msg) {
+                return types.indexOf(msg.type) !== -1
+            })
+        }
+        function verifyActionsDisabled(seek) {
+            var buttons = ["findOpponentButton", "challengePlayerButton", "computerGameButton", "openChallengeButton"]
+            for (var i = 0; i < buttons.length; i++) verify(!findChild(seek, buttons[i]).enabled)
+        }
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        findChild(seek, "usernameField").text = "opponent"
+        findChild(seek, data.button).clicked()
+        var request = creationRequests()[0]
+        compare(request.type, data.request)
+        endpoint.reply({type: data.failure, request_id: request.request_id, message: "Wait", retry_after_ms: 60000})
+        verify(seek.showingSetup)
+        verifyActionsDisabled(seek)
+        compare(findChild(seek, "seekErrorText").text, "Lichess is limiting game creation. Try again shortly.")
+        var deadline = app.matchCreationRetryAt
+
+        app.navigateTo("HomeScreen.qml")
+        app.navigateTo("SeekScreen.qml")
+        seek = screen.item
+        findChild(seek, "usernameField").text = "opponent"
+        compare(app.matchCreationRetryAt, deadline)
+        verifyActionsDisabled(seek)
+        var action = findChild(seek, data.button)
+        action.clicked()
+        compare(creationRequests().length, 1)
+        app.matchCreationRetryAt = Date.now() + 50
+        tryCompare(action, "enabled", true)
+        verify(!findChild(seek, "seekErrorText").visible)
+        compare(creationRequests().length, 1)
+        action.clicked()
+        compare(creationRequests().length, 2)
+        compare(creationRequests()[1].type, data.request)
+        verify(creationRequests()[1].request_id > request.request_id)
+    }
+
+    function test_matchCreationCooldownIsRestoredBeforeOpeningSetup() {
+        endpoint.reply({type: "MatchCreationCooldown", retry_after_ms: 59800})
+        app.navigateTo("SeekScreen.qml")
+        verify(screen.item.matchCreationCoolingDown)
+        verify(!findChild(screen.item, "computerGameButton").enabled)
+        verify(findChild(screen.item, "seekErrorText").visible)
+    }
+
     function test_setupErrorKeepsRetryVisible_data() {
         return [
             {tag: "computer rejection after a share link", width: 954, height: 1696, share: true,
