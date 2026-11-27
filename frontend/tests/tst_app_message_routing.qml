@@ -1723,6 +1723,42 @@ TestCase {
         app.setLiveClockEnabled(true)
     }
 
+    function test_homeShowsAStartedGameDuringCooldownWithItsOwnClock() {
+        app.navigateTo("HomeScreen.qml")
+        app.setLiveClockEnabled(false)
+        var home = screen.item
+        var request = latestHomeRequest()
+        var oldGame = {game_id: "cached01", is_my_turn: true, correspondence_seconds_left: 80}
+        var start = {game_id: "started1", is_my_turn: true, correspondence_seconds_left: 62,
+                     opponent_name: "New opponent", board_supported: true}
+        endpoint.reply({type: "HomeLoadFailed", request_id: request, retry_after_ms: 5000,
+                        cached_games: {games: [oldGame], age_ms: 21250}})
+        endpoint.reply({type: "GameStarted", game_id: start.game_id, home_game: start})
+        compare(home.ongoingGames, [oldGame, start])
+        compare(home.correspondenceTimeLeftMs(oldGame.game_id), 59000)
+        compare(home.correspondenceTimeLeftMs(start.game_id), 62000)
+        verify(findChild(home, "homeGamesLoadStatus").visible)
+        verify(!findChild(home, "homeGamesRefreshButton").enabled)
+        wait(350)
+        compare(latestHomeRequest(), request)
+
+        app.navigateTo("SettingsScreen.qml")
+        app.navigateTo("HomeScreen.qml")
+        home = screen.item
+        start.correspondence_age_ms = 1420
+        endpoint.reply({type: "HomeLoadFailed", request_id: latestHomeRequest(), retry_after_ms: 5000,
+                        cached_games: {games: [oldGame, start], age_ms: 21930}})
+        compare(home.ongoingGames, [oldGame, start])
+        compare(home.correspondenceTimeLeftMs(oldGame.game_id), 59000)
+        compare(home.correspondenceTimeLeftMs(start.game_id), 61000)
+        compare(home.nextCorrespondenceRefreshMs, 1580)
+
+        endpoint.reply({type: "GameFinished", game_id: start.game_id})
+        endpoint.reply({type: "GameStarted", game_id: start.game_id, home_game: start})
+        compare(home.ongoingGames, [oldGame])
+        app.setLiveClockEnabled(true)
+    }
+
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length

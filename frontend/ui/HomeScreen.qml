@@ -25,18 +25,18 @@ Rectangle {
     property var ongoingGames: []
     // Update deadlines separately from the rows. Recreating buttons interrupts
     // taps, while one timer per row wakes independently for the same snapshot.
-    property var correspondenceSecondsLeft: ({})
-    property double gamesReceivedAtMs: 0
-    property double gamesAgeAtReceiptMs: 0
+    property var correspondenceClocks: ({})
     property double correspondenceNowMs: Date.now()
-    readonly property double correspondenceAgeMs: gamesAgeAtReceiptMs + Math.max(0, correspondenceNowMs - gamesReceivedAtMs)
     readonly property double nextCorrespondenceRefreshMs: {
         var next = Infinity
         for (var i = 0; i < homeScreen.ongoingGames.length; ++i) {
-            var remaining = homeScreen.correspondenceTimeLeftMs(homeScreen.ongoingGames[i].game_id)
-            if (remaining > 0) next = Math.min(next, chessDisplay.nextCorrespondenceTickMs(remaining))
+            var remaining = homeScreen.correspondenceRemainingMs(homeScreen.ongoingGames[i].game_id)
+            if (remaining > 0) {
+                var displayMs = Math.ceil(remaining / 1000) * 1000
+                next = Math.min(next, chessDisplay.nextCorrespondenceTickMs(displayMs) - (displayMs - remaining))
+            }
         }
-        return isFinite(next) ? Math.max(1, next - homeScreen.correspondenceAgeMs % 1000) : 0
+        return isFinite(next) ? Math.max(1, next) : 0
     }
     // {speed, rating} pairs for whichever standard speed categories this
     // account has actually played at least one game of (see backend_app.rs's
@@ -128,11 +128,16 @@ Rectangle {
         onTriggered: homeScreen.correspondenceNowMs = Date.now()
     }
 
+    function correspondenceRemainingMs(gameId) {
+        var clock = homeScreen.correspondenceClocks[gameId]
+        if (!clock) return null
+        var elapsed = homeScreen.liveClockEnabled ? Math.max(0, homeScreen.correspondenceNowMs - clock.receivedAtMs) : 0
+        return Math.max(0, clock.remainingMs - elapsed)
+    }
+
     function correspondenceTimeLeftMs(gameId) {
-        var seconds = homeScreen.correspondenceSecondsLeft[gameId]
-        if (typeof seconds !== "number") return null
-        var age = homeScreen.liveClockEnabled ? homeScreen.correspondenceAgeMs : homeScreen.gamesAgeAtReceiptMs
-        return Math.max(0, (seconds - Math.floor(age / 1000)) * 1000)
+        var remaining = homeScreen.correspondenceRemainingMs(gameId)
+        return remaining === null ? null : Math.ceil(remaining / 1000) * 1000
     }
 
     function acceptsHomeReply(msg) {
@@ -588,21 +593,25 @@ Rectangle {
         }
     }
 
+    function recordGameClock(clocks, game, ageMs, receivedAtMs) {
+        if (game.is_my_turn && typeof game.correspondence_seconds_left === "number") {
+            var age = typeof game.correspondence_age_ms === "number" ? game.correspondence_age_ms : ageMs
+            clocks[game.game_id] = {remainingMs: game.correspondence_seconds_left * 1000 - age,
+                                   receivedAtMs: receivedAtMs}
+        }
+    }
+
     function updateGames(games, ageMs) {
         var next = games.filter(function(game) {
             return homeScreen.finishedGameIds.indexOf(game.game_id) === -1
         })
-        var secondsLeft = {}
+        var clocks = {}
+        var receivedAtMs = Date.now()
         for (var i = 0; i < next.length; ++i) {
-            var game = next[i]
-            if (game.is_my_turn && typeof game.correspondence_seconds_left === "number") {
-                secondsLeft[game.game_id] = game.correspondence_seconds_left
-            }
+            homeScreen.recordGameClock(clocks, next[i], ageMs, receivedAtMs)
         }
-        homeScreen.gamesReceivedAtMs = Date.now()
-        homeScreen.correspondenceNowMs = homeScreen.gamesReceivedAtMs
-        homeScreen.gamesAgeAtReceiptMs = ageMs
-        homeScreen.correspondenceSecondsLeft = secondsLeft
+        homeScreen.correspondenceNowMs = receivedAtMs
+        homeScreen.correspondenceClocks = clocks
         var shown = homeScreen.ongoingGames
         // An equal snapshot should keep the Resume delegates and their input state.
         if (next.length !== shown.length || next.some(function(game, index) {
@@ -643,6 +652,15 @@ Rectangle {
         } else if (msg.type === "GameStarted") {
             var alreadyListed = homeScreen.ongoingGames.some(function(game) { return game.game_id === msg.game_id })
             if (!alreadyListed && homeScreen.finishedGameIds.indexOf(msg.game_id) === -1) {
+                if (msg.home_game && homeScreen.loadError.length > 0) {
+                    // Keep the existing clock receipts. Rebuilding the list would
+                    // reset them, and waiting for GET leaves a new start hidden in a cooldown.
+                    var clocks = Object.assign({}, homeScreen.correspondenceClocks)
+                    homeScreen.correspondenceNowMs = Date.now()
+                    homeScreen.recordGameClock(clocks, msg.home_game, 0, homeScreen.correspondenceNowMs)
+                    homeScreen.correspondenceClocks = clocks
+                    homeScreen.ongoingGames = homeScreen.ongoingGames.concat([msg.home_game])
+                }
                 homeScreen.queueGamesRefresh()
             }
         } else if (msg.type === "GameFinished") {
