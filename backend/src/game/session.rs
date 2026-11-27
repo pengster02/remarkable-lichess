@@ -32,6 +32,10 @@ pub struct GameSession {
     // Treating any board as recovery, or sending an independent recovery event,
     // could leave the UI showing a connection that the snapshot did not have.
     game_stream_connected: bool,
+    // The account can confirm a finish before the board delivers its moves.
+    // A fabricated result would block later reconciliation, and UI state alone
+    // cannot stop a queued POST or protect a resumed board.
+    awaiting_final_position: bool,
     pub opponent_departure: Option<OpponentDeparture>,
     prior_moves_before_prediction: Option<String>,
     pending_move: Option<PendingMove>,
@@ -222,9 +226,10 @@ fn to_board_state(
         move_count >= 1
     };
     let elapsed_ms = elapsed_whole_millis(session.state_received_at, now);
-    let active = state.status == "started";
-    let awaiting_start = state.awaiting_start();
-    let main_clock_paused = awaiting_start || (active && state.expiration.is_some());
+    let awaiting_final_position = session.awaiting_final_position && !state.is_terminal();
+    let active = state.status == "started" && !awaiting_final_position;
+    let awaiting_start = state.awaiting_start() && !awaiting_final_position;
+    let main_clock_paused = awaiting_final_position || awaiting_start || (active && state.expiration.is_some());
     let mut white_time_ms = state.wtime;
     let mut black_time_ms = state.btime;
     if active && session.initial_clock_ms.is_some() && !main_clock_paused {
@@ -250,6 +255,7 @@ fn to_board_state(
         position_id: session.position_id,
         game_stream_connected: session.game_stream_connected,
         from_game_stream: None,
+        awaiting_final_position: awaiting_final_position.then_some(true),
         awaiting_game_start: awaiting_start.then_some(true),
         resolved_move_request_id: None,
         pending_game_action: session.pending_game_action.as_ref().filter(|_| active)
@@ -338,6 +344,7 @@ impl GameSession {
             game_id: full.id.clone(),
             position_id: next_position_id(),
             game_stream_connected: true,
+            awaiting_final_position: false,
             opponent_departure: None,
             prior_moves_before_prediction: None,
             pending_move: None,
@@ -389,6 +396,17 @@ impl GameSession {
         self.game_stream_connected
     }
 
+    pub fn awaiting_final_position(&self) -> bool {
+        self.awaiting_final_position
+    }
+
+    pub fn wait_for_final_position(&mut self) {
+        self.awaiting_final_position = true;
+        self.opponent_departure = None;
+        self.cancel_move();
+        self.cancel_game_action();
+    }
+
     fn game_offers(&self) -> GameOffers {
         let state = &self.state;
         let (draw_yours, draw_theirs, takeback_yours, takeback_theirs) =
@@ -397,7 +415,8 @@ impl GameSession {
             } else {
                 (state.wdraw, state.bdraw, state.wtakeback, state.btakeback)
             };
-        let eligible = state.status == "started" && self.move_history.len() >= 2 && self.opponent_is_human;
+        let eligible = state.status == "started" && !self.awaiting_final_position
+            && self.move_history.len() >= 2 && self.opponent_is_human;
         GameOffers {
             draw: OfferState::new(draw_yours, draw_theirs, eligible),
             takeback: OfferState::new(takeback_yours, takeback_theirs,
@@ -528,7 +547,7 @@ impl GameSession {
         expected_moves: &str,
         uci: &str,
     ) -> anyhow::Result<Option<BackendMessage>> {
-        if self.state.moves != expected_moves || self.state.status != "started" {
+        if self.state.moves != expected_moves || self.state.status != "started" || self.awaiting_final_position {
             return Ok(None);
         }
         let mut state = self.state.clone();
@@ -578,10 +597,10 @@ impl GameSession {
             }
         }
         self.pending_move = previous.pending_move.take();
-        if self.state.status != "started" || !same_position {
+        if self.state.status != "started" || !same_position || self.awaiting_final_position {
             self.resolve_move(board);
         }
-        if self.state.status == "started" {
+        if self.state.status == "started" && !self.awaiting_final_position {
             self.pending_game_action = previous.pending_game_action.take();
             if let BackendMessage::BoardState { pending_game_action, .. } = board {
                 *pending_game_action = self.pending_game_action.as_ref().map(|pending| Box::new(pending.request));
@@ -592,7 +611,7 @@ impl GameSession {
     }
 
     pub fn begin_game_action(&mut self, request: GameActionRequest) -> Option<oneshot::Receiver<()>> {
-        if self.pending_game_action.is_some() || self.state.status != "started" {
+        if self.pending_game_action.is_some() || self.state.status != "started" || self.awaiting_final_position {
             return None;
         }
         let (cancel_on_drop, canceled) = oneshot::channel();
@@ -621,7 +640,7 @@ impl GameSession {
     }
 
     fn preview_move(&self, uci: &str, request_id: Option<u32>) -> anyhow::Result<BackendMessage> {
-        anyhow::ensure!(self.state.status == "started", "game is not active");
+        anyhow::ensure!(self.state.status == "started" && !self.awaiting_final_position, "game is not active");
         let chess_move = resolve_uci_move(&self.position, uci)?;
         let captured_piece = captured_piece_code(self.position.turn(), chess_move);
         let mut position = self.position.clone();
@@ -1082,6 +1101,37 @@ mod tests {
         assert!(matches!(snapshot,
             BackendMessage::BoardState { outcome: Some(_), pending_game_action: None, .. }));
         assert_eq!(canceled.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+    }
+
+    #[test]
+    fn account_finish_cancels_pending_writes_without_consuming_the_final_board() {
+        use crate::protocol::GameAction;
+
+        let full = sample_full("");
+        let (mut session, original) = GameSession::from_game_full(&full, "my-id").unwrap();
+        let (_, mut move_cancel) = session.begin_move("e2e4", Some(11)).unwrap();
+        let request = GameActionRequest { action: GameAction::AddTime, request_id: Some(12), seconds: Some(15) };
+        let mut action_cancel = session.begin_game_action(request).unwrap();
+        session.wait_for_final_position();
+        assert_eq!(move_cancel.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+        assert_eq!(action_cancel.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+        assert!(session.begin_move("e2e4", Some(13)).is_err());
+        assert!(session.begin_game_action(request).is_none());
+        assert!(session.apply_accepted_move("", "e2e4").unwrap().is_none());
+        let BackendMessage::BoardState { fen, position_id, .. } = original else { panic!("expected BoardState") };
+        assert!(matches!(session.board_state(), BackendMessage::BoardState {
+            fen: live_fen, position_id: live_id, awaiting_final_position: Some(true), pending_game_action: None,
+            main_clock_paused: true, can_give_time: false, outcome: None, legal_moves, ..
+        } if live_fen == fen && live_id == position_id && legal_moves.is_empty()));
+
+        let mut terminal = full.state;
+        terminal.moves = "f2f3 e7e5 g2g4 d8h4".into();
+        terminal.status = "mate".into();
+        terminal.winner = Some("black".into());
+        let final_board = session.apply_stream_update(terminal).unwrap().unwrap();
+        assert!(matches!(final_board, BackendMessage::BoardState {
+            awaiting_final_position: None, outcome: Some(result), move_history: Some(moves), ..
+        } if result.result == "black" && moves.last().is_some_and(|san| san == "Qh4#")));
     }
 
     #[test]

@@ -235,11 +235,16 @@ Rectangle {
     }
     property bool gameOver: false
     property bool awaitingGameStart: false
-    readonly property bool gameplayAvailable: !boardScreen.gameOver && !boardScreen.awaitingGameStart
+    property string finalPositionGameId: ""
+    readonly property bool awaitingFinalPosition: boardScreen.finalPositionGameId.length > 0 &&
+        boardScreen.finalPositionGameId === (boardScreen.requestedGameId || boardScreen.gameId)
+    readonly property bool gameplayAvailable: !boardScreen.gameOver &&
+        !boardScreen.awaitingGameStart && !boardScreen.awaitingFinalPosition
     readonly property bool moveInputAvailable: boardScreen.gameplayAvailable && !boardScreen.moveSubmissionCoolingDown
     property bool showGameOverDialog: false
     readonly property bool canNavigateHome: boardScreen.gameOver || boardScreen.awaitingBoard ||
-        boardScreen.awaitingGameStart || boardScreen.streamRateLimited || boardScreen.moveSubmissionCoolingDown ||
+        boardScreen.awaitingGameStart || boardScreen.awaitingFinalPosition ||
+        boardScreen.streamRateLimited || boardScreen.moveSubmissionCoolingDown ||
         boardScreen.gameActionCoolingDown || boardScreen.streamError.length > 0
     property string gameResult: ""
     property string gameReason: ""
@@ -269,7 +274,7 @@ Rectangle {
             (boardScreen.correspondenceRemainingMs !== null || boardScreen.displayedClock.firstMoveMs !== null ||
                 (boardScreen.initialClockMs !== null && !boardScreen.mainClockPaused)) &&
             boardScreen.activeCountdownMs > 0 &&
-            !boardScreen.gameOver &&
+            !boardScreen.gameOver && !boardScreen.awaitingFinalPosition &&
             boardScreen.streamError.length === 0 &&
             boardScreen.fen.length > 0
         onTriggered: boardScreen.clockPulse += 1
@@ -572,7 +577,9 @@ Rectangle {
 
     function topStatusText() {
         if (boardScreen.gameOver && boardScreen.showGameOverDialog) return ""
-        if (boardScreen.streamError.length > 0) return boardScreen.streamError
+        if (boardScreen.streamError.length > 0)
+            return boardScreen.awaitingFinalPosition ? "Game ended · " + boardScreen.streamError : boardScreen.streamError
+        if (boardScreen.awaitingFinalPosition) return "Game ended · waiting for the final position"
         if (boardScreen.streamReconnecting && boardScreen.streamRateLimited)
             return "Lichess is limiting game updates"
         if (boardScreen.awaitingGameStart) return "Waiting for game to start"
@@ -1524,7 +1531,7 @@ Rectangle {
             critical: true
             extraConfirm: boardScreen.confirmResign
             enabled: !boardScreen.gameActionCoolingDown
-            visible: !boardScreen.gameOver && boardScreen.canAbort
+            visible: boardScreen.gameplayAvailable && boardScreen.canAbort
             onConfirmed: boardScreen.requestGameAction({type: "Abort"}, "Abort")
         }
         ConfirmAction {
@@ -1536,7 +1543,7 @@ Rectangle {
             busyText: "Berserk requested"
             busy: boardScreen.pendingGameAction === "Berserk"
             enabled: !boardScreen.gameActionCoolingDown
-            visible: !boardScreen.gameOver && boardScreen.canBerserk
+            visible: boardScreen.gameplayAvailable && boardScreen.canBerserk
             onConfirmed: boardScreen.requestGameAction({type: "Berserk"}, "Berserk")
         }
         ConfirmAction {
@@ -1548,7 +1555,7 @@ Rectangle {
             busyText: "Adding 15 seconds"
             busy: boardScreen.pendingGameAction === "AddTime"
             enabled: !boardScreen.gameActionCoolingDown
-            visible: !boardScreen.gameOver && boardScreen.canGiveTime
+            visible: boardScreen.gameplayAvailable && boardScreen.canGiveTime
             onConfirmed: boardScreen.requestGameAction(
                 {type: "AddTime", seconds: 15}, "AddTime")
         }
@@ -1903,8 +1910,34 @@ Rectangle {
         }
     }
 
-    function completeGame(result, reason) {
+    function clearGameInput() {
         boardScreen.rollbackMovePreview()
+        boardScreen.legalMoves = []
+        boardScreen.clearMovePrompts()
+        moveRequestGate.clear()
+        boardScreen.pendingPremove = null
+        boardScreen.resetGameActionControls()
+        boardScreen.pendingActionRequest = null
+        boardScreen.boardNotice = null
+    }
+
+    function waitForFinalPosition(gameId) {
+        if ((boardScreen.gameOver && boardScreen.gameId === gameId) ||
+                boardScreen.finalPositionGameId === gameId) return
+        boardScreen.clearGameInput()
+        boardScreen.clockPulse += 1
+        boardScreen.liveClock = {
+            whiteMs: boardScreen.displayClockFor("white"),
+            blackMs: boardScreen.displayClockFor("black"),
+            firstMoveMs: null, paused: true, receivedAt: 0
+        }
+        boardScreen.awaitingGameStart = false
+        boardScreen.opponentDeparture = null
+        boardScreen.finalPositionGameId = gameId
+    }
+
+    function completeGame(result, reason) {
+        boardScreen.clearGameInput()
         boardScreen.returnToLive()
         boardScreen.clockPulse += 1
         boardScreen.liveClock = {
@@ -1929,16 +1962,10 @@ Rectangle {
         }
         boardScreen.gameOver = true
         boardScreen.awaitingGameStart = false
+        boardScreen.finalPositionGameId = ""
         boardScreen.streamReconnecting = false
         boardScreen.streamRateLimited = false
         boardScreen.gameReason = reason
-        boardScreen.legalMoves = []
-        boardScreen.clearMovePrompts()
-        moveRequestGate.clear()
-        boardScreen.pendingPremove = null
-        boardScreen.resetGameActionControls()
-        boardScreen.pendingActionRequest = null
-        boardScreen.boardNotice = null
         boardScreen.gameOutcomeText = reason && reason.length > 0 && reason !== outcome
             ? outcome + " · " + reason
             : outcome
@@ -1965,7 +1992,9 @@ Rectangle {
             var nextLastMove = msg.last_move || null
             var nextGameId = msg.game_id || ""
             var gameChanged = boardScreen.gameId !== nextGameId
-            var awaitingStart = msg.awaiting_game_start === true
+            var awaitingFinal = !msg.outcome && (msg.awaiting_final_position === true ||
+                (boardScreen.finalPositionGameId.length > 0 && boardScreen.finalPositionGameId === nextGameId))
+            var awaitingStart = !awaitingFinal && msg.awaiting_game_start === true
             var startChanged = boardScreen.awaitingGameStart !== awaitingStart
             if (msg.outcome && typeof msg.outcome.rating_diff === "number") {
                 boardScreen.gameRatingChange = {gameId: nextGameId, diff: msg.outcome.rating_diff}
@@ -2027,7 +2056,8 @@ Rectangle {
             var previous = boardChanged || initialInCheck !== boardScreen.initialInCheck
                 ? boardScreen.captureBoardAppearance() : null
             boardScreen.initialInCheck = initialInCheck
-            if (boardChanged || startChanged) boardScreen.legalMoves = msg.legal_moves
+            if (awaitingFinal) boardScreen.legalMoves = []
+            else if (boardChanged || startChanged) boardScreen.legalMoves = msg.legal_moves
             if (boardChanged) {
                 boardScreen.liveFen = msg.fen
                 boardScreen.fen = msg.fen
@@ -2068,10 +2098,10 @@ Rectangle {
             boardScreen.liveClock = {
                 whiteMs: msg.white_time_ms,
                 blackMs: msg.black_time_ms,
-                firstMoveMs: msg.first_move_time_ms !== undefined ? msg.first_move_time_ms : null,
-                correspondenceMs: msg.correspondence_time_ms,
-                paused: msg.main_clock_paused === true,
-                receivedAt: msg.outcome ? 0 : Date.now()
+                firstMoveMs: !awaitingFinal && msg.first_move_time_ms !== undefined ? msg.first_move_time_ms : null,
+                correspondenceMs: awaitingFinal ? null : msg.correspondence_time_ms,
+                paused: awaitingFinal || msg.main_clock_paused === true,
+                receivedAt: msg.outcome || awaitingFinal ? 0 : Date.now()
             }
             boardScreen.clockPulse += 1
             boardScreen.initialClockMs = msg.initial_clock_ms !== undefined ? msg.initial_clock_ms : null
@@ -2109,6 +2139,11 @@ Rectangle {
                 boardScreen.completeGame(msg.outcome.result, msg.outcome.reason)
                 return
             }
+            if (awaitingFinal) {
+                boardScreen.waitForFinalPosition(nextGameId)
+                return
+            }
+            boardScreen.finalPositionGameId = ""
             if (msg.pending_game_action && boardScreen.pendingActionRequest === null) {
                 boardScreen.pendingActionRequest = msg.pending_game_action
             }
@@ -2122,6 +2157,9 @@ Rectangle {
             for (var playerIndex = 0; playerIndex < players.length; playerIndex++) {
                 boardScreen.applyPlayerStatus(players[playerIndex])
             }
+        } else if (msg.type === "GameFinished") {
+            if (msg.game_id === (boardScreen.requestedGameId || boardScreen.gameId))
+                boardScreen.waitForFinalPosition(msg.game_id)
         } else if (msg.type === "GameOver") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             boardScreen.completeGame(msg.result, msg.reason)
@@ -2163,7 +2201,8 @@ Rectangle {
             boardScreen.inCheck = msg.in_check || false
             boardScreen.refreshBoard(previousPreview)
         } else if (msg.type === "MoveRejected") {
-            if (boardScreen.gameOver || (msg.game_id && msg.game_id !== boardScreen.gameId)) return
+            if (boardScreen.gameOver || boardScreen.awaitingFinalPosition ||
+                    (msg.game_id && msg.game_id !== boardScreen.gameId)) return
             if (typeof msg.request_id === "number" && !moveRequestGate.matches(msg.game_id, msg.request_id)) return
             boardScreen.rollbackMovePreview()
             boardScreen.boardNotice = msg.retry_after_ms > 0 ? null
@@ -2196,7 +2235,7 @@ Rectangle {
             boardScreen.streamRateLimited = false
             boardScreen.streamError = msg.message || "Could not load this game."
         } else if (msg.type === "OpponentGone") {
-            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
+            if (msg.game_id !== boardScreen.gameId || !boardScreen.gameplayAvailable) return
             boardScreen.opponentDeparture = msg.gone
                 ? {claim_win_in_seconds: msg.claim_win_in_seconds}
                 : null
