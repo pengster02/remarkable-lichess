@@ -586,6 +586,10 @@ pub enum BackendMessage {
     ChallengeResolved {
         game_id: String,
         error: Option<String>,
+        // Older frontends still show the error. A new message would be ignored,
+        // and matching error text would couple recovery to UI wording.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        connection_lost: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },

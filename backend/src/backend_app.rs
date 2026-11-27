@@ -2128,8 +2128,15 @@ async fn run_match_request(
                 send_locked(&replier, &write_lock, &BackendMessage::ChallengeCreated {
                     game_id: game_id.clone(), request_id,
                 });
+                let resolution = read_challenge_result(lines).await;
+                let error = match resolution {
+                    Some(ChallengeResolution::Accepted) => None,
+                    Some(ChallengeResolution::Declined) => Some("Challenge declined.".into()),
+                    Some(ChallengeResolution::Canceled) => Some("Challenge canceled.".into()),
+                    None => Some("Lost the challenge connection. Check Home if the game started.".into()),
+                };
                 BackendMessage::ChallengeResolved {
-                    game_id, request_id, error: read_challenge_result(lines).await,
+                    game_id, request_id, error, connection_lost: resolution.is_none().then_some(true),
                 }
             }
             Err(error) => request.failure(error.to_string()),
@@ -2156,17 +2163,13 @@ async fn run_match_request(
     send_locked(&replier, &write_lock, &reply);
 }
 
-async fn read_challenge_result(mut lines: LineStream) -> Option<String> {
+async fn read_challenge_result(mut lines: LineStream) -> Option<ChallengeResolution> {
     while let Ok(Some(line)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {
         if let Some(result) = parse_ndjson_line::<ChallengeResult>(&line) {
-            return match result.done {
-                ChallengeResolution::Accepted => None,
-                ChallengeResolution::Declined => Some("Challenge declined.".into()),
-                ChallengeResolution::Canceled => Some("Challenge canceled.".into()),
-            };
+            return Some(result.done);
         }
     }
-    Some("Lost the challenge connection. Check Home if the game started.".into())
+    None
 }
 
 async fn refresh_player_statuses(

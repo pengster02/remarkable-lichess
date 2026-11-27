@@ -22,6 +22,10 @@ Rectangle {
     property var nextRequestId
     property string pendingAction: ""
     property string waitingChallengeGameId: ""
+    // Account events can arrive before the challenge ID. Saving only the first
+    // could miss the match, and an account-wide cache would outlive this request.
+    property var directGameStartIds: []
+    property string challengeConnectionError: ""
     property int matchRequestId: 0
     property string seekMatchBeforeAckId: ""
     // Retain the submitted preferences: reading the form can use later edits,
@@ -58,11 +62,15 @@ Rectangle {
     }
 
     Timer {
-        id: seekSettlement
+        id: matchSettlement
         // EOF can precede the separate game event. Ending immediately loses
         // that match, while waiting forever strands the expired seek.
         interval: 5000
         onTriggered: {
+            if (seekScreen.challengeConnectionError) {
+                seekScreen.finishChallenge("", seekScreen.challengeConnectionError)
+                return
+            }
             seekScreen.clearWaiting()
             seekScreen.seekEnded = true
         }
@@ -146,9 +154,11 @@ Rectangle {
     }
 
     function clearWaiting() {
-        seekSettlement.stop()
+        matchSettlement.stop()
         waiting = false
         waitingChallengeGameId = ""
+        directGameStartIds = []
+        challengeConnectionError = ""
         matchRequestId = 0
         seekMatchBeforeAckId = ""
         seekPreferences = null
@@ -164,6 +174,12 @@ Rectangle {
     function openMatchedGame(gameId) {
         cancelWaiting()
         openGame(gameId)
+    }
+
+    function finishChallenge(gameId, error) {
+        clearWaiting()
+        if (error) showSetupError(error, playerChallengeSection, true)
+        else openGame(gameId)
     }
 
     function matchesSeekPreferences(game) {
@@ -606,7 +622,7 @@ Rectangle {
         } else if (msg.type === "SeekEnded") {
             if (!seekScreen.waiting || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.waitingLabel = "Checking for a match..."
-            seekSettlement.start()
+            matchSettlement.start()
         } else if (msg.type === "ChallengeCreated") {
             if (seekScreen.pendingAction !== "challenge" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
@@ -623,11 +639,16 @@ Rectangle {
         } else if (msg.type === "ChallengeResolved") {
             if (!seekScreen.waiting || msg.game_id !== seekScreen.waitingChallengeGameId ||
                     msg.request_id !== seekScreen.matchRequestId) return
-            seekScreen.clearWaiting()
-            if (msg.error) {
-                seekScreen.showSetupError(msg.error, playerChallengeSection, true)
+            if (msg.connection_lost === true && msg.error) {
+                if (seekScreen.directGameStartIds.indexOf(msg.game_id) !== -1) {
+                    seekScreen.finishChallenge(msg.game_id)
+                } else {
+                    seekScreen.challengeConnectionError = msg.error
+                    seekScreen.waitingLabel = "Checking if the game started…"
+                    matchSettlement.start()
+                }
             } else {
-                seekScreen.openGame(msg.game_id)
+                seekScreen.finishChallenge(msg.game_id, msg.error)
             }
         } else if (msg.type === "ComputerGameCreated") {
             if (seekScreen.pendingAction !== "computer" || msg.request_id !== seekScreen.matchRequestId) return
@@ -648,6 +669,14 @@ Rectangle {
             seekScreen.clearWaiting()
             seekScreen.showSetupError(msg.message || "Lichess could not create that game.", retry)
         } else if (msg.type === "GameStarted") {
+            if (seekScreen.pendingAction === "challenge" || seekScreen.waitingChallengeGameId) {
+                if (msg.board_supported === false || !msg.game_id) return
+                if (seekScreen.waitingChallengeGameId && msg.game_id !== seekScreen.waitingChallengeGameId) return
+                if (seekScreen.challengeConnectionError) seekScreen.finishChallenge(msg.game_id)
+                else if (seekScreen.directGameStartIds.indexOf(msg.game_id) === -1)
+                    seekScreen.directGameStartIds.push(msg.game_id)
+                return
+            }
             var matchingLink = seekScreen.pendingAction.length === 0 && !seekScreen.waiting &&
                 seekScreen.openChallengeUrls && msg.game_id === seekScreen.openChallengeUrls.game_id
             if (matchingLink) {

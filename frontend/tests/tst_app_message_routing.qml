@@ -4064,6 +4064,73 @@ TestCase {
                 {type: "ResumeGame", game_id: "accepted"})
     }
 
+    function submitDirectChallenge() {
+        findChild(screen.item, "usernameField").text = "opponent"
+        screen.item.submitChallenge()
+        return screen.item.matchRequestId
+    }
+
+    function test_directChallengeRecoversFromLostConnection_data() {
+        return [{tag: "start before the challenge ID", phase: "connecting"},
+                {tag: "start while waiting for acceptance", phase: "waiting"},
+                {tag: "start after stream loss", phase: "settling"}]
+    }
+
+    function test_directChallengeRecoversFromLostConnection(data) {
+        app.navigateTo("SeekScreen.qml")
+        var request = submitDirectChallenge()
+        var started = {type: "GameStarted", game_id: "direct01", board_supported: true}
+        endpoint.reply({type: "GameStarted", game_id: "unrelated", board_supported: true})
+        if (data.phase === "connecting") endpoint.reply(started)
+        endpoint.reply({type: "ChallengeCreated", game_id: "direct01", request_id: request})
+        if (data.phase === "waiting") endpoint.reply(started)
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+        endpoint.reply({type: "ChallengeResolved", game_id: "direct01", request_id: request,
+                        error: "Lost the challenge connection.", connection_lost: true})
+        if (data.phase === "settling") {
+            compare(screen.item.waitingLabel, "Checking if the game started…")
+            endpoint.reply(started)
+        }
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        endpoint.reply(started)
+        compare(endpoint.sentMessages.filter(function(message) { return message.type === "ResumeGame" }),
+                [{type: "ResumeGame", game_id: "direct01"}])
+    }
+
+    function test_directChallengeLostConnectionRequiresAPlayableExactMatch() {
+        app.navigateTo("SeekScreen.qml")
+        var request = submitDirectChallenge()
+        endpoint.reply({type: "ChallengeCreated", game_id: "direct01", request_id: request})
+        endpoint.reply({type: "GameStarted", game_id: "direct01", board_supported: false})
+        endpoint.reply({type: "ChallengeResolved", game_id: "direct01", request_id: request,
+                        error: "Lost the challenge connection.", connection_lost: true})
+        endpoint.reply({type: "GameStarted", game_id: "unrelated", board_supported: true})
+        compare(screen.item.waitingLabel, "Checking if the game started…")
+        tryCompare(screen.item, "formError", "Lost the challenge connection.", 6500)
+        verify(screen.item.showingSetup)
+        endpoint.reply({type: "GameStarted", game_id: "direct01", board_supported: true})
+        verify(String(screen.source).endsWith("SeekScreen.qml"))
+    }
+
+    function test_directChallengeLostConnectionDoesNotSurviveCancellation() {
+        app.navigateTo("SeekScreen.qml")
+        var request = submitDirectChallenge()
+        endpoint.reply({type: "ChallengeCreated", game_id: "direct01", request_id: request})
+        var lost = {type: "ChallengeResolved", game_id: "direct01", request_id: request,
+                    error: "Lost the challenge connection.", connection_lost: true}
+        endpoint.reply(lost)
+        findChild(screen.item, "cancelMatchButton").clicked()
+        compare(endpoint.sentMessages[endpoint.sentMessages.length - 1],
+                {type: "CancelMatch", request_id: request})
+        endpoint.reply({type: "GameStarted", game_id: "direct01", board_supported: true})
+        verify(screen.item.showingSetup)
+        var nextRequest = submitDirectChallenge()
+        endpoint.reply({type: "ChallengeCreated", game_id: "direct02", request_id: nextRequest})
+        endpoint.reply(lost)
+        compare(screen.item.waitingLabel, "Challenge sent, waiting for a reply...")
+        compare(screen.item.formError, "")
+    }
+
     function test_openChallengeMatchesTheShareableLink_data() {
         return [
             {tag: "compatible", supported: true},
