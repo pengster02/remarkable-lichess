@@ -4071,6 +4071,26 @@ TestCase {
                 {type: "ResumeGame", game_id: "accepted"})
     }
 
+    function test_directChallengeValidatesUsernameBeforeSubmitting() {
+        app.navigateTo("SeekScreen.qml")
+        var seek = screen.item
+        var username = findChild(seek, "usernameField")
+        var sent = endpoint.sentMessages.length
+        for (var name of ["  ", "a", "two words", "José", "chess.example",
+                          "abcdefghijklmnopqrstuvwxy123456"]) {
+            username.text = name
+            seek.submitChallenge()
+            verify(seek.formError.indexOf("username") !== -1, name)
+            verify(seek.showingSetup, name)
+            compare(endpoint.sentMessages.length, sent, name)
+        }
+        username.text = " 1_Friend- "
+        seek.submitChallenge()
+        compare(seek.formError, "")
+        compare(endpoint.sentMessages[sent].type, "CreateChallenge")
+        compare(endpoint.sentMessages[sent].username, "1_Friend-")
+    }
+
     function submitDirectChallenge() {
         findChild(screen.item, "usernameField").text = "opponent"
         screen.item.submitChallenge()
