@@ -410,18 +410,12 @@ pub struct HistoryGameSummary {
     pub created_at_ms: Option<i64>,
 }
 
-// This game's own per-move computer analysis (see
-// lichess::models::GameMoveAnalysis) -- one entry per ply, aligned with
-// GameMoves' own `moves` array. `eval_cp`/`mate_in` are mutually exclusive
-// (Lichess sends exactly one of the two per analyzed ply, see
-// GameMoveAnalysis's own comment); both None means this ply just wasn't
-// flagged as notable (no `judgment` either) even though the game overall was
-// analyzed.
+// Aligned with GameMoves.moves. A ply can have a judgment without a usable score.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MoveAnalysis {
     // Centipawns, from White's perspective (positive favors White).
     pub eval_cp: Option<i32>,
-    // Plies to forced mate, same White-perspective sign as eval_cp.
+    // Moves to forced mate from White's perspective. Zero means already mated.
     pub mate_in: Option<i32>,
     // "Inaccuracy"/"Mistake"/"Blunder", or None for an unremarkable move.
     pub judgment: Option<String>,

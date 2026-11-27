@@ -10,7 +10,7 @@ use crate::lichess::client::{
 use crate::lichess::oauth;
 use crate::lichess::models::{
     ChallengeResolution, ChallengeResult, ChallengeTerms, EventGame, EventStreamMessage, GameStreamMessage,
-    Account, IncomingChallenge, ParticipantPerspective, PlayingGame, PlayingOpponent, Variant,
+    Account, ArchivedScore, IncomingChallenge, ParticipantPerspective, PlayingGame, PlayingOpponent, Variant,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
@@ -1359,14 +1359,16 @@ impl LichessBackend {
         while clock_ms.last() == Some(&None) {
             clock_ms.pop();
         }
-        let analysis: Vec<MoveAnalysis> = export
-            .analysis
-            .into_iter()
-            .map(|a| MoveAnalysis {
-                eval_cp: a.eval,
-                mate_in: a.mate,
-                judgment: a.judgment.as_ref().map(|j| j.name.clone()),
-                judgment_comment: a.judgment.map(|j| j.comment),
+        let analysis: Vec<MoveAnalysis> = export.analysis.into_iter().take(moves.len())
+            .map(|entry| {
+                let (eval_cp, mate_in) = match entry.score {
+                    Some(ArchivedScore::Centipawns(cp)) => (Some(cp), None),
+                    Some(ArchivedScore::Mate(mate)) => (None, Some(mate)),
+                    None => (None, None),
+                };
+                let (judgment, judgment_comment) = entry.judgment
+                    .map_or((None, None), |judgment| (Some(judgment.name), judgment.comment));
+                MoveAnalysis { eval_cp, mate_in, judgment, judgment_comment }
             })
             .collect();
         if let Some(ready) = ready {

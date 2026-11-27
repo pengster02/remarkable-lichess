@@ -506,7 +506,8 @@ Rectangle {
     function evalLabel(entry) {
         if (!entry) return ""
         if (entry.mate_in !== null && entry.mate_in !== undefined) {
-            return (entry.mate_in > 0 ? "M" : "-M") + Math.abs(entry.mate_in)
+            // Lichess exports mate zero when the side to move is already mated.
+            return (entry.mate_in < 0 ? "-M" : "M") + Math.abs(entry.mate_in)
         }
         if (entry.eval_cp === null || entry.eval_cp === undefined) return ""
         var pawns = entry.eval_cp / 100
@@ -752,7 +753,9 @@ Rectangle {
             objectName: "reviewMoveJudgment"
             visible: text.length > 0
             text: gameReviewScreen.displayedArchiveAnalysis
-                ? gameReviewScreen.displayedArchiveAnalysis.judgment_comment || "" : ""
+                ? gameReviewScreen.displayedArchiveAnalysis.judgment_comment ||
+                  gameReviewScreen.displayedArchiveAnalysis.judgment || "" : ""
+            textFormat: Text.PlainText
             font.pixelSize: theme.fontSmall
             wrapMode: Text.WordWrap
             width: parent.width

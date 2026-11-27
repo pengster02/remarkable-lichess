@@ -479,26 +479,24 @@ pub struct HistoryGame {
     pub opening: Option<GameOpening>,
 }
 
-// Confirmed against lichess-org/api's GameMoveAnalysis.yaml. `best`/`variation`
-// aren't modeled (only shown alongside `judgment` in Lichess's own analysis
-// board UI, which this app doesn't have) -- `eval`/`mate`/`judgment` are
-// enough to show an eval and an inaccuracy/mistake/blunder tag per move.
-// Exactly one of `eval`/`mate` is present per entry: `eval` (centipawns, from
-// White's perspective) for a normal position, `mate` (plies to forced mate,
-// same sign convention) once one side has a forced mate on the board.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GameMoveAnalysis {
-    pub eval: Option<i32>,
-    pub mate: Option<i32>,
+    pub score: Option<ArchivedScore>,
     pub judgment: Option<MoveJudgment>,
 }
 
-// Confirmed against lichess-org/api's GameMoveAnalysis.yaml's own nested
-// `judgment` property. `name` is always one of Inaccuracy/Mistake/Blunder.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+// Independent fields admit conflicting scores. Picking a preferred field
+// would assign an evaluation without knowing which one Lichess intended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ArchivedScore {
+    Centipawns(i32),
+    Mate(i32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct MoveJudgment {
     pub name: String,
-    pub comment: String,
+    pub comment: Option<String>,
 }
 
 // GET /game/export/{id} (Accept: application/json) response -- confirmed
@@ -527,7 +525,7 @@ pub struct GameExport {
     pub moves: String,
     #[serde(default, deserialize_with = "deserialize_export_clocks")]
     pub clocks: Vec<Option<u32>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_export_analysis")]
     pub analysis: Vec<GameMoveAnalysis>,
 }
 
@@ -543,6 +541,36 @@ where
     Ok(clocks.into_iter()
         .map(|clock| clock.as_u64().and_then(|centis| u32::try_from(centis).ok()))
         .collect())
+}
+
+fn deserialize_export_analysis<'de, D>(deserializer: D) -> Result<Vec<GameMoveAnalysis>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Keep empty ply slots. Filtering rows shifts annotations, and strict
+    // row parsing can discard otherwise usable annotations and the replay.
+    let serde_json::Value::Array(analysis) = serde_json::Value::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    Ok(analysis.iter().map(|entry| {
+        let integer = |key| entry.get(key).and_then(serde_json::Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok());
+        let score = match (integer("eval"), integer("mate")) {
+            (Some(cp), None) => Some(ArchivedScore::Centipawns(cp)),
+            (None, Some(mate)) => Some(ArchivedScore::Mate(mate)),
+            _ => None,
+        };
+        let judgment = entry.get("judgment").and_then(|judgment| {
+            let name = judgment.get("name")?.as_str()?;
+            if !matches!(name, "Inaccuracy" | "Mistake" | "Blunder") {
+                return None;
+            }
+            let comment = judgment.get("comment").and_then(serde_json::Value::as_str)
+                .filter(|comment| !comment.trim().is_empty()).map(str::to_owned);
+            Some(MoveJudgment { name: name.into(), comment })
+        });
+        GameMoveAnalysis { score, judgment }
+    }).collect())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -803,9 +831,42 @@ mod tests {
         let export: GameExport = serde_json::from_str(json).unwrap();
         assert_eq!(export.clocks, vec![Some(3000), Some(2990), Some(2980)]);
         assert_eq!(export.analysis.len(), 3);
-        assert_eq!(export.analysis[0].eval, Some(25));
+        assert_eq!(export.analysis[0].score, Some(ArchivedScore::Centipawns(25)));
         assert_eq!(export.analysis[1].judgment.as_ref().unwrap().name, "Inaccuracy");
-        assert_eq!(export.analysis[2].mate, Some(3));
+        assert_eq!(export.analysis[2].score, Some(ArchivedScore::Mate(3)));
+    }
+
+    #[test]
+    fn game_export_salvages_analysis_by_field_without_reassigning_plies() {
+        let export: GameExport = serde_json::from_str(r#"{
+            "id":"abcd1234","moves":"e4 e5 Nf3 Nc6 Bb5 a6 Ba4 Nf6",
+            "analysis":[
+                {"eval":0}, null, 4,
+                {"eval":68,"mate":-2,"judgment":{"name":"Mistake"}},
+                {"eval":"+0.12","mate":3,"judgment":{"name":"Blunder","comment":false}},
+                {"eval":-77,"judgment":{"name":"Unknown","comment":"Ignored"}},
+                {"eval":2147483648,"mate":-2147483649},
+                {"mate":0,"judgment":{"name":"Inaccuracy","comment":"  "}}
+            ]
+        }"#).unwrap();
+        let scores: Vec<_> = export.analysis.iter().map(|entry| entry.score).collect();
+        assert_eq!(scores, [Some(ArchivedScore::Centipawns(0)), None, None, None,
+            Some(ArchivedScore::Mate(3)), Some(ArchivedScore::Centipawns(-77)),
+            None, Some(ArchivedScore::Mate(0))]);
+        for (index, name) in [(3, "Mistake"), (4, "Blunder"), (7, "Inaccuracy")] {
+            assert_eq!(export.analysis[index].judgment, Some(MoveJudgment {
+                name: name.into(), comment: None,
+            }));
+        }
+        for index in [0, 1, 2, 5, 6] {
+            assert_eq!(export.analysis[index].judgment, None);
+        }
+        for analysis in ["null", "{}", "false"] {
+            let body = format!(r#"{{"id":"abcd1234","moves":"e4","analysis":{analysis}}}"#);
+            let export: GameExport = serde_json::from_str(&body).unwrap();
+            assert_eq!(export.moves, "e4");
+            assert!(export.analysis.is_empty());
+        }
     }
 
     #[test]
