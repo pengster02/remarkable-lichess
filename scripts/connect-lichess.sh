@@ -32,15 +32,35 @@ esac
 # Quick live check before wasting a rebuild cycle.
 ACCOUNT_RESPONSE="$(mktemp)"
 trap 'rm -f "$ACCOUNT_RESPONSE"' EXIT
-HTTP_CODE="$(printf 'Authorization: Bearer %s\n' "${TOKEN}" | \
-  curl -s -o "$ACCOUNT_RESPONSE" -w '%{http_code}' -H @- https://lichess.org/api/account || true)"
-if [ "${HTTP_CODE}" != "200" ]; then
-  echo "Lichess rejected that token (HTTP ${HTTP_CODE}):" >&2
-  cat "$ACCOUNT_RESPONSE" >&2 || true
-  echo >&2
+# curl can print 200 on a failed body transfer. Checking only the status
+# accepts partial responses, while --fail mixes HTTP and transfer failures.
+if ! HTTP_CODE="$(printf 'Authorization: Bearer %s\n' "${TOKEN}" | \
+  curl -sS --connect-timeout 5 --max-time 15 -o "$ACCOUNT_RESPONSE" -w '%{http_code}' \
+    -H @- https://lichess.org/api/account)"; then
+  echo "Could not complete the Lichess account transfer. Check your connection and try again." >&2
   exit 1
 fi
-USERNAME="$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("username", "?"))' < "$ACCOUNT_RESPONSE" 2>/dev/null || echo "?")"
+case "${HTTP_CODE}" in
+  200) ;;
+  401|403)
+    echo "Lichess rejected that token (HTTP ${HTTP_CODE})." >&2
+    exit 1
+    ;;
+  *)
+    echo "Lichess could not verify the token (HTTP ${HTTP_CODE})." >&2
+    exit 1
+    ;;
+esac
+if ! USERNAME="$(python3 -c '
+import json, sys
+username = json.load(sys.stdin).get("username")
+if not isinstance(username, str) or not username.strip():
+    sys.exit(1)
+print(username)
+' < "$ACCOUNT_RESPONSE" 2>/dev/null)"; then
+  echo "Lichess returned an invalid account profile. Try again." >&2
+  exit 1
+fi
 echo "Token OK — signed in as ${USERNAME}"
 if [ -f "${TOKEN_FILE}" ]; then chmod 600 "${TOKEN_FILE}"; fi
 (umask 077; printf '%s\n' "${TOKEN}" > "${TOKEN_FILE}")
