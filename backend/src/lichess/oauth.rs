@@ -22,6 +22,7 @@
 //! instead of requiring one Wi-Fi, and PKCE keeps the relay unable to spend the
 //! code, but it means running and trusting a server for a local-only app.
 
+use super::client::LICHESS_USER_AGENT;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -187,11 +188,13 @@ async fn exchange_code(
     verifier: &str,
     code: &str,
 ) -> Result<String> {
-    // Its own client rather than LichessClient's: every method there attaches a
-    // bearer token, and this is the one Lichess call made before we have one.
+    // Keep the proof at the configured endpoint. Following a redirect can
+    // replay the form, and stripping auth headers leaves that form intact.
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(LICHESS_USER_AGENT)
         .build()
         .expect("reqwest client with a timeout always builds");
     let response = http
@@ -206,6 +209,9 @@ async fn exchange_code(
         .send()
         .await
         .context("couldn't reach Lichess to finish signing in")?;
+    if response.status().is_redirection() {
+        bail!("Lichess redirected the sign-in request. Try again.");
+    }
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
@@ -311,6 +317,44 @@ fn encode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn token_exchange_stays_on_the_configured_endpoint() {
+        let server = MockServer::start().await;
+        let redirected = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/token"))
+            .respond_with(ResponseTemplate::new(307)
+                .insert_header("Location", redirected.uri().as_str())
+                .set_body_json(serde_json::json!({"error": "fixture-code fixture-verifier"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"access_token": "fixture-token"})))
+            .mount(&redirected)
+            .await;
+
+        let result = exchange_code(&server.uri(), "http://127.0.0.1/", "fixture-verifier", "fixture-code").await;
+        assert!(redirected.received_requests().await.unwrap().is_empty());
+        let error = result.expect_err("a redirect cannot complete sign-in").to_string();
+        assert!(error.contains("redirected"));
+        assert!(!error.contains("fixture-code") && !error.contains("fixture-verifier"));
+    }
+
+    #[tokio::test]
+    async fn token_exchange_identifies_remarkable_lichess() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/token"))
+            .and(header("User-Agent", "remarkable-lichess"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"access_token": "fixture-token"})))
+            .mount(&server)
+            .await;
+        let result = exchange_code(&server.uri(), "http://127.0.0.1/", "fixture-verifier", "fixture-code").await;
+        assert_eq!(result.unwrap(), "fixture-token");
+    }
 
     #[test]
     fn code_challenge_matches_rfc7636_example() {
