@@ -270,14 +270,8 @@ impl LichessClient {
 
     pub async fn get_account(&self) -> Result<Account> {
         let resp = self
-            .send_logged("get_account", self.bearer(self.no_redirect_http.get(format!("{}/api/account", self.base_url))))
+            .send_direct_authenticated("get_account", self.no_redirect_http.get(format!("{}/api/account", self.base_url)))
             .await?;
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(http_response_error("get_account", resp.status(), None));
-        }
-        if !resp.status().is_success() {
-            return Err(error_from_response("get_account", resp).await);
-        }
         Ok(resp.json::<Account>().await?)
     }
 
@@ -302,13 +296,10 @@ impl LichessClient {
         // One maximal read keeps Lichess's urgent order. The default truncates
         // at nine, and additional reads repeat the list without a cursor.
         let resp = self
-            .send_logged("get_playing", self.bearer(self.no_redirect_http
+            .send_direct_authenticated("get_playing", self.no_redirect_http
                 .get(format!("{}/api/account/playing", self.base_url))
-                .query(&[("nb", 50)])))
+                .query(&[("nb", 50)]))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("get_playing", resp).await);
-        }
         let parsed = resp.json::<PlayingResponse>().await?;
         Ok(parsed.now_playing)
     }
@@ -1062,6 +1053,31 @@ mod tests {
             let client = LichessClient::with_base_url("test-token".into(), server.uri());
             let error = client.get_account().await.unwrap_err();
             assert_eq!(is_auth_rejection(&error), rejected, "HTTP {status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn account_reads_act_on_unauthorized_headers_while_the_body_is_open() {
+        for games in [false, true] {
+            let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", server.local_addr().unwrap());
+            let (release, hold) = oneshot::channel();
+            let task = tokio::spawn(async move {
+                let mut socket = accept_http_request(server).await;
+                socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 80\r\n\r\n").await.unwrap();
+                let _ = hold.await;
+            });
+            let client = LichessClient::with_base_url("test-token".into(), endpoint);
+            let observed = tokio::time::timeout(Duration::from_secs(2), async {
+                if games {
+                    client.get_playing().await.unwrap_err()
+                } else {
+                    client.get_account().await.unwrap_err()
+                }
+            }).await;
+            release.send(()).unwrap();
+            task.await.unwrap();
+            assert!(is_unauthorized(&observed.expect("401 headers should finish the request")));
         }
     }
 
