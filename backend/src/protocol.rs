@@ -888,8 +888,9 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,
     },
-    // `fens[0]` is the starting position, `fens[i]` is the position after SAN
-    // move `moves[i-1]` -- always `fens.len() == moves.len() + 1` (see
+    // `moves` is the SAN derived from the replay. `fens[0]` is the starting
+    // position and `fens[i]` follows `moves[i-1]`. Thus
+    // `fens.len() == moves.len() + 1` (see
     // game::replay::replay_export). Sent once per RequestGameMoves, not
     // streamed -- a finished game's move list never changes. `clock_ms`/
     // `analysis` are each aligned with `moves` (not `fens` -- no entry for the
