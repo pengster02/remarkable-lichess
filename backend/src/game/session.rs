@@ -5,7 +5,7 @@ use crate::game::rules::{
 };
 use crate::lichess::models::{GameFull, GameState};
 use crate::protocol::{
-    BackendMessage, CaptureHistoryUpdate, GameAction, GameActionRequest, HistoryCapture,
+    BackendMessage, CaptureHistoryUpdate, GameAction, GameActionRequest, GameOutcome, HistoryCapture,
     LegalMove, OfferIntent, OfferRequest, OpponentDeparture, PlayerIdentity, PlayerStatusSummary, PositionId,
 };
 use shakmaty::{Chess, Position};
@@ -102,10 +102,16 @@ fn turn_name(pos: &Chess) -> String {
 /// erroring out) so a modeling gap or an unexpected payload shape degrades to the
 /// old always-white-orientation behavior instead of breaking the game entirely.
 fn resolve_your_color(full: &GameFull, my_id: &str) -> &'static str {
+    known_player_color(full, my_id).unwrap_or("white")
+}
+
+fn known_player_color(full: &GameFull, my_id: &str) -> Option<&'static str> {
     if full.black.id.as_deref() == Some(my_id) {
-        "black"
+        Some("black")
+    } else if full.white.id.as_deref() == Some(my_id) {
+        Some("white")
     } else {
-        "white"
+        None
     }
 }
 
@@ -381,6 +387,29 @@ impl GameSession {
 
     pub fn board_state(&self) -> BackendMessage {
         self.board_state_at(Instant::now())
+    }
+
+    pub fn full_outcome_without_position(full: &GameFull, my_id: &str) -> BackendMessage {
+        let your_color = known_player_color(full, my_id);
+        let mut result = outcome(&full.state.status, full.state.winner.as_deref());
+        result.rating_diff = your_color.and_then(|color| you(full, color).rating_diff);
+        BackendMessage::FinalPositionUnavailable {
+            game_id: full.id.clone(),
+            outcome: Box::new(result),
+            your_color,
+            opponent: your_color.map(|color| Box::new(player_identity(opponent(full, color)))),
+        }
+    }
+
+    pub fn outcome_without_position(&self, mut result: GameOutcome, my_id: &str) -> BackendMessage {
+        let your_color = (self.your_player.id.as_deref() == Some(my_id)).then_some(self.your_color);
+        result.rating_diff = your_color.and(self.your_rating_diff);
+        BackendMessage::FinalPositionUnavailable {
+            game_id: self.game_id.clone(),
+            outcome: Box::new(result),
+            your_color,
+            opponent: your_color.map(|_| Box::new(self.opponent_player.clone())),
+        }
     }
 
     pub fn mark_berserked(&mut self) {
@@ -789,6 +818,34 @@ mod tests {
                 panic!("expected a finished board update");
             };
             assert_eq!(result.rating_diff, expected);
+        }
+    }
+
+    #[test]
+    fn unreadable_final_position_keeps_outcome_but_never_guesses_the_player() {
+        let mut full = sample_full("e2e4 e7e5 invalid");
+        full.state.status = "resign".into();
+        full.state.winner = Some("black".into());
+        full.white.rating_diff = Some(-7);
+        full.black.rating_diff = Some(0);
+        full.white.name = Some("White Player".into());
+        full.black.name = Some("Black Player".into());
+        assert!(GameSession::from_game_full(&full, "my-id").is_err());
+        for (id, expected_color, expected_diff, expected_opponent) in [
+            ("my-id", Some("white"), Some(-7), Some("Black Player")),
+            ("opponent-id", Some("black"), Some(0), Some("White Player")),
+            ("unknown", None, None, None),
+        ] {
+            let message = GameSession::full_outcome_without_position(&full, id);
+            let BackendMessage::FinalPositionUnavailable { game_id, outcome, your_color, opponent } = message else {
+                panic!("expected outcome without position");
+            };
+            assert_eq!(game_id, "g1");
+            assert_eq!(outcome.result, "black");
+            assert_eq!(outcome.reason, "Resignation");
+            assert_eq!(outcome.rating_diff, expected_diff);
+            assert_eq!(your_color, expected_color);
+            assert_eq!(opponent.as_deref().and_then(|player| player.name.as_deref()), expected_opponent);
         }
     }
 

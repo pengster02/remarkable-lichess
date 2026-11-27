@@ -87,6 +87,10 @@ Rectangle {
     // refresh, and keeping every message would leave recovered errors visible.
     property var boardNotice: null
     property string gameOutcomeText: ""
+    property bool finalPositionUnavailable: false
+    readonly property string finalPositionNotice: !boardScreen.finalPositionUnavailable ? "" :
+        (boardScreen.liveFen.length > 0 ? "Final position unavailable · showing last loaded position" :
+         "Final position unavailable")
     // The two streams can finish in either order. Appending text repeats
     // duplicate events, and a bare delta can leak across game selections.
     property var gameRatingChange: null
@@ -248,6 +252,7 @@ Rectangle {
         boardScreen.gameActionCoolingDown || boardScreen.streamError.length > 0
     property string gameResult: ""
     property string gameReason: ""
+    property string resultPerspective: ""
     property bool annotationMode: false
     property var boardAnnotations: []
     property bool liveClockEnabled: true
@@ -588,7 +593,10 @@ Rectangle {
                 ? "Reconnecting · " + boardScreen.statusText
                 : "Reconnecting..."
         }
-        if (boardScreen.statusText.length > 0) return boardScreen.statusText
+        if (boardScreen.statusText.length > 0) {
+            return boardScreen.awaitingBoard && boardScreen.finalPositionUnavailable
+                ? boardScreen.statusText + "\n" + boardScreen.finalPositionNotice : boardScreen.statusText
+        }
         if (boardScreen.awaitingBoard) return "Loading game..."
         if (boardScreen.gameOver) return "Game over"
         if (boardScreen.viewingHistory) {
@@ -1062,8 +1070,8 @@ Rectangle {
             objectName: "gameDescriptionText"
             width: parent.width
             height: theme.fontSmall + theme.spacingXs
-            text: boardScreen.gameDescription
-            visible: boardScreen.hasGameDescription
+            text: boardScreen.finalPositionUnavailable ? boardScreen.finalPositionNotice : boardScreen.gameDescription
+            visible: text.length > 0
             font.pixelSize: theme.fontSmall
             font.bold: true
             horizontalAlignment: Text.AlignHCenter
@@ -1848,6 +1856,16 @@ Rectangle {
                     font.bold: true
                     color: theme.text
                 }
+                Text {
+                    objectName: "gameOverFinalPositionNotice"
+                    width: parent.width
+                    visible: boardScreen.finalPositionUnavailable
+                    text: boardScreen.finalPositionNotice
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    font.pixelSize: theme.fontSmall
+                    color: theme.textMuted
+                }
                 AppButton {
                     width: parent.width
                     text: "Back to Home"
@@ -1864,7 +1882,8 @@ Rectangle {
                 AppButton {
                     width: parent.width
                     objectName: "viewFinalBoardButton"
-                    text: "View final board"
+                    text: boardScreen.finalPositionUnavailable ? "View last position" : "View final board"
+                    visible: !boardScreen.finalPositionUnavailable || boardScreen.liveFen.length > 0
                     onClicked: boardScreen.showGameOverDialog = false
                 }
             }
@@ -1936,7 +1955,7 @@ Rectangle {
         boardScreen.finalPositionGameId = gameId
     }
 
-    function completeGame(result, reason) {
+    function completeGame(result, reason, perspective) {
         boardScreen.clearGameInput()
         boardScreen.returnToLive()
         boardScreen.clockPulse += 1
@@ -1947,13 +1966,20 @@ Rectangle {
             paused: false,
             receivedAt: 0
         }
+        boardScreen.resultPerspective = perspective === undefined ? boardScreen.yourColor : perspective
         var outcome
         if (result === "draw") {
             outcome = "Draw"
             boardScreen.gameResult = "draw"
         } else if (result === "white" || result === "black") {
-            outcome = result === boardScreen.yourColor ? "You won" : "You lost"
-            boardScreen.gameResult = result === boardScreen.yourColor ? "win" : "loss"
+            var color = boardScreen.resultPerspective
+            if (color === "white" || color === "black") {
+                outcome = result === color ? "You won" : "You lost"
+                boardScreen.gameResult = result === color ? "win" : "loss"
+            } else {
+                outcome = chessDisplay.resultLabel(result)
+                boardScreen.gameResult = result
+            }
         } else {
             outcome = reason && reason.length > 0
                 ? reason
@@ -1972,6 +1998,32 @@ Rectangle {
         boardScreen.showGameOverDialog = true
     }
 
+    function showOutcomeWithoutFinalPosition(msg) {
+        var gameChanged = boardScreen.gameId !== msg.game_id
+        if (gameChanged) {
+            boardScreen.clearGameInput()
+            boardScreen.fen = ""
+            boardScreen.liveFen = ""
+            boardScreen.moveHistory = []
+            boardScreen.positionHistory = []
+            boardScreen.historyIndex = -1
+            boardScreen.gameId = msg.game_id
+        }
+        var color = msg.your_color || ""
+        var opponent = msg.opponent || {}
+        if (gameChanged || msg.opponent || !color) {
+            boardScreen.opponentName = opponent.name || ""
+            boardScreen.opponentRating = typeof opponent.rating === "number" ? opponent.rating : null
+        }
+        if (color) boardScreen.yourColor = color
+        if (typeof msg.outcome.rating_diff === "number") {
+            boardScreen.gameRatingChange = {gameId: msg.game_id, diff: msg.outcome.rating_diff}
+        }
+        boardScreen.streamError = ""
+        boardScreen.finalPositionUnavailable = true
+        boardScreen.completeGame(msg.outcome.result, msg.outcome.reason, color)
+    }
+
     function openFinishedGameReview() {
         if (!boardScreen.gameOver || boardScreen.gameId.length === 0 ||
                 boardScreen.openingReview || boardScreen.gameExportCoolingDown) return
@@ -1982,7 +2034,7 @@ Rectangle {
             opponent_rating: boardScreen.opponentRating,
             result: boardScreen.gameResult,
             termination: boardScreen.gameReason,
-            your_color: boardScreen.yourColor,
+            your_color: boardScreen.resultPerspective,
             rating_diff: boardScreen.resultRatingDiff
         })
     }
@@ -1999,7 +2051,8 @@ Rectangle {
             if (msg.outcome && typeof msg.outcome.rating_diff === "number") {
                 boardScreen.gameRatingChange = {gameId: nextGameId, diff: msg.outcome.rating_diff}
             }
-            if (!gameChanged && boardScreen.gameOver) return
+            if (!gameChanged && boardScreen.gameOver && (!boardScreen.finalPositionUnavailable || !msg.outcome)) return
+            boardScreen.finalPositionUnavailable = false
             boardScreen.streamError = ""
             if (typeof msg.game_stream_connected === "boolean") {
                 boardScreen.streamReconnecting = !msg.game_stream_connected
@@ -2160,6 +2213,10 @@ Rectangle {
         } else if (msg.type === "GameFinished") {
             if (msg.game_id === (boardScreen.requestedGameId || boardScreen.gameId))
                 boardScreen.waitForFinalPosition(msg.game_id)
+        } else if (msg.type === "FinalPositionUnavailable") {
+            if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
+                    (boardScreen.gameId === msg.game_id && boardScreen.gameOver)) return
+            boardScreen.showOutcomeWithoutFinalPosition(msg)
         } else if (msg.type === "GameOver") {
             if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
             boardScreen.completeGame(msg.result, msg.reason)

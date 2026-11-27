@@ -5729,6 +5729,64 @@ TestCase {
         compare(screen.item.gameDetailsLabel(), data.reason)
     }
 
+    function test_unavailableFinalPositionKeepsKnownResultAndReview_data() {
+        return [{tag: "last loaded position", loaded: true}, {tag: "no position", loaded: false}]
+    }
+
+    function test_unavailableFinalPositionKeepsKnownResultAndReview(data) {
+        app.openGame(data.loaded ? "finished" : "previous")
+        endpoint.reply(boardState(data.loaded ? "finished" : "previous"))
+        if (!data.loaded) app.openGame("finished")
+        var board = screen.item
+        var reply = {type: "FinalPositionUnavailable", game_id: "finished",
+                     outcome: {result: "black", reason: "Checkmate"}}
+        if (data.loaded) {
+            reply.your_color = "white"
+            reply.opponent = {name: "Owl", rating: 1750}
+            reply.outcome.rating_diff = -5
+        }
+        endpoint.reply(Object.assign({}, reply, {game_id: "wrong"}))
+        verify(!board.gameOver)
+        endpoint.reply(reply)
+        verify(board.gameOver && board.finalPositionUnavailable)
+        verify(!board.awaitingFinalPosition && !board.moveInputAvailable)
+        var status = findChild(board, "gameOverSummary")
+        var notice = findChild(board, "gameOverFinalPositionNotice")
+        verify(notice && notice.visible)
+        var view = findChild(board, "viewFinalBoardButton")
+        if (data.loaded) {
+            compare(status.text, "You lost · Checkmate · -5 rating")
+            compare(notice.text, "Final position unavailable · showing last loaded position")
+            verify(view.visible)
+            compare(view.text, "View last position")
+            view.clicked()
+            compare(board.fen, startFen)
+            var boardNotice = findChild(board, "gameDescriptionText")
+            verify(boardNotice.visible)
+            compare(boardNotice.text, notice.text)
+            board.showGameOverDialog = true
+        } else {
+            compare(status.text, "Black won · Checkmate")
+            compare(notice.text, "Final position unavailable")
+            compare(board.fen, "")
+            compare(board.moveHistory, [])
+            verify(!view.visible)
+        }
+
+        endpoint.reply(boardState("finished"))
+        verify(board.gameOver && board.finalPositionUnavailable)
+        compare(board.fen, data.loaded ? startFen : "")
+        findChild(board, "reviewFinishedGameButton").clicked()
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(request.type, "RequestGameMoves")
+        compare(request.game_id, "finished")
+        endpoint.reply({type: "GameMoves", request_id: request.request_id, moves: [], fens: [startFen]})
+        compare(screen.item.game.result, data.loaded ? "loss" : "black")
+        compare(screen.item.game.your_color, data.loaded ? "white" : "")
+        compare(screen.item.game.opponent_name, data.loaded ? "Owl" : "")
+        compare(screen.item.gameDetailsLabel(), "Checkmate")
+    }
+
     function test_ratingBeforeFirstBoardSnapshot_data() {
         return [{tag: "first snapshot terminal", firstSnapshotFinished: true},
                 {tag: "first snapshot active", firstSnapshotFinished: false}]
