@@ -330,8 +330,8 @@ impl LichessClient {
     /// streamed line-by-line like `stream_lines` -- this is a bounded, one-shot page
     /// of `max` games, not an open-ended live connection.
     ///
-    /// The filters and exclusive creation-time cutoff are sent to Lichess.
-    pub async fn get_game_history(
+    /// Rated, color and the exclusive creation-time cutoff are sent to Lichess.
+    async fn get_game_history(
         &self,
         username: &str,
         max: u32,
@@ -348,9 +348,6 @@ impl LichessClient {
         ];
         if let Some(rated) = filters.rated {
             query.push(("rated".to_string(), rated.to_string()));
-        }
-        if let Some(speed) = &filters.speed {
-            query.push(("perfType".to_string(), speed.clone()));
         }
         if let Some(color) = &filters.color {
             query.push(("color".to_string(), color.clone()));
@@ -413,6 +410,11 @@ impl LichessClient {
             None
         };
         games.truncate(HISTORY_PAGE_SIZE);
+        // Page the archive before matching speed. perfType misses variant
+        // games, and scanning ahead for matches can require unbounded requests.
+        if let Some(speed) = filters.speed.as_deref() {
+            games.retain(|game| game.speed.as_deref() == Some(speed));
+        }
         Ok((games, next_cursor))
     }
 
@@ -1209,29 +1211,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_game_history_sends_rated_speed_and_color_query_params_when_set() {
+    async fn history_filters_by_speed_across_performance_categories() {
         use wiremock::matchers::query_param;
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/games/user/myuser"))
             .and(query_param("rated", "true"))
-            .and(query_param("perfType", "rapid"))
             .and(query_param("color", "white"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .respond_with(ResponseTemplate::new(200).set_body_string(concat!(
+                r#"{"id":"atomic01","variant":"atomic","perf":"atomic","speed":"bullet","players":{"white":{},"black":{}}}"#, "\n",
+                r#"{"id":"bullet01","variant":"standard","perf":"bullet","speed":"bullet","players":{"white":{},"black":{}}}"#, "\n",
+                r#"{"id":"atomic02","variant":"atomic","perf":"atomic","speed":"blitz","players":{"white":{},"black":{}}}"#, "\n",
+                r#"{"id":"ultra001","variant":"standard","perf":"ultraBullet","speed":"ultraBullet","players":{"white":{},"black":{}}}"#, "\n",
+                r#"{"id":"unknown1","variant":"standard","perf":"bullet","players":{"white":{},"black":{}}}"#,
+            )))
+            .expect(2)
             .mount(&server)
             .await;
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
-        let filters = GameHistoryFilters {
+        let mut filters = GameHistoryFilters {
             rated: Some(true),
-            speed: Some("rapid".to_string()),
+            speed: Some("bullet".to_string()),
             color: Some("white".to_string()),
         };
-        // The mock only matches if all three query params were actually sent --
-        // an unmatched request fails with a 404 from wiremock's default response,
-        // which .unwrap() below would catch.
-        client.get_game_history("myuser", 20, &filters, None).await.unwrap();
+        let (games, older) = client.get_game_history_page("myuser", &filters, None).await.unwrap();
+        assert_eq!(games.iter().map(|game| game.id.as_str()).collect::<Vec<_>>(), ["atomic01", "bullet01"]);
+        assert!(older.is_none());
+
+        filters.speed = Some("ultraBullet".into());
+        let (games, older) = client.get_game_history_page("myuser", &filters, None).await.unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].id, "ultra001");
+        assert!(older.is_none());
+        assert!(server.received_requests().await.unwrap().iter()
+            .all(|request| request.url.query_pairs().all(|(key, _)| key != "perfType")));
     }
 
     #[tokio::test]
@@ -1306,7 +1321,6 @@ mod tests {
                 .and(path("/api/games/user/myuser"))
                 .and(query_param("max", max.to_string()))
                 .and(query_param("rated", "true"))
-                .and(query_param("perfType", "rapid"))
                 .and(query_param("color", "black"));
             if max > 21 {
                 mock = mock.and(query_param("until", until.clone()));
@@ -1319,7 +1333,7 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let filters = GameHistoryFilters {
-            rated: Some(true), speed: Some("rapid".into()), color: Some("black".into()),
+            rated: Some(true), speed: None, color: Some("black".into()),
         };
         let mut cursor = None;
         let mut received = BTreeSet::new();
@@ -1337,6 +1351,45 @@ mod tests {
         }
         assert!(cursor.is_none());
         assert_eq!(received, (0..45).map(|i| format!("arch{i:04}")).collect());
+    }
+
+    #[tokio::test]
+    async fn history_speed_filter_keeps_cursor_for_empty_page_at_tied_cutoff() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let cutoff = 1_765_526_400_000_i64;
+        let body = |ids: Vec<usize>| {
+            ids.into_iter().map(|number| serde_json::json!({
+                "id": format!("arch{number:04}"),
+                "createdAt": cutoff,
+                "speed": if number == 20 { "bullet" } else { "blitz" },
+                "variant": "atomic",
+                "players": { "white": {}, "black": {} },
+            }).to_string()).collect::<Vec<_>>().join("\n")
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/games/user/myuser"))
+            .and(query_param("max", "21"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body((0..21).collect())))
+            .expect(1).mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/api/games/user/myuser"))
+            .and(query_param("max", "41"))
+            .and(query_param("until", (cutoff + 1).to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body((0..21).rev().collect())))
+            .expect(1).mount(&server).await;
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let filters = GameHistoryFilters { speed: Some("bullet".into()), ..Default::default() };
+        let (games, older) = client.get_game_history_page("myuser", &filters, None).await.unwrap();
+        assert!(games.is_empty());
+        let cursor = older.expect("lookahead remains even when the first page has no matching games");
+        assert_eq!(cursor.seen_at_cutoff, (0..20).map(|i| format!("arch{i:04}")).collect());
+        let (games, older) = client.get_game_history_page("myuser", &filters, Some(cursor)).await.unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].id, "arch0020");
+        assert!(older.is_none());
     }
 
     #[tokio::test]

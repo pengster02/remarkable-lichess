@@ -19,9 +19,6 @@ Rectangle {
     // "all"/"rated"/"casual" -- "all" sends rated: null, matching GET
     // /api/games/user's own default of no rated/casual filter at all.
     property string filterRated: "all"
-    // "all"/"bullet"/"blitz"/"rapid"/"classical"/"correspondence" -- maps to
-    // that endpoint's own `perfType` query param (see protocol.rs's
-    // RequestGameHistory `speed` field / backend_app.rs's GameHistoryFilters).
     property string filterSpeed: "all"
     // "all"/"white"/"black" -- that endpoint's own `color` query param.
     property string filterColor: "all"
@@ -184,7 +181,7 @@ Rectangle {
 
     function filterSummary() {
         var gameType = filterRated === "all" ? "All games" : capitalized(filterRated)
-        var speed = filterSpeed === "all" ? "All speeds" : capitalized(filterSpeed)
+        var speed = filterSpeed === "all" ? "All speeds" : chessDisplay.speedLabel(filterSpeed)
         var side = filterColor === "all" ? "Both sides" : "Played " + capitalized(filterColor)
         return gameType + " · " + speed + " · " + side
     }
@@ -518,10 +515,11 @@ Rectangle {
             width: parent.width
             spacing: theme.spacingXs
             Repeater {
-                model: ["all", "bullet", "blitz", "rapid", "classical", "correspondence"]
+                model: ["all", "ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence"]
                 AppButton {
                     required property string modelData
-                    text: gameHistoryScreen.capitalized(modelData)
+                    objectName: "historySpeed_" + modelData
+                    text: modelData === "all" ? "All" : chessDisplay.speedLabel(modelData)
                     highlighted: gameHistoryScreen.draftSpeed === modelData
                     onClicked: gameHistoryScreen.draftSpeed = modelData
                 }
