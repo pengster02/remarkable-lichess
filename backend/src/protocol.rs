@@ -675,6 +675,9 @@ pub enum BackendMessage {
         home_game: Option<Box<OngoingGameSummary>>,
     },
     GameFinished { game_id: String },
+    // Keep preview refreshes away from matchmaking. Reusing GameStarted can
+    // open a board twice, and sending a full list repeats unchanged cards.
+    HomeGameUpdated { game: Box<OngoingGameSummary> },
     AccountEventsResumed,
     BoardState {
         game_id: String,

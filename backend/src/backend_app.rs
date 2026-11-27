@@ -195,67 +195,106 @@ struct BoardStreamAccount {
 // persisting it on disk would retain game data after sign-out.
 #[derive(Default)]
 struct HomeGameList {
-    snapshot: Option<(Instant, Vec<OngoingGameSummary>)>,
-    // Keep start receipts until a newer read can confirm them. Retaining raw
-    // events adds unused data, and inserting into the snapshot shares its age.
-    starts: Vec<(Instant, OngoingGameSummary)>,
+    snapshot: Option<HomeGameSnapshot>,
+    previews: Vec<HomeGamePreview>,
     finished: HashSet<String>,
 }
 
+struct HomeGameSnapshot {
+    requested_at: Instant,
+    received_at: Instant,
+    games: Vec<OngoingGameSummary>,
+}
+
+struct HomeGamePreview {
+    // Order replays by attachment, and age the clock from receipt. Receipt
+    // order can revive older data, while attachment time over-ages delayed clocks.
+    replay_requested_at: Option<Instant>,
+    received_at: Instant,
+    game: OngoingGameSummary,
+}
+
+impl HomeGamePreview {
+    fn observed_after(&self) -> Instant {
+        self.replay_requested_at.unwrap_or(self.received_at)
+    }
+}
+
 impl HomeGameList {
-    fn record(&mut self, request_started_at: Instant, received_at: Instant, games: Vec<OngoingGameSummary>) -> Vec<OngoingGameSummary> {
+    fn record(&mut self, requested_at: Instant, received_at: Instant, games: Vec<OngoingGameSummary>) -> Vec<OngoingGameSummary> {
         self.finished.retain(|id| games.iter().any(|game| &game.game_id == id));
-        self.starts.retain(|(start, game)| *start > request_started_at
-            && !games.iter().any(|listed| listed.game_id == game.game_id));
+        self.previews.retain(|preview| preview.observed_after() > requested_at
+            && (preview.replay_requested_at.is_some()
+                || !games.iter().any(|listed| listed.game_id == preview.game.game_id)));
         let games: Vec<_> = games.into_iter().filter(|game| !self.finished.contains(&game.game_id)).collect();
-        self.snapshot = Some((received_at, games.clone()));
-        self.include_starts(games, received_at)
+        self.snapshot = Some(HomeGameSnapshot { requested_at, received_at, games: games.clone() });
+        self.include_previews(games, received_at)
     }
 
-    fn start(&mut self, received_at: Instant, game: &OngoingGameSummary) -> bool {
-        if self.finished.contains(&game.game_id)
-            || self.snapshot.as_ref().is_some_and(|(_, games)| games.iter().any(|listed| listed.game_id == game.game_id))
-            || self.starts.iter().any(|(_, started)| started.game_id == game.game_id)
+    fn record_preview(&mut self, attachment_requested_at: Instant, received_at: Instant,
+        game: &OngoingGameSummary, previously_announced: bool,
+    ) -> bool {
+        if self.finished.contains(&game.game_id) {
+            return false;
+        }
+        let existing = self.previews.iter().position(|preview| preview.game.game_id == game.game_id);
+        let listed = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.games.iter().any(|listed| listed.game_id == game.game_id)
+        });
+        let replay_requested_at = (previously_announced || listed || existing.is_some()).then_some(attachment_requested_at);
+        if replay_requested_at.is_some()
+            && (self.snapshot.as_ref().is_some_and(|snapshot| snapshot.requested_at >= attachment_requested_at)
+                || existing.is_some_and(|index| self.previews[index].observed_after() >= attachment_requested_at))
         {
             return false;
         }
-        // Match the size cap of the account list. Reconnect can replay starts,
-        // while relying on finish notices alone leaves missed entries resident.
-        if self.starts.len() == 50 {
-            self.starts.remove(0);
+        let preview = HomeGamePreview { replay_requested_at, received_at, game: game.clone() };
+        if let Some(index) = existing {
+            self.previews[index] = preview;
+        } else {
+            // Match the list limit. Finish notifications can be missed, while
+            // removing every preview on reconnect would discard usable data.
+            if self.previews.len() == 50 {
+                self.previews.remove(0);
+            }
+            self.previews.push(preview);
         }
-        self.starts.push((received_at, game.clone()));
         true
     }
 
     fn finish(&mut self, id: &str) -> bool {
         let first = self.finished.insert(id.to_owned());
-        if let Some((_, games)) = self.snapshot.as_mut() {
-            games.retain(|game| game.game_id != id);
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            snapshot.games.retain(|game| game.game_id != id);
         }
-        self.starts.retain(|(_, game)| game.game_id != id);
+        self.previews.retain(|preview| preview.game.game_id != id);
         first
     }
 
     fn replay(&self, now: Instant) -> Option<CachedHomeGames> {
-        if self.snapshot.is_none() && self.starts.is_empty() {
+        if self.snapshot.is_none() && self.previews.is_empty() {
             return None;
         }
-        let (received_at, games) = self.snapshot.clone().unwrap_or_else(|| (now, Vec::new()));
+        let (received_at, games) = self.snapshot.as_ref()
+            .map_or_else(|| (now, Vec::new()), |snapshot| (snapshot.received_at, snapshot.games.clone()));
         Some(CachedHomeGames {
-            games: self.include_starts(games, now),
+            games: self.include_previews(games, now),
             // Replaying original times resets clocks. Wall time can jump when Wi-Fi returns.
             age_ms: now.saturating_duration_since(received_at).as_millis() as u64,
         })
     }
 
-    fn include_starts(&self, mut games: Vec<OngoingGameSummary>, now: Instant) -> Vec<OngoingGameSummary> {
-        games.extend(self.starts.iter().map(|(received_at, game)| {
-            let mut game = game.clone();
+    fn include_previews(&self, mut games: Vec<OngoingGameSummary>, now: Instant) -> Vec<OngoingGameSummary> {
+        for preview in &self.previews {
+            let mut game = preview.game.clone();
             game.correspondence_age_ms = game.correspondence_seconds_left
-                .map(|_| now.saturating_duration_since(*received_at).as_millis() as u64);
-            game
-        }));
+                .map(|_| now.saturating_duration_since(preview.received_at).as_millis() as u64);
+            if let Some(listed) = games.iter_mut().find(|listed| listed.game_id == game.game_id) {
+                *listed = game;
+            } else {
+                games.push(game);
+            }
+        }
         games
     }
 }
@@ -2101,6 +2140,7 @@ async fn read_account_events(
             tokio::time::sleep_until(deadline.into()).await;
         }
         let mut received_for = Duration::ZERO;
+        let attachment_requested_at = Instant::now();
         let response = client.stream_lines("/api/stream/event").await;
         if let Err(error) = &response {
             if is_unauthorized(error) {
@@ -2114,6 +2154,7 @@ async fn read_account_events(
         }
         if let Ok(mut lines) = response {
             let connected_at = Instant::now();
+            let mut previewed_games = HashSet::new();
             while let Ok(Some(line)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {
                 received_for = connected_at.elapsed();
                 if reconnecting {
@@ -2122,7 +2163,20 @@ async fn read_account_events(
                 }
                 match parse_ndjson_line::<EventStreamMessage>(&line) {
                     Some(EventStreamMessage::GameStart { game }) => {
-                        if !announced_games.insert(game.id.clone()) {
+                        let first_announcement = announced_games.insert(game.id.clone());
+                        if !first_announcement && previewed_games.contains(&game.id) {
+                            continue;
+                        }
+                        let board_supported = game_start_board_support(&game);
+                        let mut list = game_list.lock().expect("home game list lock poisoned");
+                        let home_game = ongoing_game_from_start(&game, board_supported)
+                            .filter(|preview| previewed_games.insert(game.id.clone())
+                                && list.record_preview(attachment_requested_at, Instant::now(), preview, !first_announcement))
+                            .map(Box::new);
+                        if !first_announcement {
+                            if let Some(game) = home_game {
+                                send_locked(replier, write_lock, &BackendMessage::HomeGameUpdated { game });
+                            }
                             continue;
                         }
                         // Real-time seeks return no game ID. Match lobby/pool
@@ -2131,11 +2185,6 @@ async fn read_account_events(
                         let from_realtime_lobby =
                             matches!(game.source.as_deref(), Some("lobby" | "pool")) &&
                             game.speed.as_deref().is_some_and(|speed| speed != "correspondence");
-                        let board_supported = game_start_board_support(&game);
-                        let mut list = game_list.lock().expect("home game list lock poisoned");
-                        let home_game = ongoing_game_from_start(&game, board_supported)
-                            .filter(|preview| list.start(Instant::now(), preview))
-                            .map(Box::new);
                         send_locked(replier, write_lock, &BackendMessage::GameStarted {
                             game_id: game.id,
                             from_realtime_lobby,
@@ -2560,9 +2609,9 @@ fn ongoing_game_from_start(event: &EventGame, board_supported: Option<bool>) -> 
     let mut game = ongoing_game_summary(PlayingGame {
         game_id: event.id.clone(),
         is_my_turn: event.is_my_turn?,
-        speed: event.speed.clone(),
+        speed: Some(event.speed.clone()?),
         source: event.source.clone(),
-        variant: event.variant.clone(),
+        variant: Some(event.variant.clone()?),
         seconds_left: event.seconds_left,
         opponent: event.opponent.clone(),
     });
@@ -2627,24 +2676,56 @@ mod game_board_support_tests {
         assert_eq!(first.opponent_rating, Some(1575));
         assert_eq!(second.board_supported, Some(false));
         assert!(second.board_unavailable_reason.is_some());
-        assert!(list.start(now, &first));
-        assert!(list.start(now + Duration::from_millis(1000), &second));
-        assert!(!list.start(now + Duration::from_millis(1100), &first));
+        assert!(list.record_preview(now, now, &first, false));
+        assert!(list.record_preview(now, now + Duration::from_millis(1000), &second, false));
+        assert!(!list.record_preview(now, now + Duration::from_millis(1100), &first, true));
 
         let received_at = now + Duration::from_millis(1350);
         let replay = list.replay(received_at).unwrap();
         assert_eq!(replay.games[0].correspondence_age_ms, Some(1350));
         assert_eq!(replay.games[1].correspondence_age_ms, Some(350));
         assert!(list.finish("first"));
-        assert!(!list.start(received_at, &first));
+        assert!(!list.record_preview(received_at, received_at, &first, true));
         let rows = list.record(now + Duration::from_millis(500), received_at, vec![first]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].game_id, "second");
         assert_eq!(rows[0].correspondence_age_ms, Some(350));
         let rows = list.record(received_at, received_at, vec![second.clone()]);
         assert_eq!(rows, vec![second.clone()]);
-        assert!(!list.start(received_at, &second));
+        assert!(!list.record_preview(received_at, received_at, &second, true));
         assert_eq!(list.replay(received_at).unwrap().games, rows);
+    }
+
+    #[test]
+    fn home_orders_reconnect_replays_by_request_and_ages_clocks_from_receipt() {
+        let game = |id, my_turn| ongoing_game_summary(serde_json::from_value(json!({
+            "gameId": id, "isMyTurn": my_turn, "speed": "correspondence", "secondsLeft": 100,
+        })).unwrap());
+        let mut list = HomeGameList::default();
+        let now = Instant::now();
+        let at = |ms| now + Duration::from_millis(ms);
+        let initial_games = vec![game("other", true), game("target", false)];
+        list.record(at(100), at(150), initial_games.clone());
+        let ready = game("target", true);
+        assert!(!list.record_preview(at(90), at(200), &ready, true));
+        assert!(list.record_preview(at(300), at(800), &ready, true));
+        assert!(!list.record_preview(at(300), at(900), &game("target", false), true));
+
+        let overlap = list.record(at(200), at(1000), initial_games.clone());
+        assert_eq!(overlap[0], initial_games[0]);
+        assert_eq!(overlap[1].game_id, "target");
+        assert!(overlap[1].is_my_turn);
+        assert_eq!(overlap[1].correspondence_age_ms, Some(200));
+        let cached = list.replay(at(2100)).unwrap();
+        assert_eq!(cached.age_ms, 1100);
+        assert_eq!(cached.games[1].correspondence_age_ms, Some(1300));
+
+        let waiting = list.record(at(2200), at(2300), initial_games.clone());
+        assert_eq!(waiting, initial_games);
+        assert!(!list.record_preview(at(300), at(2400), &ready, true));
+        assert!(list.finish("target"));
+        assert!(!list.record_preview(at(2500), at(2600), &ready, true));
+        assert_eq!(list.replay(at(2700)).unwrap().games, vec![game("other", true)]);
     }
 
     #[test]
