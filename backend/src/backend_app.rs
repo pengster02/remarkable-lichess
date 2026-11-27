@@ -2411,12 +2411,13 @@ async fn refresh_home_games(
             } else {
                 "Can't reach Lichess"
             };
+            let list = game_list.lock().expect("home game list lock poisoned");
             send_locked(&replier, &write_lock, &BackendMessage::HomeLoadFailed {
                 request_id,
                 message: format!("{message}. Check your connection and retry."),
                 wifi_connected,
                 retry_after_ms: None,
-                cached_games: None,
+                cached_games: list.replay(Instant::now()),
             });
         }
     }
