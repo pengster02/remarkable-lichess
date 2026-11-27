@@ -36,7 +36,7 @@ trap 'rm -f "$ACCOUNT_RESPONSE"' EXIT
 # accepts partial responses, while --fail mixes HTTP and transfer failures.
 if ! HTTP_CODE="$(printf 'Authorization: Bearer %s\n' "${TOKEN}" | \
   curl -sS --connect-timeout 5 --max-time 15 -o "$ACCOUNT_RESPONSE" -w '%{http_code}' \
-    -H @- https://lichess.org/api/account)"; then
+    -A remarkable-lichess -H @- https://lichess.org/api/account)"; then
   echo "Could not complete the Lichess account transfer. Check your connection and try again." >&2
   exit 1
 fi
