@@ -88,6 +88,12 @@ QtObject {
         return terminationLabel(result)
     }
 
+    function opponentLabel(game) {
+        if (!game) return ""
+        if (game.your_color === null) return "Side unavailable"
+        return "vs " + (game.opponent_name || "Opponent")
+    }
+
     function terminationLabel(status) {
         if (status === "created") return "Game created"
         if (status === "started") return "In progress"

@@ -248,7 +248,9 @@ Rectangle {
         Text {
             visible: gameHistoryScreen.loading ||
                 (gameHistoryScreen.games.length === 0 && gameHistoryScreen.loadError.length === 0)
-            text: gameHistoryScreen.loading ? "Loading games..." : "No games match these filters."
+            text: gameHistoryScreen.loading ? "Loading games..."
+                : gameHistoryScreen.nextHistoryCursor ? "No games to show on this page."
+                : "No games match these filters."
             font.pixelSize: theme.fontBody
             color: theme.text
         }
@@ -411,7 +413,7 @@ Rectangle {
                                 // hide the rating, and rounding down clips fitting names.
                                 width: Math.min(Math.ceil(implicitWidth), Math.max(0, opponentRow.availableWidth -
                                     opponentRow.ratingSpace))
-                                text: "vs " + (modelData.opponent_name || "Opponent")
+                                text: chessDisplay.opponentLabel(modelData)
                                 font.pixelSize: theme.fontBody
                                 elide: Text.ElideRight
                                 color: theme.text

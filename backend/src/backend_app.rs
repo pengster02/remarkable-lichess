@@ -10,7 +10,7 @@ use crate::lichess::client::{
 use crate::lichess::oauth;
 use crate::lichess::models::{
     ChallengeResolution, ChallengeResult, ChallengeTerms, EventGame, EventStreamMessage, GameStreamMessage,
-    Account, IncomingChallenge, PlayingGame, PlayingOpponent, Variant,
+    Account, IncomingChallenge, ParticipantPerspective, PlayingGame, PlayingOpponent, Variant,
 };
 use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
@@ -1211,7 +1211,7 @@ impl LichessBackend {
             let reply = match client.get_game_history_page(&my_id, &filters, cursor).await {
                 Ok((games, next_cursor)) => BackendMessage::GameHistory {
                     request_id,
-                    games: games.into_iter().map(|g| history_game_to_summary(g, &my_id)).collect(),
+                    games: games.into_iter().filter_map(|game| history_game_to_summary(game, &my_id)).collect(),
                     next_cursor,
                 },
                 Err(error) if is_unauthorized(&error) => {
@@ -1339,10 +1339,8 @@ impl LichessBackend {
             }
         };
         let rating_diff = export.players.as_ref().and_then(|players| {
-            [&players.white, &players.black]
-                .into_iter()
-                .find(|side| side.user.as_ref().is_some_and(|user| user.id.as_deref() == Some(player_id.as_str())))
-                .and_then(|side| side.rating_diff)
+            let ParticipantPerspective::Known(color) = players.perspective(&player_id) else { return None; };
+            players.player(color).rating_diff
         });
         let moves: Vec<String> = export.moves.split_whitespace().map(str::to_string).collect();
         let replay = match crate::game::replay::replay_export(
@@ -3769,32 +3767,27 @@ fn ratings_from_perfs(perfs: Option<Perfs>) -> Vec<RatingSummary> {
     .collect()
 }
 
-/// Reduces one GET /api/games/user row to this account's point of view --
-/// your_color/result -- so the frontend never needs to know its own username
-/// to render the history list. Matched by `id` (Lichess's canonical lowercased
-/// username, confirmed against LightUser.yaml), not `name`, since `my_id` is
-/// itself already that same canonical form (see Account.id).
-fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary {
-    let you_are_white = game.players.white.user.as_ref().and_then(|u| u.id.as_deref()).is_some_and(|id| id == my_id);
-    let your_color = if you_are_white { "white" } else { "black" };
-    let you = if you_are_white { &game.players.white } else { &game.players.black };
-    let opponent = if you_are_white { &game.players.black } else { &game.players.white };
-    // `user` is None for the built-in AI (only `aiLevel` is present then, see
-    // GamePlayerUser's own comment) -- without this fallback the frontend fell
-    // back to its own generic "Opponent" placeholder for every AI game.
-    let opponent_name = opponent
-        .user
-        .as_ref()
-        .and_then(|u| u.name.clone())
-        .or_else(|| opponent.ai_level.map(|level| format!("Stockfish level {level}")));
-    let opponent_rating = opponent.rating;
-    let settled = outcome(game.status.as_deref().unwrap_or("unknown"), game.winner.as_deref());
-    let result = match game.winner.as_deref() {
-        Some(w) if w == your_color => "win".to_string(),
-        Some(_) => "loss".to_string(),
-        None => settled.result,
+fn history_game_to_summary(game: HistoryGame, my_id: &str) -> Option<HistoryGameSummary> {
+    let color = match game.players.perspective(my_id) {
+        ParticipantPerspective::Known(color) => Some(color),
+        ParticipantPerspective::Unverified => None,
+        ParticipantPerspective::Foreign => return None,
     };
-    let your_analysis = you.analysis.as_ref().map(|a| GameAnalysisSummary {
+    let your_color = color.map(|color| color.fold_wb("white", "black"));
+    let you = color.map(|color| game.players.player(color));
+    let opponent = color.map(|color| game.players.player(color.other()));
+    let opponent_name = opponent.and_then(|player| {
+        player.user.as_ref().and_then(|user| user.name.clone())
+            .or_else(|| player.ai_level.map(|level| format!("Stockfish level {level}")))
+    });
+    let winner = game.winner.as_deref().filter(|color| matches!(*color, "white" | "black"));
+    let settled = outcome(game.status.as_deref().unwrap_or("unknown"), winner);
+    let result = match (winner, your_color) {
+        (Some(winner), Some(yours)) => if winner == yours { "win" } else { "loss" }.into(),
+        (None, _) if game.winner.is_some() => "unknown".into(),
+        _ => settled.result,
+    };
+    let your_analysis = you.and_then(|player| player.analysis.as_ref()).map(|a| GameAnalysisSummary {
         inaccuracies: a.inaccuracy,
         mistakes: a.mistake,
         blunders: a.blunder,
@@ -3802,14 +3795,14 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         accuracy: a.accuracy,
     });
     let review_supported = game.variant.as_deref().map(crate::game::rules::supports_variant);
-    HistoryGameSummary {
+    Some(HistoryGameSummary {
         game_id: game.id,
         opponent_name,
-        opponent_rating,
-        your_color: your_color.to_string(),
+        opponent_rating: opponent.and_then(|player| player.rating),
+        your_color,
         result,
         termination: settled.reason,
-        rating_diff: you.rating_diff,
+        rating_diff: you.and_then(|player| player.rating_diff),
         your_analysis,
         rated: game.rated,
         variant: game.variant,
@@ -3817,7 +3810,7 @@ fn history_game_to_summary(game: HistoryGame, my_id: &str) -> HistoryGameSummary
         speed: game.speed,
         opening_name: game.opening.map(|o| o.name),
         created_at_ms: game.created_at,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -4056,7 +4049,7 @@ mod history_summary_tests {
 
     #[test]
     fn a_human_opponent_uses_their_lichess_username() {
-        let summary = history_game_to_summary(game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480)), "myuser");
+        let summary = history_game_to_summary(game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480)), "myuser").unwrap();
         assert_eq!(summary.opponent_name, Some("Bob".to_string()));
         assert_eq!(summary.opponent_rating, Some(1480));
     }
@@ -4072,7 +4065,7 @@ mod history_summary_tests {
         ] {
             let mut archived = game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480));
             archived.variant = variant.map(str::to_owned);
-            let summary = history_game_to_summary(archived, "myuser");
+            let summary = history_game_to_summary(archived, "myuser").unwrap();
             assert_eq!(summary.variant.as_deref(), variant);
             assert_eq!(summary.speed.as_deref(), Some("blitz"));
             assert_eq!(summary.review_supported, supported);
@@ -4081,7 +4074,7 @@ mod history_summary_tests {
 
     #[test]
     fn an_ai_opponent_with_no_lichess_account_falls_back_to_a_level_based_name() {
-        let summary = history_game_to_summary(game(human("myuser", "MyUser", 1500), ai(5, 1400)), "myuser");
+        let summary = history_game_to_summary(game(human("myuser", "MyUser", 1500), ai(5, 1400)), "myuser").unwrap();
         assert_eq!(summary.opponent_name, Some("Stockfish level 5".to_string()));
         assert_eq!(summary.opponent_rating, Some(1400));
     }
@@ -4091,7 +4084,7 @@ mod history_summary_tests {
         let summary = history_game_to_summary(
             game(human_with_rating_diff("myuser", "MyUser", 1508, Some(8)), human_with_rating_diff("bob", "Bob", 1472, Some(-8))),
             "myuser",
-        );
+        ).unwrap();
         assert_eq!(summary.rating_diff, Some(8));
     }
 
@@ -4100,14 +4093,14 @@ mod history_summary_tests {
         let by_resignation = history_game_to_summary(
             game_with_status(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480), "resign"),
             "myuser",
-        );
+        ).unwrap();
         assert_eq!(by_resignation.result, "win");
         assert_eq!(by_resignation.termination, "Resignation");
 
         let by_timeout = history_game_to_summary(
             game_with_status(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480), "outoftime"),
             "myuser",
-        );
+        ).unwrap();
         assert_eq!(by_timeout.termination, "Time forfeit");
     }
 
@@ -4125,7 +4118,7 @@ mod history_summary_tests {
             let mut archived = game_with_status(human("myuser", "MyUser", 1500),
                                                 human("bob", "Bob", 1480), status);
             archived.winner = winner.map(str::to_owned);
-            let summary = history_game_to_summary(archived, "myuser");
+            let summary = history_game_to_summary(archived, "myuser").unwrap();
             assert_eq!(summary.result, result, "{status} {winner:?}");
             assert_eq!(summary.termination, reason, "{status} {winner:?}");
         }
@@ -4137,14 +4130,50 @@ mod history_summary_tests {
         let analyzed = history_game_to_summary(
             game(human_with_analysis("myuser", "MyUser", 1500, summary_stats), human("bob", "Bob", 1480)),
             "myuser",
-        );
+        ).unwrap();
         let your_analysis = analyzed.your_analysis.unwrap();
         assert_eq!(your_analysis.blunders, 1);
         assert_eq!(your_analysis.acpl, Some(26));
         assert_eq!(your_analysis.accuracy, Some(90));
 
         let unanalyzed =
-            history_game_to_summary(game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480)), "myuser");
+            history_game_to_summary(game(human("myuser", "MyUser", 1500), human("bob", "Bob", 1480)), "myuser").unwrap();
         assert_eq!(unanalyzed.your_analysis, None);
+    }
+
+    #[test]
+    fn a_confirmed_foreign_game_has_no_history_card() {
+        let archived = game(human("alice", "Alice", 1500), human("bob", "Bob", 1480));
+        assert!(history_game_to_summary(archived, "myuser").is_none());
+    }
+
+    #[test]
+    fn an_unverified_side_keeps_the_neutral_result_without_player_specific_fields() {
+        let other = human_with_rating_diff("bob", "Bob", 1480, Some(8));
+        let mut name_only = human("", "MyUser", 1500);
+        name_only.user.as_mut().unwrap().id = None;
+        for archived in [game(name_only, other),
+            game(human("myuser", "MyUser", 1500), human("myuser", "MyUser", 1500))] {
+            let summary = history_game_to_summary(archived, "myuser").unwrap();
+            assert_eq!(summary.result, "white");
+            assert_eq!(summary.termination, "Checkmate");
+            assert_eq!(summary.your_color, None);
+            assert!(summary.rating_diff.is_none() && summary.your_analysis.is_none());
+            assert!(summary.opponent_name.is_none() && summary.opponent_rating.is_none());
+        }
+    }
+
+    #[test]
+    fn a_verified_black_side_keeps_its_rating_and_never_loses_to_an_invalid_winner() {
+        let mut archived = game(ai(5, 1400), human_with_rating_diff("myuser", "MyUser", 1500, Some(-7)));
+        let summary = history_game_to_summary(archived.clone(), "myuser").unwrap();
+        assert_eq!(summary.your_color, Some("black"));
+        assert_eq!(summary.result, "loss");
+        assert_eq!(summary.rating_diff, Some(-7));
+        assert_eq!(summary.opponent_name.as_deref(), Some("Stockfish level 5"));
+        archived.winner = Some("spectator".into());
+        let summary = history_game_to_summary(archived, "myuser").unwrap();
+        assert_eq!(summary.result, "unknown");
+        assert_eq!(summary.termination, "Checkmate");
     }
 }
