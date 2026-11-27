@@ -30,10 +30,10 @@ fi
 # Quick live check before wasting a rebuild cycle.
 ACCOUNT_RESPONSE="$(mktemp)"
 trap 'rm -f "$ACCOUNT_RESPONSE"' EXIT
-# curl can print 200 on a failed body transfer. Checking only the status
-# accepts partial responses, while --fail mixes HTTP and transfer failures.
+# Use -q first on both credential requests so curlrc cannot trace either one.
+# Checking only the status can accept partial responses, while --fail mixes HTTP and transfer failures.
 if ! HTTP_CODE="$(printf 'Authorization: Bearer %s\n' "${TOKEN}" | \
-  curl -sS --connect-timeout 5 --max-time 15 -o "$ACCOUNT_RESPONSE" -w '%{http_code}' \
+  curl -q -sS --connect-timeout 5 --max-time 15 -o "$ACCOUNT_RESPONSE" -w '%{http_code}' \
     -A remarkable-lichess -H @- https://lichess.org/api/account)"; then
   echo "Could not complete the Lichess account transfer. Check your connection and try again." >&2
   exit 1
@@ -60,8 +60,7 @@ print(account["username"])
   exit 1
 fi
 
-# Send the token on stdin and disable curl configuration for this POST so
-# redirects cannot forward the body and local trace settings cannot print it.
+# Keep the raw token out of curl arguments and prevent curlrc from redirecting the POST body.
 unset scope_response
 if ! scope_response="$(printf '%s' "${TOKEN}" | \
   curl -q -fsS --connect-timeout 5 --max-time 15 -A remarkable-lichess \
