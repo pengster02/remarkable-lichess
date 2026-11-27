@@ -22,7 +22,7 @@
 //! instead of requiring one Wi-Fi, and PKCE keeps the relay unable to spend the
 //! code, but it means running and trusting a server for a local-only app.
 
-use super::client::LICHESS_USER_AGENT;
+use super::client::{http_response_error, LICHESS_USER_AGENT};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -211,6 +211,9 @@ async fn exchange_code(
         .context("couldn't reach Lichess to finish signing in")?;
     if response.status().is_redirection() {
         bail!("Lichess redirected the sign-in request. Try again.");
+    }
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(http_response_error("exchange_code", response.status(), None));
     }
     if !response.status().is_success() {
         let status = response.status();
