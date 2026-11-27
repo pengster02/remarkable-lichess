@@ -2948,7 +2948,10 @@ fn spawn_game_stream(
                                 }
                                 GameStreamMessage::Chat => None,
                             };
-                            if let Some(m) = board_msg {
+                            if let Some(mut m) = board_msg {
+                                if let BackendMessage::BoardState { from_game_stream, .. } = &mut m {
+                                    *from_game_stream = Some(true);
+                                }
                                 send_locked(&replier, &write_lock, &m);
                             }
                             drop(guard);

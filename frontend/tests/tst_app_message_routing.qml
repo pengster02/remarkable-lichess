@@ -1338,6 +1338,40 @@ TestCase {
         compare(app.connectivityLabel(false), "Online")
     }
 
+    function test_freshSelectedBoardFrameRecoversTheConnectionBadge() {
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        endpoint.reply({type: "HomeState", request_id: latestHomeRequest(), wifi_connected: true,
+                        ongoing_games: [{game_id: "active", is_my_turn: true}]})
+        verify(home.refreshGames(true))
+        endpoint.reply({type: "HomeLoadFailed", request_id: latestHomeRequest(), wifi_connected: false,
+                        message: "Wi-Fi is disconnected"})
+        compare(app.connectivityLabel(false), "Offline — Wi-Fi disconnected")
+        findChild(home, "homeResumeButton").clicked()
+        var cached = boardState("active")
+        cached.game_stream_connected = true
+        endpoint.reply(cached)
+        var preview = showPendingMovePreview()
+        verify(screen.item.previewFen.length > 0)
+        compare(app.connectivityLabel(false), "Offline — Wi-Fi disconnected")
+
+        var predicted = Object.assign({}, cached, {
+            fen: preview.fen, turn: preview.turn, last_move: preview.last_move,
+            position_history: [startFen, preview.fen], move_history: ["e4"],
+            resolved_move_request_id: preview.request_id
+        })
+        endpoint.reply(predicted)
+        compare(screen.item.fen, predicted.fen)
+        verify(!app.online)
+        endpoint.reply(Object.assign({}, predicted, {game_id: "previous", from_game_stream: true}))
+        verify(!app.online)
+        endpoint.reply(Object.assign({}, predicted, {from_game_stream: true}))
+        compare(app.connectivityLabel(false), "Online")
+        compare(app.wifiConnected, null)
+        compare(app.connectionMessage, "")
+        compare(screen.item.fen, predicted.fen)
+    }
+
     function test_homeGamesAndRatingsAreScopedToTheCurrentVisit() {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item

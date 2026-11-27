@@ -249,6 +249,7 @@ fn to_board_state(
         game_id: session.game_id.clone(),
         position_id: session.position_id,
         game_stream_connected: session.game_stream_connected,
+        from_game_stream: None,
         awaiting_game_start: awaiting_start.then_some(true),
         resolved_move_request_id: None,
         pending_game_action: session.pending_game_action.as_ref().filter(|_| active)
