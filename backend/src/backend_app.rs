@@ -51,7 +51,7 @@ const GAME_EXPORT_RATE_LIMIT_MESSAGE: &str = "Lichess limited game export reques
 // AppLoad sends JSON as one Unix socket record after the size header. Its
 // 10 MiB protocol limit exceeds the measured Linux socket capacity (208 KiB).
 // Reject before sending the header, since a failed body cannot be retried in place.
-const MAX_REVIEW_REPLY_BYTES: usize = 192 * 1024;
+const MAX_APPLOAD_REPLY_BYTES: usize = 192 * 1024;
 const MOVE_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting moves. Wait before trying again.";
 const GAME_ACTION_RATE_LIMIT_MESSAGE: &str = "Lichess is limiting game actions. Wait before trying again.";
 const BOARD_BLITZ_MIN_ESTIMATE_SECONDS: u64 = 180;
@@ -1227,16 +1227,18 @@ impl LichessBackend {
                     history_rate_limit_reply(request_id, LICHESS_RATE_LIMIT_DELAY)
                 }
                 Err(error) => {
-                    let message = error.to_string();
-                    match request_id {
-                        Some(request_id) => BackendMessage::GameHistoryFailed {
-                            request_id, message, retry_after_ms: None,
-                        },
-                        None => BackendMessage::ErrorMsg { message },
-                    }
+                    history_failure(request_id, error.to_string(), None)
                 }
             };
-            send_locked(&replier, &write_lock, &reply);
+            if let Some(json) = encode_bounded_reply(&reply) {
+                send_json_locked(&replier, &write_lock, &json);
+            } else {
+                // A partial reply can lose the paging boundary. Sending the
+                // full frame risks breaking the connection for the next request.
+                let failure = history_failure(request_id,
+                    "This History page is too large to load. Change filters and try again.".into(), None);
+                send_locked(&replier, &write_lock, &failure);
+            }
         });
         self.history_load = Some(GameRequest { request_id, task, completion: None });
     }
@@ -2364,12 +2366,13 @@ fn send_json_locked(replier: &BackendReplier<LichessBackend>, lock: &Arc<std::sy
     let _ = replier.send_message(MSG_TYPE_BACKEND_TO_FRONTEND, json);
 }
 
+fn encode_bounded_reply(reply: &BackendMessage) -> Option<String> {
+    let json = serde_json::to_string(reply).expect("BackendMessage always serializes");
+    (json.len() <= MAX_APPLOAD_REPLY_BYTES).then_some(json)
+}
+
 fn encode_review_reply(reply: &mut BackendMessage) -> Option<String> {
-    let encode = |reply: &BackendMessage| {
-        let json = serde_json::to_string(reply).expect("BackendMessage always serializes");
-        (json.len() <= MAX_REVIEW_REPLY_BYTES).then_some(json)
-    };
-    if let Some(json) = encode(reply) {
+    if let Some(json) = encode_bounded_reply(reply) {
         return Some(json);
     }
     // Dropping optional data keeps every ply. Truncating the replay hides the
@@ -2380,14 +2383,14 @@ fn encode_review_reply(reply: &mut BackendMessage) -> Option<String> {
         removed_captions |= entry.judgment_comment.take().is_some();
     }
     if removed_captions {
-        if let Some(json) = encode(reply) {
+        if let Some(json) = encode_bounded_reply(reply) {
             return Some(json);
         }
     }
     let BackendMessage::GameMoves { analysis, .. } = reply else { return None; };
     if !analysis.is_empty() {
         analysis.clear();
-        if let Some(json) = encode(reply) {
+        if let Some(json) = encode_bounded_reply(reply) {
             return Some(json);
         }
     }
@@ -2396,7 +2399,7 @@ fn encode_review_reply(reply: &mut BackendMessage) -> Option<String> {
         return None;
     }
     clock_ms.clear();
-    encode(reply)
+    encode_bounded_reply(reply)
 }
 
 fn challenge_list_reply(
@@ -2584,12 +2587,13 @@ async fn fetch_opening_explorer(
 }
 
 fn history_rate_limit_reply(request_id: Option<u32>, remaining: Duration) -> BackendMessage {
-    let message = HISTORY_RATE_LIMIT_MESSAGE.into();
+    history_failure(request_id, HISTORY_RATE_LIMIT_MESSAGE.into(), Some(remaining.as_millis().max(1) as u32))
+}
+
+fn history_failure(request_id: Option<u32>, message: String, retry_after_ms: Option<u32>) -> BackendMessage {
     match request_id {
         Some(request_id) => BackendMessage::GameHistoryFailed {
-            request_id,
-            message,
-            retry_after_ms: Some(remaining.as_millis().max(1) as u32),
+            request_id, message, retry_after_ms,
         },
         None => BackendMessage::ErrorMsg { message },
     }
@@ -4060,7 +4064,7 @@ mod pending_seek_tests {
 
 #[cfg(test)]
 mod review_packet_tests {
-    use super::{encode_review_reply, BackendMessage, MAX_REVIEW_REPLY_BYTES};
+    use super::{encode_review_reply, BackendMessage, MAX_APPLOAD_REPLY_BYTES};
 
     #[test]
     fn review_packet_checks_the_encoded_byte_boundary() {
@@ -4071,8 +4075,8 @@ mod review_packet_tests {
         };
         let overhead = serde_json::to_string(&reply).unwrap().len();
         let BackendMessage::GameMoves { fens, .. } = &mut reply else { unreachable!() };
-        fens[0] = "a".repeat(MAX_REVIEW_REPLY_BYTES - overhead);
-        assert_eq!(encode_review_reply(&mut reply).unwrap().len(), MAX_REVIEW_REPLY_BYTES);
+        fens[0] = "a".repeat(MAX_APPLOAD_REPLY_BYTES - overhead);
+        assert_eq!(encode_review_reply(&mut reply).unwrap().len(), MAX_APPLOAD_REPLY_BYTES);
         let BackendMessage::GameMoves { fens, .. } = &mut reply else { unreachable!() };
         fens[0].push('é');
         assert!(encode_review_reply(&mut reply).is_none());

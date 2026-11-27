@@ -441,6 +441,7 @@ Rectangle {
                               (modelData.termination ? " · " + chessDisplay.terminationLabel(modelData.termination) : "") +
                               (modelData.opening_name ? " · " + modelData.opening_name : "") +
                               (modelData.created_at_ms ? " · " + new Date(modelData.created_at_ms).toLocaleDateString() : "")
+                        textFormat: Text.PlainText
                         font.pixelSize: theme.fontSmall
                         wrapMode: Text.WordWrap
                         width: rowContent.width

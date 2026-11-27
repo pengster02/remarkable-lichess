@@ -471,9 +471,22 @@ impl GamePlayers {
 
 // Confirmed against lichess-org/api's GameOpening.yaml -- only `name` is shown
 // anywhere in this app, `eco`/`ply` aren't modeled.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GameOpening {
     pub name: String,
+}
+
+fn deserialize_history_opening<'de, D>(deserializer: D) -> Result<Option<GameOpening>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // A missing label should neither reject the page nor invent an opening.
+    // Allow room beyond the published names without copying arbitrary text to the reply.
+    const MAX_OPENING_NAME_BYTES: usize = 256;
+    let opening = serde_json::Value::deserialize(deserializer)?;
+    Ok(opening.get("name").and_then(serde_json::Value::as_str).map(str::trim)
+        .filter(|name| !name.is_empty() && name.len() <= MAX_OPENING_NAME_BYTES)
+        .map(|name| GameOpening { name: name.to_owned() }))
 }
 
 // Request-side, not a Lichess response shape -- the subset of GET
@@ -506,6 +519,7 @@ pub struct HistoryGame {
     pub created_at: Option<i64>,
     pub players: GamePlayers,
     pub winner: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_history_opening")]
     pub opening: Option<GameOpening>,
 }
 
@@ -889,6 +903,31 @@ mod tests {
         let user = player.user.unwrap();
         assert_eq!(user.id.as_deref(), Some("canonical"));
         assert_eq!(user.name, None);
+    }
+
+    #[test]
+    fn history_keeps_the_game_when_optional_opening_details_are_unusable() {
+        let at_limit = "♞".repeat(85) + "!";
+        for (opening, expected) in [
+            (serde_json::json!({"name": "  Italian Game  "}), Some("Italian Game")),
+            (serde_json::json!({"name": at_limit}), Some(at_limit.as_str())),
+            (serde_json::json!({"name": format!("{at_limit}!")}), None),
+            (serde_json::json!({"name": 123}), None),
+            (serde_json::json!({"name": " \t "}), None),
+            (serde_json::json!({"eco": "C20"}), None),
+            (serde_json::json!("Italian Game"), None),
+            (serde_json::json!(["Italian Game"]), None),
+            (serde_json::Value::Null, None),
+        ] {
+            let game: HistoryGame = serde_json::from_value(serde_json::json!({
+                "id": "abcd1234", "createdAt": 7, "players": {"white":{"user":{"id":"player"}},"black":{}},
+                "winner": "white", "opening": opening,
+            })).unwrap();
+            assert_eq!(game.id, "abcd1234");
+            assert_eq!(game.created_at, Some(7));
+            assert_eq!(game.winner.as_deref(), Some("white"));
+            assert_eq!(game.opening.as_ref().map(|opening| opening.name.as_str()), expected);
+        }
     }
 
     #[test]
