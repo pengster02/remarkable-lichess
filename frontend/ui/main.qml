@@ -73,6 +73,7 @@ Rectangle {
     RequestCooldown { id: openingCooldown }
     RequestCooldown { id: matchCreationCooldown }
     RequestCooldown { id: challengeActionCooldown }
+    RequestCooldown { id: challengeListCooldown }
     // One timer covers both formats across navigation. Per-dialog timers miss
     // other entry points, while disabling all lookups would block the archive list.
     RequestCooldown { id: gameExportCooldown }
@@ -82,6 +83,7 @@ Rectangle {
     property alias gameExportRetryAt: gameExportCooldown.retryAt
     property alias matchCreationRetryAt: matchCreationCooldown.retryAt
     property alias challengeActionRetryAt: challengeActionCooldown.retryAt
+    property alias challengeListRetryAt: challengeListCooldown.retryAt
 
     // A shared sequence survives screen changes. Per-screen counters can repeat
     // IDs after navigation, and timestamps can collide across rapid requests.
@@ -505,6 +507,7 @@ Rectangle {
                        msg.type === "GameHistory" || msg.type === "GameHistoryFailed") {
                 if (msg.type === "GameStarted" && !root.hasToken) return
                 if (msg.type === "GameHistoryFailed") historyCooldown.extend(msg.retry_after_ms)
+                if (msg.type === "ChallengesLoadFailed") challengeListCooldown.extend(msg.retry_after_ms)
                 if (msg.type === "SeekFailed" || msg.type === "ChallengeCreateFailed" ||
                         msg.type === "MatchCreationFailed") {
                     matchCreationCooldown.extend(msg.retry_after_ms)
@@ -800,6 +803,7 @@ Rectangle {
                 item.respondToChallenge = root.respondToChallenge
                 item.pendingInvitation = Qt.binding(function() { return root.pendingInvitation })
                 item.challengeActionCoolingDown = Qt.binding(function() { return challengeActionCooldown.running })
+                item.challengeListCoolingDown = Qt.binding(function() { return challengeListCooldown.running })
             }
             if (item.hasOwnProperty("requestedGameId")) {
                 item.requestedGameId = Qt.binding(function() { return root.selectedGameId })

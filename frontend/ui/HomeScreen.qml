@@ -83,6 +83,8 @@ Rectangle {
     property string loadError: ""
     property string challengesError: ""
     property bool challengesRetryable: true
+    property bool challengeListCoolingDown: false
+    readonly property bool challengeRefreshPaused: challengesRetryable && challengeListCoolingDown
     property string actionError: ""
     property var pendingInvitation: null
     property bool challengeActionCoolingDown: false
@@ -157,7 +159,7 @@ Rectangle {
     }
 
     function refreshChallenges() {
-        if (!homeScreen.challengesRetryable) return
+        if (!homeScreen.challengesRetryable || homeScreen.challengeRefreshPaused) return
         homeScreen.challengesError = ""
         homeScreen.backendSender({type: "RequestChallenges"})
     }
@@ -304,13 +306,16 @@ Rectangle {
             }
 
             SectionCard {
+                objectName: "challengeListStatusCard"
                 darkMode: homeScreen.darkMode
-                title: "Challenges unavailable"
-                visible: homeScreen.challengesError.length > 0
+                title: homeScreen.challengeRefreshPaused ? "Challenge updates paused" : "Challenges unavailable"
+                visible: homeScreen.challengeRefreshPaused || homeScreen.challengesError.length > 0
 
                 Text {
                     width: parent.width
-                    text: homeScreen.challengesError
+                    text: homeScreen.challengeRefreshPaused
+                        ? "Lichess is limiting challenge updates. The list will refresh shortly."
+                        : homeScreen.challengesError
                     wrapMode: Text.WordWrap
                     font.pixelSize: theme.fontBody
                     color: theme.errorText
@@ -319,7 +324,7 @@ Rectangle {
                     objectName: "retryChallengesButton"
                     width: parent.width
                     text: "Retry challenges"
-                    visible: homeScreen.challengesRetryable
+                    visible: homeScreen.challengesRetryable && !homeScreen.challengeRefreshPaused
                     onClicked: homeScreen.refreshChallenges()
                 }
             }
@@ -648,8 +653,9 @@ Rectangle {
         } else if (msg.type === "ChallengesLoadFailed") {
             homeScreen.challengesRetryable = msg.retryable !== false
             if (!homeScreen.challengesRetryable) homeScreen.pendingChallenges = []
-            homeScreen.challengesError = msg.message ||
-                "Couldn't load challenges."
+            homeScreen.challengesError = msg.retry_after_ms > 0
+                ? ""
+                : msg.message || "Couldn't load challenges."
         } else if (msg.type === "ErrorMsg") {
             homeScreen.actionError = msg.message || "Lichess could not complete that action."
         }

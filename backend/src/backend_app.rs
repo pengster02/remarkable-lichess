@@ -16,7 +16,7 @@ use crate::lichess::stream::parse_ndjson_line;
 use crate::lichess::models::{GameHistoryFilters, HistoryGame, Perfs};
 use crate::pgn_export::PgnGameId;
 use crate::protocol::{
-    BackendMessage, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
+    BackendMessage, ChallengeInfo, CloudEvaluationLine, FrontendMessage, FrontendRequest, GameAnalysisSummary,
     GameAction, GameActionRequest, HistoryCursor, HistoryGameSummary, MoveAnalysis, OngoingGameSummary,
     OpeningExplorerRequest, RatingSummary,
     MoveRequest, OfferRequest, OpenChallengeQrCodes, OpponentDeparture, PlayerStatusSummary,
@@ -136,11 +136,30 @@ impl GameStreamReadiness {
 struct AccountStream {
     task: tokio::task::JoinHandle<()>,
     challenge_refresh: mpsc::Sender<()>,
-    challenge_support: Arc<Mutex<HashMap<String, BoardSupport>>>,
+    challenge_list: Arc<std::sync::Mutex<ChallengeList>>,
     challenge_read_denied: Arc<AtomicBool>,
     // Each sign-in owns its own flag. A shared flag can invalidate a replacement,
     // and a username cannot distinguish successive sign-ins to the same account.
     credential_rejected: Arc<AtomicBool>,
+}
+
+// Keep replay and acceptance on the same snapshot. A UI-only copy loses reloads,
+// while separate caches can show an invitation that the current terms omit.
+#[derive(Default)]
+struct ChallengeList {
+    snapshot: Option<Vec<ChallengeInfo>>,
+    support: HashMap<String, BoardSupport>,
+    resolved: HashSet<String>,
+}
+
+impl ChallengeList {
+    fn resolve(&mut self, id: &str) {
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            snapshot.retain(|challenge| challenge.id != id);
+        }
+        self.support.remove(id);
+        self.resolved.insert(id.to_owned());
+    }
 }
 
 // Preserve the reason for both Home and the preflight reply. A bool loses the
@@ -520,6 +539,7 @@ pub struct LichessBackend {
     // Per-invitation deadlines let the next response bypass the wait. Sharing
     // this deadline with list reads would also prevent Home from refreshing.
     challenge_action_cooldown: RateLimitCooldown,
+    challenge_list_cooldown: RateLimitCooldown,
     home_games: Option<tokio::task::JoinHandle<()>>,
     home_ratings: Option<tokio::task::JoinHandle<()>>,
     home_games_retry_after: Arc<Mutex<Option<Instant>>>,
@@ -572,6 +592,7 @@ impl LichessBackend {
             game_stream_cooldown: RateLimitCooldown::default(),
             pending_challenge_action: None,
             challenge_action_cooldown: RateLimitCooldown::default(),
+            challenge_list_cooldown: RateLimitCooldown::default(),
             home_games: None,
             home_ratings: None,
             home_games_retry_after: Arc::new(Mutex::new(None)),
@@ -1581,8 +1602,8 @@ impl LichessBackend {
         // stream blocked game events, and spawning per event overlaps requests.
         let (challenge_refresh, mut refreshes) = mpsc::channel(1);
         let event_refresh = challenge_refresh.clone();
-        let challenge_support = Arc::new(Mutex::new(HashMap::new()));
-        let support = challenge_support.clone();
+        let challenge_list = Arc::new(std::sync::Mutex::new(ChallengeList::default()));
+        let list = challenge_list.clone();
         // Only an explicit server denial proves the list is unavailable.
         // Guessing from scopes can miss alternate grants, and every 403 is too broad.
         let challenge_read_denied = Arc::new(AtomicBool::new(false));
@@ -1590,12 +1611,26 @@ impl LichessBackend {
         let credential_rejected = Arc::new(AtomicBool::new(false));
         let rejected = credential_rejected.clone();
         let cooldown = self.account_stream_cooldown.clone();
+        let list_cooldown = self.challenge_list_cooldown.clone();
         let task = tokio::spawn(async move {
             // Both futures drop together when the account is replaced or signed out.
             let refresh = async {
-                while refreshes.recv().await.is_some() {
-                    let reply = load_pending_challenges(&client, &support).await;
+                let mut retry_queued = false;
+                while retry_queued || refreshes.recv().await.is_some() {
+                    let deadline = list_cooldown.pending_deadline();
+                    if let Some(deadline) = deadline {
+                        tokio::time::sleep_until(deadline.into()).await;
+                    }
+                    if deadline.is_some() || retry_queued {
+                        // The one queued event is covered by this fresh snapshot.
+                        let _ = refreshes.try_recv();
+                    }
+                    let reply = load_pending_challenges(&client, &list).await;
                     let missing_scope = matches!(reply, BackendMessage::ChallengesLoadFailed { retryable: Some(false), .. });
+                    retry_queued = matches!(reply, BackendMessage::ChallengesLoadFailed { retry_after_ms: Some(_), .. });
+                    if retry_queued {
+                        list_cooldown.start();
+                    }
                     if missing_scope {
                         denied.store(true, Ordering::Relaxed);
                     }
@@ -1611,7 +1646,7 @@ impl LichessBackend {
             );
         });
         self.account_stream = Some(AccountStream {
-            task, challenge_refresh, challenge_support, challenge_read_denied, credential_rejected,
+            task, challenge_refresh, challenge_list, challenge_read_denied, credential_rejected,
         });
     }
 
@@ -1620,6 +1655,13 @@ impl LichessBackend {
             if account.challenge_read_denied.load(Ordering::Relaxed) {
                 self.send(replier, &challenge_read_denial());
             } else {
+                let list = account.challenge_list.lock().expect("challenge list lock poisoned");
+                if let Some(retry_after_ms) = self.challenge_list_cooldown.remaining_ms() {
+                    if let Some(challenges) = &list.snapshot {
+                        self.send(replier, &BackendMessage::PendingChallenges { challenges: challenges.clone() });
+                    }
+                    self.send(replier, &challenge_list_rate_limited(retry_after_ms));
+                }
                 let _ = account.challenge_refresh.try_send(());
             }
         }
@@ -1652,13 +1694,13 @@ impl LichessBackend {
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
         let refresh = self.account_stream.as_ref().map(|account| account.challenge_refresh.clone());
-        let support = self.account_stream.as_ref().map(|account| account.challenge_support.clone());
+        let list = self.account_stream.as_ref().map(|account| account.challenge_list.clone());
         let cooldown = self.challenge_action_cooldown.clone();
         let (done, completion) = oneshot::channel();
         let task = tokio::spawn(async move {
             let result = match request.action {
                 ChallengeAction::Accept => {
-                    accept_playable_challenge(&client, support.as_deref(), &request.challenge_id).await
+                    accept_playable_challenge(&client, list.as_deref(), &request.challenge_id).await
                 }
                 ChallengeAction::Decline => client.decline_challenge(&request.challenge_id).await,
             };
@@ -1670,12 +1712,16 @@ impl LichessBackend {
                     request.failure(format!("{error:#}"))
                 }
             });
-            drop(done);
             if let Some(reply) = failure {
+                drop(done);
                 send_locked(&replier, &write_lock, &reply);
                 return;
             }
             let challenge_id = request.challenge_id;
+            if let Some(list) = list {
+                list.lock().expect("challenge list lock poisoned").resolve(&challenge_id);
+            }
+            drop(done);
             let reply = match request.action {
                 ChallengeAction::Accept => BackendMessage::ChallengeAccepted { game_id: challenge_id, request_id },
                 ChallengeAction::Decline => BackendMessage::ChallengeDeclined { challenge_id, request_id },
@@ -1691,13 +1737,13 @@ impl LichessBackend {
 
 async fn accept_playable_challenge(
     client: &LichessClient,
-    support: Option<&Mutex<HashMap<String, BoardSupport>>>,
+    list: Option<&std::sync::Mutex<ChallengeList>>,
     id: &str,
 ) -> anyhow::Result<()> {
     // Challenge IDs keep their terms. Reading every invite again adds latency,
     // while trusting the frontend can accept a game the board cannot open.
-    let cached = match support {
-        Some(support) => support.lock().await.get(id).cloned(),
+    let cached = match list {
+        Some(list) => list.lock().expect("challenge list lock poisoned").support.get(id).cloned(),
         None => None,
     };
     let board_support = match cached {
@@ -1916,13 +1962,13 @@ fn send_locked(replier: &BackendReplier<LichessBackend>, lock: &Arc<std::sync::M
 /// a fresh GET /api/challenge snapshot pushed to the frontend.
 async fn load_pending_challenges(
     client: &LichessClient,
-    support: &Mutex<HashMap<String, BoardSupport>>,
+    list: &std::sync::Mutex<ChallengeList>,
 ) -> BackendMessage {
-    use crate::protocol::{ChallengeInfo, ChallengeTimeControlKind};
+    use crate::protocol::ChallengeTimeControlKind;
     match client.get_challenges().await {
         Ok(challenges) => {
             let mut known_support = HashMap::new();
-            let challenges = challenges
+            let mut challenges: Vec<_> = challenges
                 .into_iter()
                 .map(|c| {
                     let decision = challenge_board_support(&c.terms);
@@ -1959,18 +2005,27 @@ async fn load_pending_challenges(
                     }
                 })
                 .collect();
-            *support.lock().await = known_support;
+            let mut list = list.lock().expect("challenge list lock poisoned");
+            list.resolved.retain(|id| challenges.iter().any(|challenge| challenge.id == *id));
+            challenges.retain(|challenge| !list.resolved.contains(&challenge.id));
+            known_support.retain(|id, _| !list.resolved.contains(id));
+            list.support = known_support;
+            list.snapshot = Some(challenges.clone());
             BackendMessage::PendingChallenges { challenges }
         }
         Err(error) if is_challenge_read_denial(&error) => {
-            support.lock().await.clear();
+            *list.lock().expect("challenge list lock poisoned") = ChallengeList::default();
             challenge_read_denial()
+        }
+        Err(error) if is_rate_limited(&error) => {
+            challenge_list_rate_limited(LICHESS_RATE_LIMIT_DELAY.as_millis() as u32)
         }
         Err(e) => {
             log::warn!("couldn't load challenges: {e}");
             BackendMessage::ChallengesLoadFailed {
                 message: "Couldn't load challenges. Retry when connected.".to_string(),
                 retryable: None,
+                retry_after_ms: None,
             }
         }
     }
@@ -1980,6 +2035,15 @@ fn challenge_read_denial() -> BackendMessage {
     BackendMessage::ChallengesLoadFailed {
         message: "To see incoming challenges, sign in with a token that has Read challenges (challenge:read) permission.".into(),
         retryable: Some(false),
+        retry_after_ms: None,
+    }
+}
+
+fn challenge_list_rate_limited(retry_after_ms: u32) -> BackendMessage {
+    BackendMessage::ChallengesLoadFailed {
+        message: "Lichess is limiting challenge updates. The list will refresh shortly.".into(),
+        retryable: None,
+        retry_after_ms: Some(retry_after_ms),
     }
 }
 
@@ -2800,6 +2864,9 @@ impl AppLoadBackend for LichessBackend {
             }
             if let Some(retry_after_ms) = self.challenge_action_cooldown.remaining_ms() {
                 self.send(replier, &BackendMessage::ChallengeActionCooldown { retry_after_ms });
+            }
+            if let Some(retry_after_ms) = self.challenge_list_cooldown.remaining_ms() {
+                self.send(replier, &challenge_list_rate_limited(retry_after_ms));
             }
             if self.account_stream.as_ref().is_some_and(|account| account.credential_rejected.load(Ordering::Relaxed)) {
                 self.reject_authenticated_account(replier).await;

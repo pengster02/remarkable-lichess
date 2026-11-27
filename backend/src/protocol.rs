@@ -571,6 +571,8 @@ pub enum BackendMessage {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         retryable: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
     },
     SeekCreated {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1437,6 +1439,22 @@ mod tests {
             challenge_id: "invite01".into(), request_id: 43, message: "Wait".into(), retry_after_ms: Some(60000),
         };
         assert_eq!(serde_json::to_value(limited).unwrap()["retry_after_ms"], 60000);
+    }
+
+    #[test]
+    fn challenge_list_failure_distinguishes_rate_limits_from_missing_scope() {
+        let unavailable = BackendMessage::ChallengesLoadFailed {
+            message: "Missing scope".into(), retryable: Some(false), retry_after_ms: None,
+        };
+        assert_eq!(serde_json::to_value(unavailable).unwrap(), serde_json::json!({
+            "type": "ChallengesLoadFailed", "message": "Missing scope", "retryable": false,
+        }));
+        let limited = BackendMessage::ChallengesLoadFailed {
+            message: "Wait".into(), retryable: None, retry_after_ms: Some(60000),
+        };
+        assert_eq!(serde_json::to_value(limited).unwrap(), serde_json::json!({
+            "type": "ChallengesLoadFailed", "message": "Wait", "retry_after_ms": 60000,
+        }));
     }
 
     #[test]

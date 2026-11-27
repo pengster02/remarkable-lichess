@@ -4716,6 +4716,36 @@ TestCase {
         compare(endpoint.sentMessages[endpoint.sentMessages.length - 1].type, "DeclineChallenge")
     }
 
+    function test_challengeListCooldownKeepsInvitationsUsable() {
+        app.navigateTo("HomeScreen.qml")
+        var incoming = {type: "PendingChallenges", challenges: [{id: "invite01", challenger: "Player"}]}
+        endpoint.reply(incoming)
+        endpoint.reply({type: "ChallengesLoadFailed", message: "Wait", retry_after_ms: 60000})
+        var home = screen.item
+        var card = findChild(home, "challengeListStatusCard")
+        verify(card.visible && home.challengeRefreshPaused)
+        compare(card.title, "Challenge updates paused")
+        verify(findChild(home, "homeAcceptChallenge").enabled)
+        verify(!findChild(home, "retryChallengesButton").visible)
+        compare(home.pendingChallenges[0].id, "invite01")
+        var before = endpoint.sentMessages.length
+        home.refreshChallenges()
+        compare(endpoint.sentMessages.length, before)
+
+        var deadline = app.challengeListRetryAt
+        app.navigateTo("SettingsScreen.qml")
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply(incoming)
+        compare(app.challengeListRetryAt, deadline)
+        verify(screen.item.challengeRefreshPaused)
+        compare(screen.item.pendingChallenges[0].id, "invite01")
+        app.challengeListRetryAt = Date.now() + 50
+        tryCompare(screen.item, "challengeRefreshPaused", false)
+        endpoint.reply({type: "PendingChallenges", challenges: [{id: "invite02", challenger: "Next"}]})
+        compare(screen.item.pendingChallenges[0].id, "invite02")
+        verify(!findChild(screen.item, "challengeListStatusCard").visible)
+    }
+
     function test_invitationCooldownRestoresBeforeHomeLoads() {
         endpoint.reply({type: "ChallengeActionCooldown", retry_after_ms: 59500})
         app.navigateTo("HomeScreen.qml")
