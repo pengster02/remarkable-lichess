@@ -313,6 +313,12 @@ pub struct OngoingGameSummary {
     pub board_unavailable_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CachedHomeGames {
+    pub games: Vec<OngoingGameSummary>,
+    pub age_ms: u64,
+}
+
 // Boxed inside BoardState so rich identity stays one typed value without making
 // the whole message enum large. Alternatives were ten flat optional fields
 // (simpler JSON, larger enum) or an untyped map (smaller API, weaker guarantees).
@@ -566,6 +572,10 @@ pub enum BackendMessage {
         wifi_connected: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_after_ms: Option<u32>,
+        // An empty cache differs from no snapshot. A separate event can race the
+        // request, and HomeState would clear the error and stop the retry.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cached_games: Option<CachedHomeGames>,
     },
     ChallengesLoadFailed {
         message: String,

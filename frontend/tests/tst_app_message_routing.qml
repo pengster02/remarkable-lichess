@@ -1515,6 +1515,46 @@ TestCase {
         compare(home.loadError, "")
     }
 
+    function test_remountedHomeRestoresCachedGamesAndTheirClockDuringCooldown() {
+        app.navigateTo("HomeScreen.qml")
+        var previous = latestHomeRequest()
+        app.navigateTo("SettingsScreen.qml")
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var current = latestHomeRequest()
+        verify(current > previous)
+        var game = {game_id: "corresp1", opponent_name: "Opponent", is_my_turn: true,
+                    correspondence_seconds_left: 80}
+        var limited = {type: "HomeLoadFailed", request_id: previous, retry_after_ms: 600,
+                       message: "Lichess is limiting game-list requests.",
+                       cached_games: {games: [game], age_ms: 21250}}
+        endpoint.reply(limited)
+        compare(home.ongoingGames, [])
+        verify(home.gamesLoadPending)
+
+        app.setLiveClockEnabled(false)
+        limited.request_id = current
+        endpoint.reply(limited)
+        compare(home.ongoingGames, [game])
+        compare(home.correspondenceTimeLeftMs(game.game_id), 59000)
+        var status = findChild(home, "homeGamesLoadStatus")
+        verify(status.visible)
+        verify(status.text.indexOf("Showing the last loaded games.") !== -1)
+        var resume = findChild(home, "homeResumeButton")
+        verify(resume && resume.enabled)
+        var refresh = findChild(home, "homeGamesRefreshButton")
+        verify(!refresh.enabled)
+        endpoint.reply({type: "GameFinished", game_id: game.game_id})
+        compare(home.ongoingGames, [])
+        compare(status.text, limited.message)
+
+        tryVerify(function() { return latestHomeRequest() > current })
+        endpoint.reply({type: "HomeState", request_id: latestHomeRequest(), ongoing_games: []})
+        verify(!status.visible)
+        verify(refresh.enabled)
+        app.setLiveClockEnabled(true)
+    }
+
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length
