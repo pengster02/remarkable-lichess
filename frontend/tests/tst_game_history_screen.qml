@@ -121,6 +121,8 @@ TestCase {
         return [
             {tag: "natural name", viewport: 954, name: "Opponent", result: "win",
                 truncated: false, wrapped: false},
+            {tag: "stored name is plain text", viewport: 954, name: "<b>Guest</b>", result: "win",
+                truncated: false, wrapped: false},
             {tag: "long name", viewport: 954, name: "WWWWWWWWWWWWWWWWWWWW", result: "win",
                 truncated: true, wrapped: false},
             {tag: "narrow card with long result and name", viewport: 620,
@@ -139,6 +141,7 @@ TestCase {
         var result = findChild(row, "historyResult")
         var heading = name.parent.parent
         compare(name.text, "vs " + data.name)
+        compare(name.textFormat, Text.PlainText)
         compare(name.truncated, data.truncated)
         compare(name.parent.y > 0, data.wrapped)
         verify(rating.visible && !rating.truncated)

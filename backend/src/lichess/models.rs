@@ -365,7 +365,16 @@ pub enum EventStreamMessage {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LightUser {
     pub id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_archive_name")]
     pub name: Option<String>,
+}
+
+fn deserialize_archive_name<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(serde_json::Value::deserialize(deserializer)?.as_str()
+        .map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned))
 }
 
 // Missing counters stay unknown. Defaulting them to zero invents a result,
@@ -407,6 +416,10 @@ where
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GamePlayerUser {
     pub user: Option<LightUser>,
+    // Nested-only labels lose guests. Treating a stored name as a user ID
+    // could attribute someone else's game to the signed-in player.
+    #[serde(default, rename = "name", deserialize_with = "deserialize_archive_name")]
+    pub stored_name: Option<String>,
     pub rating: Option<u32>,
     #[serde(rename = "aiLevel")]
     pub ai_level: Option<u8>,
@@ -859,6 +872,18 @@ mod tests {
             assert_eq!(player.rating_diff, Some(-7));
             assert_eq!(player.analysis, expected, "{analysis}");
         }
+    }
+
+    #[test]
+    fn archive_player_names_decode_separately_from_account_id() {
+        let player: GamePlayerUser = serde_json::from_str(
+            r#"{"name":"  Archived Name  ","user":{"id":"canonical","name":{}}, "rating":1600}"#,
+        ).unwrap();
+        assert_eq!(player.stored_name.as_deref(), Some("Archived Name"));
+        assert_eq!(player.rating, Some(1600));
+        let user = player.user.unwrap();
+        assert_eq!(user.id.as_deref(), Some("canonical"));
+        assert_eq!(user.name, None);
     }
 
     #[test]
