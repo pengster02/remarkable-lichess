@@ -2951,6 +2951,76 @@ TestCase {
         compare(screen.item.statusText, "try again")
     }
 
+    function test_gameActionCooldownSurvivesAnotherBoardAndLeavesMovesAvailable() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        snapshot.position_id = 20
+        snapshot.legal_moves = [{from: "e2", to: "e4"}]
+        snapshot.can_offer_draw = true
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        var request = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        endpoint.reply({type: "GameActionCooldown", retry_after_ms: 1150})
+        compare(board.pendingGameAction, "AddTime")
+        endpoint.reply({type: "GameActionFailed", game_id: "active", action: "AddTime",
+                        request_id: request.request_id, message: "Lichess is limiting game actions.", retry_after_ms: 1150})
+        compare(board.pendingGameAction, "")
+        compare(board.gameActionsLabel(), "Actions paused")
+        verify(findChild(board, "boardBackButton").visible)
+        board.showGameActions = true
+        var notice = findChild(board, "gameActionCooldownNotice")
+        verify(notice && notice.visible)
+        var draw = findChild(board, "drawOfferAction")
+        verify(draw && draw.visible && !draw.enabled)
+        var sent = endpoint.sentMessages.length
+        board.requestOfferAction("Draw", "offer")
+        compare(endpoint.sentMessages.length, sent)
+        board.showGameActions = false
+        board.onBoardGesture("e2", "e4")
+        compare(endpoint.sentMessages[sent].type, "MakeMove")
+
+        app.navigateTo("HomeScreen.qml")
+        app.openGame("next")
+        snapshot.game_id = "next"
+        snapshot.position_id = 30
+        endpoint.reply(snapshot)
+        board = screen.item
+        verify(board.gameActionCoolingDown)
+        sent = endpoint.sentMessages.length
+        tryCompare(board, "gameActionCoolingDown", false)
+        compare(endpoint.sentMessages.length, sent)
+        compare(board.gameActionsLabel(), "Actions")
+        board.requestOfferAction("Draw", "offer")
+        var fresh = endpoint.sentMessages[sent]
+        compare(fresh.type, "DrawAction")
+        compare(fresh.expected_game_id, "next")
+        compare(fresh.expected_position_id, 30)
+    }
+
+    function test_gameActionCooldownDisarmsConfirmationAndKeepsBoardTools() {
+        app.openGame("active")
+        var snapshot = boardState("active")
+        snapshot.can_offer_draw = true
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.showGameActions = true
+        var draw = findChild(board, "drawOfferAction")
+        var primary = findChild(draw, "confirmActionPrimary")
+        verify(primary && primary.enabled)
+        primary.clicked()
+        verify(draw.armed)
+
+        var sent = endpoint.sentMessages.length
+        endpoint.reply({type: "GameActionFailed", game_id: "previous", action: "Draw", request_id: 90,
+                        message: "Lichess is limiting game actions.", retry_after_ms: 265})
+        verify(!draw.armed && !primary.enabled)
+        verify(findChild(board, "closeGameActionsButton").enabled)
+        tryCompare(board, "gameActionCoolingDown", false)
+        verify(primary.enabled && !draw.armed)
+        compare(endpoint.sentMessages.length, sent)
+    }
+
     function test_pendingBoardActionSurvivesReopenAndRejectsOldReplies() {
         app.openGame("active")
         var snapshot = boardState("active")

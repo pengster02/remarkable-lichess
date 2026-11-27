@@ -147,6 +147,10 @@ Rectangle {
     property var pendingActionRequest: null
     readonly property string pendingGameAction: boardScreen.pendingActionRequest
         ? boardScreen.pendingActionRequest.action : ""
+    property bool gameActionCoolingDown: false
+    onGameActionCoolingDownChanged: {
+        if (boardScreen.gameActionCoolingDown) boardScreen.resetGameActionControls()
+    }
     property bool showGameActions: false
     property bool showMoves: false
     // SAN per move, sent whole by the backend each BoardState (see
@@ -236,7 +240,7 @@ Rectangle {
     property bool showGameOverDialog: false
     readonly property bool canNavigateHome: boardScreen.gameOver || boardScreen.awaitingBoard ||
         boardScreen.awaitingGameStart || boardScreen.streamRateLimited || boardScreen.moveSubmissionCoolingDown ||
-        boardScreen.streamError.length > 0
+        boardScreen.gameActionCoolingDown || boardScreen.streamError.length > 0
     property string gameResult: ""
     property string gameReason: ""
     property bool annotationMode: false
@@ -557,6 +561,7 @@ Rectangle {
     function gameActionsLabel() {
         if (boardScreen.pendingGameAction.length > 0) return "Working..."
         if (boardScreen.gameOver) return "Game over"
+        if (boardScreen.gameActionCoolingDown) return "Actions paused"
         if (boardScreen.offerActionsAvailable && boardScreen.drawOfferedByOpponent) return "Draw offer"
         if (boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByOpponent) return "Takeback offer"
         if (boardScreen.opponentGone) return "Opponent left"
@@ -615,7 +620,8 @@ Rectangle {
     function requestGameAction(message, action) {
         if (boardScreen.gameId.length === 0 || boardScreen.awaitingBoard ||
                 !boardScreen.gameplayAvailable || boardScreen.streamError.length > 0 ||
-                boardScreen.pendingActionRequest !== null || !boardScreen.nextRequestId) return
+                boardScreen.gameActionCoolingDown || boardScreen.pendingActionRequest !== null ||
+                !boardScreen.nextRequestId) return
         message.request_id = boardScreen.nextRequestId()
         message.expected_game_id = boardScreen.gameId
         boardScreen.pendingActionRequest = {action: action, request_id: message.request_id}
@@ -1403,6 +1409,15 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
             color: theme.textMuted
         }
+        Text {
+            objectName: "gameActionCooldownNotice"
+            width: parent.width
+            visible: boardScreen.gameplayAvailable && boardScreen.gameActionCoolingDown
+            text: "Lichess is limiting game actions. Try again shortly."
+            wrapMode: Text.WordWrap
+            font.pixelSize: theme.fontBody
+            color: theme.textMuted
+        }
 
         FinishedReviewAction {
             buttonName: "reviewFinishedActionButton"
@@ -1427,6 +1442,7 @@ Rectangle {
             busy: boardScreen.pendingGameAction === "Draw"
             prominent: true
             critical: true
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.offerActionsAvailable && boardScreen.drawOfferedByOpponent
             onConfirmed: boardScreen.requestOfferAction("Draw", "accept")
         }
@@ -1434,6 +1450,7 @@ Rectangle {
             objectName: "declineDrawButton"
             width: parent.width
             text: "Decline draw"
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.offerActionsAvailable && boardScreen.drawOfferedByOpponent
             onClicked: boardScreen.requestOfferAction("Draw", "decline")
         }
@@ -1446,6 +1463,7 @@ Rectangle {
             cancelText: "Cancel draw confirmation"
             busyText: "Sending draw offer"
             busy: boardScreen.pendingGameAction === "Draw"
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.offerActionsAvailable && boardScreen.canOfferDraw &&
                 !boardScreen.drawOfferedByOpponent
             onConfirmed: boardScreen.requestOfferAction("Draw", "offer")
@@ -1464,6 +1482,7 @@ Rectangle {
             width: parent.width
             text: "Accept takeback"
             highlighted: true
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByOpponent
             onClicked: boardScreen.requestOfferAction("Takeback", "accept")
         }
@@ -1471,6 +1490,7 @@ Rectangle {
             objectName: "declineTakebackButton"
             width: parent.width
             text: "Decline takeback"
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByOpponent &&
                 !boardScreen.takebackOfferedByYou
             onClicked: boardScreen.requestOfferAction("Takeback", "decline")
@@ -1479,6 +1499,7 @@ Rectangle {
             objectName: "offerTakebackButton"
             width: parent.width
             text: "Offer takeback"
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.offerActionsAvailable && boardScreen.canOfferTakeback &&
                 !boardScreen.takebackOfferedByOpponent
             onClicked: boardScreen.requestOfferAction("Takeback", "offer")
@@ -1487,6 +1508,7 @@ Rectangle {
             objectName: "cancelTakebackButton"
             width: parent.width
             text: "Cancel takeback offer"
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.offerActionsAvailable && boardScreen.takebackOfferedByYou
             onClicked: boardScreen.requestOfferAction("Takeback", "cancel")
         }
@@ -1501,6 +1523,7 @@ Rectangle {
             busy: boardScreen.pendingGameAction === "Abort"
             critical: true
             extraConfirm: boardScreen.confirmResign
+            enabled: !boardScreen.gameActionCoolingDown
             visible: !boardScreen.gameOver && boardScreen.canAbort
             onConfirmed: boardScreen.requestGameAction({type: "Abort"}, "Abort")
         }
@@ -1512,6 +1535,7 @@ Rectangle {
             cancelText: "Cancel Berserk"
             busyText: "Berserk requested"
             busy: boardScreen.pendingGameAction === "Berserk"
+            enabled: !boardScreen.gameActionCoolingDown
             visible: !boardScreen.gameOver && boardScreen.canBerserk
             onConfirmed: boardScreen.requestGameAction({type: "Berserk"}, "Berserk")
         }
@@ -1523,6 +1547,7 @@ Rectangle {
             cancelText: "Cancel time gift"
             busyText: "Adding 15 seconds"
             busy: boardScreen.pendingGameAction === "AddTime"
+            enabled: !boardScreen.gameActionCoolingDown
             visible: !boardScreen.gameOver && boardScreen.canGiveTime
             onConfirmed: boardScreen.requestGameAction(
                 {type: "AddTime", seconds: 15}, "AddTime")
@@ -1536,7 +1561,7 @@ Rectangle {
                     : "")
             highlighted: true
             visible: boardScreen.opponentGone
-            enabled: boardScreen.canClaimDeparture
+            enabled: boardScreen.canClaimDeparture && !boardScreen.gameActionCoolingDown
             onClicked: {
                 if (boardScreen.canClaimDeparture)
                     boardScreen.requestGameAction({type: "ClaimVictory"}, "ClaimVictory")
@@ -1552,6 +1577,7 @@ Rectangle {
             busyText: "Claiming draw"
             busy: boardScreen.pendingGameAction === "ClaimDraw"
             critical: true
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.canClaimDeparture
             onConfirmed: {
                 if (boardScreen.canClaimDeparture)
@@ -1605,6 +1631,7 @@ Rectangle {
             busy: boardScreen.pendingGameAction === "Resign"
             critical: true
             extraConfirm: boardScreen.confirmResign
+            enabled: !boardScreen.gameActionCoolingDown
             visible: boardScreen.gameplayAvailable && !boardScreen.canAbort
             onConfirmed: boardScreen.requestGameAction({type: "Resign"}, "Resign")
         }
@@ -2108,7 +2135,8 @@ Rectangle {
                     msg.request_id !== pendingAction.request_id || msg.action !== pendingAction.action) return
             boardScreen.pendingActionRequest = null
             if (msg.type === "GameActionFailed") {
-                boardScreen.boardNotice = {text: msg.message, positionBound: true}
+                boardScreen.boardNotice = msg.retry_after_ms > 0 ? null
+                    : {text: msg.message, positionBound: true}
             } else if (msg.action === "Berserk") {
                 boardScreen.canBerserk = false
                 boardScreen.boardNotice = {text: "Berserk activated", positionBound: true}

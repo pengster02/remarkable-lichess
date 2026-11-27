@@ -777,7 +777,15 @@ pub enum BackendMessage {
     },
     GameOver { game_id: String, result: String, reason: String },
     GameActionCompleted { game_id: String, #[serde(flatten)] request: GameActionRequest },
-    GameActionFailed { game_id: String, #[serde(flatten)] request: GameActionRequest, message: String },
+    GameActionFailed {
+        game_id: String,
+        #[serde(flatten)]
+        request: GameActionRequest,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retry_after_ms: Option<u32>,
+    },
+    GameActionCooldown { retry_after_ms: u32 },
     MovePreview {
         game_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
