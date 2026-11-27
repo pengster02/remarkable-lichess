@@ -499,9 +499,10 @@ Rectangle {
                 root.handleChallengeResponse(msg)
             } else if (msg.type === "GameFinished" || msg.type === "AccountEventsResumed" ||
                        msg.type === "HomeGameUpdated") {
-                var homeForEvent = screenLoader.item
-                if (root.hasToken && homeForEvent && homeForEvent.acceptsHomeReply) {
-                    homeForEvent.handleMessage(msg)
+                var accountScreen = screenLoader.item
+                if (root.hasToken && accountScreen && (accountScreen.acceptsHomeReply ||
+                        (msg.type === "GameFinished" && msg.game_id === root.selectedGameId))) {
+                    accountScreen.handleMessage(msg)
                 }
             } else if (msg.type === "MatchCreationCooldown") {
                 matchCreationCooldown.extend(msg.retry_after_ms)

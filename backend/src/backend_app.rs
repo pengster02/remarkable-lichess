@@ -26,18 +26,19 @@ use crate::qr::QrMatrix;
 use crate::variations::{self, ReviewVariations};
 use appload_client::{AppLoadBackend, BackendReplier, Message, MSG_SYSTEM_NEW_COORDINATOR, MSG_SYSTEM_TERMINATE};
 use async_trait::async_trait;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 type LineStream = Pin<Box<dyn futures_util::Stream<Item = String> + Send>>;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MOVE_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(2);
+const FINAL_POSITION_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const START_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const CLOUD_QUEUE_CAPACITY: usize = 4;
@@ -176,7 +177,7 @@ struct AccountStream {
     challenge_refresh: mpsc::Sender<()>,
     challenge_list: Arc<std::sync::Mutex<ChallengeList>>,
     challenge_read_denied: Arc<AtomicBool>,
-    home_games: Arc<std::sync::Mutex<HomeGameList>>,
+    home_games: Arc<AccountGames>,
     ratings: Arc<std::sync::Mutex<Vec<RatingSummary>>>,
     // Each sign-in owns its own flag. A shared flag can invalidate a replacement,
     // and a username cannot distinguish successive sign-ins to the same account.
@@ -187,8 +188,20 @@ struct AccountStream {
 // a replacement, and Board-local state cannot update Home or sign out.
 struct BoardStreamAccount {
     player_id: String,
-    home_games: Arc<std::sync::Mutex<HomeGameList>>,
+    home_games: Arc<AccountGames>,
     credential_rejected: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct AccountGames {
+    list: std::sync::Mutex<HomeGameList>,
+    finish_observed: Notify,
+}
+
+impl AccountGames {
+    fn has_finished(&self, id: &str) -> bool {
+        self.list.lock().expect("home game list lock poisoned").has_finished(id)
+    }
 }
 
 // The account owns the last read. A screen-local cache misses reloads, and
@@ -197,7 +210,9 @@ struct BoardStreamAccount {
 struct HomeGameList {
     snapshot: Option<HomeGameSnapshot>,
     previews: Vec<HomeGamePreview>,
-    finished: HashSet<String>,
+    // Keep recent finishes across successful Home reads for Board attachment.
+    // Immediate pruning loses known results, while retaining all IDs grows with the account.
+    finished: VecDeque<String>,
 }
 
 struct HomeGameSnapshot {
@@ -222,11 +237,10 @@ impl HomeGamePreview {
 
 impl HomeGameList {
     fn record(&mut self, requested_at: Instant, received_at: Instant, games: Vec<OngoingGameSummary>) -> Vec<OngoingGameSummary> {
-        self.finished.retain(|id| games.iter().any(|game| &game.game_id == id));
         self.previews.retain(|preview| preview.observed_after() > requested_at
             && (preview.replay_requested_at.is_some()
                 || !games.iter().any(|listed| listed.game_id == preview.game.game_id)));
-        let games: Vec<_> = games.into_iter().filter(|game| !self.finished.contains(&game.game_id)).collect();
+        let games: Vec<_> = games.into_iter().filter(|game| !self.has_finished(&game.game_id)).collect();
         self.snapshot = Some(HomeGameSnapshot { requested_at, received_at, games: games.clone() });
         self.include_previews(games, received_at)
     }
@@ -234,7 +248,7 @@ impl HomeGameList {
     fn record_preview(&mut self, attachment_requested_at: Instant, received_at: Instant,
         game: &OngoingGameSummary, previously_announced: bool,
     ) -> bool {
-        if self.finished.contains(&game.game_id) {
+        if self.has_finished(&game.game_id) {
             return false;
         }
         let existing = self.previews.iter().position(|preview| preview.game.game_id == game.game_id);
@@ -262,13 +276,23 @@ impl HomeGameList {
         true
     }
 
+    fn has_finished(&self, id: &str) -> bool {
+        self.finished.iter().any(|finished| finished == id)
+    }
+
     fn finish(&mut self, id: &str) -> bool {
-        let first = self.finished.insert(id.to_owned());
+        if self.has_finished(id) {
+            return false;
+        }
+        if self.finished.len() == 128 {
+            self.finished.pop_front();
+        }
+        self.finished.push_back(id.to_owned());
         if let Some(snapshot) = self.snapshot.as_mut() {
             snapshot.games.retain(|game| game.game_id != id);
         }
         self.previews.retain(|preview| preview.game.game_id != id);
-        first
+        true
     }
 
     fn replay(&self, now: Instant) -> Option<CachedHomeGames> {
@@ -671,6 +695,9 @@ fn game_for_request<'a>(
     let game = active.ok_or("No active game")?;
     if expected_game_id.is_some_and(|id| id != game.game_id) {
         return Err("The active game changed before this request could be sent.");
+    }
+    if game.awaiting_final_position() {
+        return Err("The game ended. Waiting for the final position.");
     }
     Ok(game)
 }
@@ -1865,8 +1892,9 @@ impl LichessBackend {
         let event_refresh = challenge_refresh.clone();
         let challenge_list = Arc::new(std::sync::Mutex::new(ChallengeList::default()));
         let list = challenge_list.clone();
-        let home_games = Arc::new(std::sync::Mutex::new(HomeGameList::default()));
+        let home_games = Arc::new(AccountGames::default());
         let games = home_games.clone();
+        let board_session = self.session.clone();
         // Only an explicit server denial proves the list is unavailable.
         // Guessing from scopes can miss alternate grants, and every 403 is too broad.
         let challenge_read_denied = Arc::new(AtomicBool::new(false));
@@ -1911,7 +1939,9 @@ impl LichessBackend {
                 }
             };
             tokio::join!(
-                read_account_events(&client, &replier, &write_lock, &event_refresh, &games, &rejected, &cooldown),
+                read_account_events(&client, &replier, &write_lock, &event_refresh, AccountEventScope {
+                    games: &games, board_session: &board_session, credential_rejected: &rejected, cooldown: &cooldown,
+                }),
                 refresh,
             );
         });
@@ -2120,15 +2150,21 @@ async fn verify_sign_in(token: String, profile: Arc<AccountProfile>) -> Result<V
     })
 }
 
+struct AccountEventScope<'a> {
+    games: &'a AccountGames,
+    board_session: &'a Mutex<Option<GameSession>>,
+    credential_rejected: &'a Arc<AtomicBool>,
+    cooldown: &'a RateLimitCooldown,
+}
+
 async fn read_account_events(
     client: &LichessClient,
     replier: &BackendReplier<LichessBackend>,
     write_lock: &Arc<std::sync::Mutex<()>>,
     refresh_challenges: &mpsc::Sender<()>,
-    game_list: &std::sync::Mutex<HomeGameList>,
-    credential_rejected: &Arc<AtomicBool>,
-    cooldown: &RateLimitCooldown,
+    scope: AccountEventScope<'_>,
 ) {
+    let AccountEventScope { games, board_session, credential_rejected, cooldown } = scope;
     let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(30));
     // Reconnect replays ongoing games. A per-connection set repeats old
     // starts, and remembering every finished game grows without bound.
@@ -2168,7 +2204,7 @@ async fn read_account_events(
                             continue;
                         }
                         let board_supported = game_start_board_support(&game);
-                        let mut list = game_list.lock().expect("home game list lock poisoned");
+                        let mut list = games.list.lock().expect("home game list lock poisoned");
                         let home_game = ongoing_game_from_start(&game, board_supported)
                             .filter(|preview| previewed_games.insert(game.id.clone())
                                 && list.record_preview(attachment_requested_at, Instant::now(), preview, !first_announcement))
@@ -2204,7 +2240,13 @@ async fn read_account_events(
                     }
                     Some(EventStreamMessage::GameFinish { game }) => {
                         announced_games.remove(&game.id);
-                        report_game_finish(replier, write_lock, game_list, &game.id);
+                        let mut board = board_session.lock().await;
+                        if let Some(session) = board.as_mut().filter(|session| session.game_id == game.id) {
+                            session.wait_for_final_position();
+                        }
+                        if report_game_finish(replier, write_lock, &games.list, &game.id) {
+                            games.finish_observed.notify_one();
+                        }
                         if let Some(rating_diff) = game.rating_diff {
                             send_locked(replier, write_lock, &BackendMessage::RatingDiff {
                                 game_id: game.id,
@@ -2228,12 +2270,15 @@ fn report_game_finish(
     write_lock: &Arc<std::sync::Mutex<()>>,
     game_list: &std::sync::Mutex<HomeGameList>,
     game_id: &str,
-) {
+) -> bool {
     // Serialize the first notice with Home snapshots. Sending after unlocking
     // can reorder them, and publishing both stream notices can repeat the read.
     let mut list = game_list.lock().expect("home game list lock poisoned");
     if list.finish(game_id) {
         send_locked(replier, write_lock, &BackendMessage::GameFinished { game_id: game_id.to_owned() });
+        true
+    } else {
+        false
     }
 }
 
@@ -2459,12 +2504,12 @@ async fn refresh_home_games(
     replier: BackendReplier<LichessBackend>,
     write_lock: Arc<std::sync::Mutex<()>>,
     cooldown: RateLimitCooldown,
-    game_list: Arc<std::sync::Mutex<HomeGameList>>,
+    game_list: Arc<AccountGames>,
     credential_rejected: Arc<AtomicBool>,
     request_id: Option<u32>,
 ) {
     let send_limited = |retry_after_ms| {
-        let list = game_list.lock().expect("home game list lock poisoned");
+        let list = game_list.list.lock().expect("home game list lock poisoned");
         send_locked(&replier, &write_lock, &BackendMessage::HomeLoadFailed {
             request_id,
             message: "Lichess is limiting game-list requests. Trying again shortly.".into(),
@@ -2483,7 +2528,7 @@ async fn refresh_home_games(
             let received_at = Instant::now();
             let wifi_connected = wifi_link_state();
             let games = games.into_iter().map(ongoing_game_summary).collect();
-            let mut list = game_list.lock().expect("home game list lock poisoned");
+            let mut list = game_list.list.lock().expect("home game list lock poisoned");
             let ongoing_games = list.record(request_started_at, received_at, games);
             send_locked(&replier, &write_lock, &BackendMessage::HomeState { request_id, wifi_connected, ongoing_games });
         }
@@ -2502,7 +2547,7 @@ async fn refresh_home_games(
             } else {
                 "Can't reach Lichess"
             };
-            let list = game_list.lock().expect("home game list lock poisoned");
+            let list = game_list.list.lock().expect("home game list lock poisoned");
             send_locked(&replier, &write_lock, &BackendMessage::HomeLoadFailed {
                 request_id,
                 message: format!("{message}. Check your connection and retry."),
@@ -2653,7 +2698,7 @@ mod game_board_support_tests {
         assert!(list.replay(later).unwrap().games.is_empty());
         assert!(list.record(later, later, vec![finished, active]).is_empty());
         assert!(list.record(later, later, vec![]).is_empty());
-        assert!(list.finished.is_empty());
+        assert!(list.has_finished("active") && list.has_finished("finished"));
         assert_eq!(list.replay(later).unwrap().age_ms, 0);
     }
 
@@ -3043,7 +3088,8 @@ fn spawn_game_stream(
     tokio::spawn(async move {
         let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
         let mut stream_finished = false;
-        let finish = || report_game_finish(&replier, &write_lock, &account.home_games, &game_id);
+        let mut awaiting_final_position = false;
+        let finish = || report_game_finish(&replier, &write_lock, &account.home_games.list, &game_id);
         // Waiting inline stalls moves. A detached lookup can retry after the Board closes.
         let mut player_status_requests = tokio::task::JoinSet::new();
         while !stream_finished {
@@ -3076,12 +3122,33 @@ fn spawn_game_stream(
                 let connected_at = Instant::now();
                 let mut readiness = GameStreamReadiness::AwaitingSnapshot(connected_at + STREAM_IDLE_TIMEOUT);
                 let mut opponent_departure = None;
+                awaiting_final_position |= account.home_games.has_finished(&game_id);
+                let mut final_deadline = awaiting_final_position.then_some(connected_at + FINAL_POSITION_REFRESH_INTERVAL);
                 loop {
-                    let timeout = readiness.read_timeout(Instant::now());
+                    // Give the existing stream time to deliver its last frame.
+                    // Reopening immediately drops that frame, and keepalives
+                    // alone can keep a stale position open indefinitely.
+                    let now = Instant::now();
+                    let mut timeout = readiness.read_timeout(now);
+                    if let Some(deadline) = final_deadline {
+                        timeout = timeout.min(deadline.saturating_duration_since(now));
+                    }
                     if timeout.is_zero() {
                         break;
                     }
-                    let Ok(Some(line)) = next_stream_line(&mut lines, timeout).await else { break };
+                    let read = tokio::select! {
+                        _ = account.home_games.finish_observed.notified(), if final_deadline.is_none() => {
+                            if account.home_games.has_finished(&game_id)
+                                || session_handle.lock().await.as_ref().is_some_and(GameSession::awaiting_final_position)
+                            {
+                                awaiting_final_position = true;
+                                final_deadline = Some(Instant::now() + FINAL_POSITION_REFRESH_INTERVAL);
+                            }
+                            continue;
+                        }
+                        read = next_stream_line(&mut lines, timeout) => read,
+                    };
+                    let Ok(Some(line)) = read else { break };
                     received_for = connected_at.elapsed();
                     if let Some(msg) = parse_ndjson_line::<GameStreamMessage>(&line) {
                             let mut request_statuses = false;
@@ -3106,12 +3173,20 @@ fn spawn_game_stream(
                                                 session.game_id == s.game_id
                                             }) {
                                                 s.player_statuses = previous.player_statuses.take();
+                                                awaiting_final_position |= previous.awaiting_final_position();
                                                 if previous.berserked {
                                                     s.mark_berserked();
                                                 }
                                             }
                                             s.opponent_departure = opponent_departure;
-                                            if s.berserked || opponent_departure.is_some() {
+                                            if !is_over {
+                                                awaiting_final_position |= account.home_games.has_finished(&game_id);
+                                                if awaiting_final_position {
+                                                    final_deadline.get_or_insert_with(|| Instant::now() + FINAL_POSITION_REFRESH_INTERVAL);
+                                                    s.wait_for_final_position();
+                                                }
+                                            }
+                                            if s.berserked || opponent_departure.is_some() || s.awaiting_final_position() {
                                                 board_msg = s.board_state();
                                             }
                                             if let Some(previous) = guard.as_mut().filter(|session| {
@@ -3125,7 +3200,8 @@ fn spawn_game_stream(
                                                 Some(board_msg)
                                             } else {
                                                 let _ = player_status_requests.try_join_next();
-                                                request_statuses = s.player_statuses.is_none() && player_status_requests.is_empty() &&
+                                                request_statuses = !s.awaiting_final_position() &&
+                                                    s.player_statuses.is_none() && player_status_requests.is_empty() &&
                                                     (s.your_player.id.is_some() || s.opponent_player.id.is_some());
                                                 *guard = Some(s);
                                                 Some(board_msg)
@@ -3180,7 +3256,7 @@ fn spawn_game_stream(
                                         claim_win_in_seconds: gone.claim_win_in_seconds,
                                     });
                                     guard.as_mut()
-                                        .filter(|s| s.game_id == game_id && s.is_stream_connected())
+                                        .filter(|s| s.game_id == game_id && s.is_stream_connected() && !s.awaiting_final_position())
                                         .map(|s| {
                                             s.opponent_departure = opponent_departure;
                                             BackendMessage::OpponentGone {

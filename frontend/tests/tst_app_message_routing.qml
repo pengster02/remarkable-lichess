@@ -96,6 +96,67 @@ TestCase {
         compare(move.to, "e4")
     }
 
+    function test_accountFinishMakesOnlyItsBoardReadOnlyUntilFinalPosition() {
+        app.openGame("selected")
+        var board = screen.item
+        var snapshot = boardState("selected")
+        snapshot.position_id = 14
+        snapshot.legal_moves = [{from: "e2", to: "e4"}]
+        snapshot.can_give_time = true
+        endpoint.reply(snapshot)
+        endpoint.reply({type: "GameFinished", game_id: "other"})
+        verify(board.moveInputAvailable)
+
+        board.onBoardGesture("e2", "e4")
+        var move = endpoint.sentMessages[endpoint.sentMessages.length - 1]
+        compare(move.type, "MakeMove")
+        var preview = {type: "MovePreview", game_id: "selected", request_id: move.request_id,
+                       fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+                       turn: "black", white_time_ms: 592000, black_time_ms: 600000}
+        endpoint.reply(preview)
+        compare(board.fen, preview.fen)
+        board.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        verify(board.pendingActionRequest !== null)
+
+        endpoint.reply({type: "GameFinished", game_id: "selected"})
+        verify(board.awaitingFinalPosition)
+        verify(!board.gameOver)
+        verify(!board.moveInputAvailable)
+        verify(findChild(board, "boardBackButton").visible)
+        compare(board.fen, startFen)
+        compare(board.pendingActionRequest, null)
+        compare(board.topStatusText(), "Game ended · waiting for the final position")
+        endpoint.reply(preview)
+        endpoint.reply(snapshot)
+        verify(board.awaitingFinalPosition)
+        compare(board.fen, startFen)
+        compare(board.legalMoves, [])
+        var sent = endpoint.sentMessages.length
+        board.onBoardGesture("e2", "e4")
+        board.requestGameAction({type: "AddTime", seconds: 15}, "AddTime")
+        compare(endpoint.sentMessages.length, sent)
+
+        snapshot.fen = preview.fen
+        snapshot.position_history = [startFen, preview.fen]
+        snapshot.move_history = ["e4"]
+        snapshot.outcome = {result: "black", reason: "Resignation"}
+        endpoint.reply(snapshot)
+        compare(board.fen, preview.fen)
+        verify(board.gameOver)
+        verify(!board.awaitingFinalPosition)
+        verify(findChild(board, "gameOverLoader").active)
+
+        app.openGame("another")
+        endpoint.reply({type: "GameFinished", game_id: "another"})
+        endpoint.reply(boardState("another"))
+        verify(screen.item.awaitingFinalPosition)
+        verify(!screen.item.gameOver)
+        app.openGame("third")
+        endpoint.reply(boardState("third"))
+        verify(!screen.item.awaitingFinalPosition)
+        verify(screen.item.moveInputAvailable)
+    }
+
     function verifyBoardLabels(board, flipped) {
         var corner = findChild(board, flipped ? "boardSquare-h1" : "boardSquare-a8")
         var origin = corner.mapToItem(board, 0, 0)
