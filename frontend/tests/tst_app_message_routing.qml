@@ -2539,8 +2539,12 @@ TestCase {
         verify(dialog.active)
         verify(!reviewButton.enabled)
         compare(reviewButton.text, "Opening game…")
+        endpoint.reply({type: "GameMoves", game_id: "wrong123", request_id: first.request_id,
+                        moves: ["d4"], fens: [startFen, startFen], rating_diff: 99})
+        compare(screen.item, board)
+        verify(dialog.active && !reviewButton.enabled)
         var failure = {type: "GameMovesFailed", request_id: first.request_id,
-                       message: "The archive is temporarily unavailable."}
+                       message: "Lichess returned a different game. Try again."}
         endpoint.reply(failure)
 
         verify(dialog.active)
@@ -2558,9 +2562,29 @@ TestCase {
         verify(!error.visible)
         endpoint.reply(failure)
         verify(!error.visible && !reviewButton.enabled)
-        replyWithMoves(retry.request_id, "e4")
+        endpoint.reply({type: "GameMoves", game_id: "finished", request_id: retry.request_id,
+                        moves: ["e4"], fens: [startFen, startFen]})
         verify(String(screen.source).endsWith("GameReviewScreen.qml"))
         compare(screen.item.game.rating_diff, 5)
+    }
+
+    function test_selectingAnotherBoardCancelsTheOldReview() {
+        app.openGame("finished")
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "draw", reason: "Draw"}
+        endpoint.reply(snapshot)
+        findChild(screen.item, "reviewFinishedGameButton").clicked()
+        var first = gameMoveRequests().slice(-1)[0]
+        app.openGame("nextgame")
+        verify(endpoint.sentMessages.some(function(message) {
+            return message.type === "CancelGameReview" && message.request_id === first.request_id
+        }))
+        endpoint.reply({type: "GameMoves", game_id: "finished", request_id: first.request_id,
+                        moves: [], fens: [startFen]})
+        verify(String(screen.source).endsWith("BoardScreen.qml"))
+        endpoint.reply(boardState("nextgame"))
+        compare(screen.item.gameId, "nextgame")
+        verify(!screen.item.openingReview)
     }
 
     function test_dismissingFinishedReviewCancelsThePendingRequest_data() {

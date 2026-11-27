@@ -374,14 +374,20 @@ struct GameRequest {
 struct ReviewScope {
     review_id: u32,
     game_id: String,
+    // Readiness belongs to this request. Locking the dispatcher from the
+    // worker can block cancellation, and a global flag can authorize the next review.
+    ready: Arc<AtomicBool>,
     loaded_variations: bool,
 }
 
 // Keep the rating lookup and rejection tied to the sign-in that requested
 // the review. Reading live state can switch accounts, and an ID alone can't distinguish re-logins.
-struct ReviewAccount {
+struct GameReviewRequest {
+    game_id: String,
+    request_id: Option<u32>,
     player_id: String,
     credential_rejected: Arc<AtomicBool>,
+    ready: Option<Arc<AtomicBool>>,
 }
 
 impl GameRequest {
@@ -1274,30 +1280,32 @@ impl LichessBackend {
             self.send(replier, &reply);
             return;
         };
-        let account = ReviewAccount { player_id, credential_rejected: account.credential_rejected.clone() };
+        let credential_rejected = account.credential_rejected.clone();
         stop_game_request(&mut self.review_export).await;
         stop_task(&mut self.opening_explorer).await;
         // Scope writes to the backend's reviewed game. A front-end game ID can
         // outlive an account change, while a token-derived key breaks on re-login.
         self.review_scope = request_id.map(|review_id| ReviewScope {
-            review_id, game_id: game_id.clone(), loaded_variations: false,
+            review_id, game_id: game_id.clone(), ready: Arc::new(AtomicBool::new(false)), loaded_variations: false,
         });
+        let request = GameReviewRequest {
+            game_id, request_id, player_id, credential_rejected,
+            ready: self.review_scope.as_ref().map(|scope| scope.ready.clone()),
+        };
         let task = tokio::spawn(Self::fetch_game_review(
-            client, account, replier.clone(), self.write_lock.clone(),
-            game_id, request_id, self.game_export_retry_after.clone(),
+            client, request, replier.clone(), self.write_lock.clone(), self.game_export_retry_after.clone(),
         ));
         self.review_export = Some(GameRequest { request_id, task, completion: None });
     }
 
     async fn fetch_game_review(
         client: LichessClient,
-        account: ReviewAccount,
+        request: GameReviewRequest,
         replier: BackendReplier<Self>,
         write_lock: Arc<std::sync::Mutex<()>>,
-        game_id: String,
-        request_id: Option<u32>,
         retry_after: Arc<Mutex<Option<Instant>>>,
     ) {
+        let GameReviewRequest { game_id, request_id, player_id, credential_rejected, ready } = request;
         let fail = |message, delay: Option<Duration>| {
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameMovesFailed {
@@ -1314,7 +1322,7 @@ impl LichessBackend {
                 return;
             }
             Err(GameExportFailure::Request(error)) if is_unauthorized(&error) => {
-                report_account_rejection(&replier, &account.credential_rejected);
+                report_account_rejection(&replier, &credential_rejected);
                 return;
             }
             Err(GameExportFailure::Request(error)) => {
@@ -1325,7 +1333,7 @@ impl LichessBackend {
         let rating_diff = export.players.as_ref().and_then(|players| {
             [&players.white, &players.black]
                 .into_iter()
-                .find(|side| side.user.as_ref().is_some_and(|user| user.id.as_deref() == Some(account.player_id.as_str())))
+                .find(|side| side.user.as_ref().is_some_and(|user| user.id.as_deref() == Some(player_id.as_str())))
                 .and_then(|side| side.rating_diff)
         });
         let moves: Vec<String> = export.moves.split_whitespace().map(str::to_string).collect();
@@ -1352,8 +1360,11 @@ impl LichessBackend {
                 judgment_comment: a.judgment.map(|j| j.comment),
             })
             .collect();
+        if let Some(ready) = ready {
+            ready.store(true, Ordering::Release);
+        }
         send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
-            request_id, moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
+            game_id: export.id, request_id, moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
             clock_ms, analysis, rating_diff,
             variation_storage: request_id.map(|_| true),
         });
@@ -1365,6 +1376,12 @@ impl LichessBackend {
             return;
         };
         if scope.review_id != review_id {
+            return;
+        }
+        if !scope.ready.load(Ordering::Acquire) {
+            self.send(replier, &BackendMessage::ReviewVariationsLoadFailed {
+                review_id, message: "Open this game in Review before loading saved variations.".into(),
+            });
             return;
         }
         let reply = match variations::load(config_dir, account_id, &scope.game_id) {
@@ -1412,7 +1429,9 @@ impl LichessBackend {
     async fn start_opening_explorer(
         &mut self, replier: &BackendReplier<Self>, request: OpeningExplorerRequest,
     ) {
-        if !self.review_scope.as_ref().is_some_and(|scope| scope.review_id == request.review_id) {
+        if !self.review_scope.as_ref().is_some_and(|scope| {
+            scope.review_id == request.review_id && scope.ready.load(Ordering::Acquire)
+        }) {
             return;
         }
         let Some(client) = self.client.clone() else { return };

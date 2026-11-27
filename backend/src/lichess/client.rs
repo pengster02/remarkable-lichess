@@ -8,7 +8,7 @@ use crate::lichess::models::TokenGrant;
 use crate::lichess::stream::parse_ndjson_line;
 use crate::pgn_export::{PgnExport, PgnGameId};
 use crate::protocol::{HistoryCursor, OpeningDatabase, OpeningExplorerData};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 
 #[derive(Clone)]
@@ -427,7 +427,10 @@ impl LichessClient {
             .get(format!("{}/game/export/{}", self.base_url, game_id))
             .header(reqwest::header::ACCEPT, "application/json"))
             .await?;
-        Ok(resp.json::<GameExport>().await?)
+        let export = resp.json::<GameExport>().await
+            .context("Lichess returned an unreadable game. Try again.")?;
+        anyhow::ensure!(export.id == game_id, "Lichess returned a different game. Try again.");
+        Ok(export)
     }
 
     pub async fn export_pgn(&self, game_id: PgnGameId) -> Result<PgnExport> {
@@ -1403,9 +1406,39 @@ mod tests {
 
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let export = client.export_game("abcd1234").await.unwrap();
+        assert_eq!(export.id, "abcd1234");
         assert_eq!(export.moves, "e5 a4");
         assert_eq!(export.variant.as_deref(), Some("fromPosition"));
         assert_eq!(export.initial_fen.as_deref(), Some("4k3/4p3/8/8/8/8/P7/4K3 b - - 0 17"));
+    }
+
+    #[tokio::test]
+    async fn export_game_rejects_mismatched_or_incomplete_review_exports() {
+        let server = MockServer::start().await;
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for (body, message) in [
+            (serde_json::json!({"id": "Abcd1234", "moves": "d4 d5"}),
+                "Lichess returned a different game. Try again."),
+            (serde_json::json!({"moves": "d4 d5"}),
+                "Lichess returned an unreadable game. Try again."),
+            (serde_json::json!({"id": "abcd1234"}),
+                "Lichess returned an unreadable game. Try again."),
+        ] {
+            let _mock = Mock::given(method("GET"))
+                .and(path("/game/export/abcd1234"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount_as_scoped(&server)
+                .await;
+            assert_eq!(client.export_game("abcd1234").await.unwrap_err().to_string(), message);
+        }
+        let _mock = Mock::given(method("GET"))
+            .and(path("/game/export/abcd1234"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "abcd1234", "moves": "",
+            })))
+            .mount_as_scoped(&server)
+            .await;
+        assert!(client.export_game("abcd1234").await.unwrap().moves.is_empty());
     }
 
     #[tokio::test]

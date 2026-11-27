@@ -103,6 +103,8 @@ Rectangle {
     property string selectedGameId: ""
     onSelectedGameIdChanged: {
         if (pgnExport.visible && pgnExport.gameId !== selectedGameId) pgnExport.reset()
+        if (selectedGameId && root.pendingReview && root.pendingReview.gameId !== selectedGameId)
+            root.cancelPendingReview()
     }
     // Keep resolved IDs across navigation until a newer list omits them. Waiting
     // for the list keeps old rows visible, while removing a row only on its page
@@ -549,7 +551,8 @@ Rectangle {
             } else if (msg.type === "GameMoves" || msg.type === "GameMovesFailed") {
                 if (msg.type === "GameMovesFailed") gameExportCooldown.extend(msg.retry_after_ms)
                 var request = root.pendingReview
-                if (!request || msg.request_id !== request.id) return
+                if (!request || msg.request_id !== request.id ||
+                        (msg.game_id !== undefined && msg.game_id !== request.gameId)) return
                 root.pendingReview = null
                 if (msg.type === "GameMovesFailed") {
                     screenLoader.item.handleMessage(msg)

@@ -466,7 +466,7 @@ pub struct MoveJudgment {
     pub comment: String,
 }
 
-// GET /api/game/export/{id} (Accept: application/json) response -- confirmed
+// GET /game/export/{id} (Accept: application/json) response -- confirmed
 // against lichess-org/api's games-exportOneGame.json.yaml example and
 // game-export-gameId.yaml's own query params. That endpoint returns dozens of
 // fields (players, opening, clock, division, ...); only the ones game review
@@ -480,11 +480,15 @@ pub struct MoveJudgment {
 // flags are needed to ask for them.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GameExport {
+    // The JSON contract requires an ID. An optional ID leaves the replay
+    // unverified, and copying the request ID cannot detect a mismatched reply.
+    pub id: String,
     pub variant: Option<String>,
     pub players: Option<GamePlayers>,
     #[serde(rename = "initialFen")]
     pub initial_fen: Option<String>,
-    #[serde(default)]
+    // A missing sequence cannot be replayed. Defaulting it invents a board,
+    // while rejecting an explicit empty string loses legitimate no-move games.
     pub moves: String,
     #[serde(default)]
     pub clocks: Vec<u32>,
@@ -727,10 +731,10 @@ mod tests {
 
     #[test]
     fn parses_game_export_moves_as_space_separated_san_ignoring_extra_fields() {
-        // Real shape has dozens more fields (players/opening/analysis/clock/...) --
-        // only `moves` is modeled, everything else must be ignored, not fail to parse.
+        // Unmodeled export fields never prevent parsing the identity and moves.
         let json = r#"{"id":"abcd1234","rated":true,"variant":"standard","speed":"blitz","perf":"blitz","createdAt":1,"lastMoveAt":2,"status":"mate","players":{"white":{"user":{"name":"A","id":"a"},"rating":1600},"black":{"user":{"name":"B","id":"b"},"rating":1580}},"winner":"white","moves":"e4 e5 Nf3 Nc6"}"#;
         let export: GameExport = serde_json::from_str(json).unwrap();
+        assert_eq!(export.id, "abcd1234");
         assert_eq!(export.moves, "e4 e5 Nf3 Nc6");
         // Neither field was in this payload -- must default to empty, not error,
         // for the (common) case of an untimed or never-analyzed game.
@@ -742,7 +746,7 @@ mod tests {
     fn parses_game_export_clocks_and_analysis_when_present() {
         // Trimmed real shape (see games-exportOneGame.json.yaml's own example) --
         // one inaccuracy-judged move, one plain eval, one forced-mate eval.
-        let json = r#"{"moves":"e4 e5 Qh5","clocks":[3000,2990,2980],"analysis":[
+        let json = r#"{"id":"abcd1234","moves":"e4 e5 Qh5","clocks":[3000,2990,2980],"analysis":[
             {"eval":25},
             {"eval":85,"best":"d5e4","variation":"dxe4","judgment":{"name":"Inaccuracy","comment":"Inaccuracy. dxe4 was best."}},
             {"mate":3}
