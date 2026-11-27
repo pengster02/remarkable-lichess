@@ -83,7 +83,9 @@ Rectangle {
     property var wifiConnected: null
     property string connectionMessage: ""
     property string loadError: ""
-    property bool gamesRateLimited: false
+    // A failed read makes the remaining cards stale. A cooldown misses
+    // ordinary outages, and a separate flag can outlive a successful refresh.
+    readonly property bool showingLastLoadedGames: loadError.length > 0 && ongoingGames.length > 0
     property string challengesError: ""
     property bool challengesRetryable: true
     property bool challengeListCoolingDown: false
@@ -158,7 +160,7 @@ Rectangle {
             ratingsRetryDelay.stop()
             homeScreen.loadedOnce = false
             homeScreen.connectivityKnown = false
-            homeScreen.loadError = ""
+            if (!homeScreen.showingLastLoadedGames) homeScreen.loadError = ""
             homeScreen.ratingsRequestId = homeScreen.homeRequestId
         }
         homeScreen.backendSender(request)
@@ -462,7 +464,7 @@ Rectangle {
                     objectName: "homeGamesLoadStatus"
                     width: parent.width
                     visible: homeScreen.loadError.length > 0
-                    text: homeScreen.loadError + (homeScreen.gamesRateLimited && homeScreen.ongoingGames.length > 0
+                    text: homeScreen.loadError + (homeScreen.showingLastLoadedGames
                         ? "\nShowing the last loaded games." : "")
                     wrapMode: Text.WordWrap
                     font.pixelSize: theme.fontBody
@@ -618,7 +620,6 @@ Rectangle {
             homeScreen.gamesLoadPending = false
             homeScreen.loadedOnce = true
             homeScreen.loadError = ""
-            homeScreen.gamesRateLimited = false
             gameRetryDelay.stop()
             var games = msg.ongoing_games || []
             homeScreen.updateGames(games, 0)
@@ -680,9 +681,8 @@ Rectangle {
             homeScreen.loadedOnce = true
             homeScreen.loadError = msg.message ||
                 "Couldn't load your games. Check Wi-Fi and retry."
-            homeScreen.gamesRateLimited = msg.retry_after_ms > 0
-            if (homeScreen.gamesRateLimited) {
-                if (msg.cached_games) homeScreen.updateGames(msg.cached_games.games, msg.cached_games.age_ms)
+            if (msg.cached_games) homeScreen.updateGames(msg.cached_games.games, msg.cached_games.age_ms)
+            if (msg.retry_after_ms > 0) {
                 gameRetryDelay.interval = msg.retry_after_ms
                 gameRetryDelay.restart()
                 homeScreen.gamesRefreshQueued = true

@@ -1666,6 +1666,63 @@ TestCase {
         app.setLiveClockEnabled(true)
     }
 
+    function test_remountedHomeRestoresCachedGamesDuringAnOutage() {
+        app.navigateTo("HomeScreen.qml")
+        var previous = latestHomeRequest()
+        app.navigateTo("SettingsScreen.qml")
+        app.navigateTo("HomeScreen.qml")
+        var home = screen.item
+        var current = latestHomeRequest()
+        verify(current > previous)
+        var game = {game_id: "cached01", opponent_name: "Opponent", is_my_turn: true,
+                    correspondence_seconds_left: 80}
+        var failed = {type: "HomeLoadFailed", request_id: previous, wifi_connected: false,
+                      message: "Wi-Fi is disconnected. Check your connection and retry.",
+                      cached_games: {games: [game], age_ms: 22000}}
+        endpoint.reply(failed)
+        compare(home.ongoingGames, [])
+        verify(home.gamesLoadPending)
+
+        app.setLiveClockEnabled(false)
+        failed.request_id = current
+        endpoint.reply(failed)
+        compare(home.ongoingGames, [game])
+        compare(home.correspondenceTimeLeftMs(game.game_id), 58000)
+        verify(app.connectivityKnown && !app.online)
+        var status = findChild(home, "homeGamesLoadStatus")
+        verify(status.visible)
+        compare(status.text, failed.message + "\nShowing the last loaded games.")
+        var refresh = findChild(home, "homeGamesRefreshButton")
+        verify(refresh && refresh.enabled)
+        compare(refresh.text, "Retry games")
+        var resume = findChild(home, "homeResumeButton")
+        verify(resume && resume.enabled)
+
+        refresh.clicked()
+        tryVerify(function() { return latestHomeRequest() > current })
+        var retry = latestHomeRequest()
+        var request = endpoint.sentMessages.find(function(msg) {
+            return msg.type === "RequestHome" && msg.request_id === retry
+        })
+        verify(request.games_only)
+        verify(status.visible)
+        failed.request_id = request.request_id
+        endpoint.reply(failed)
+
+        var refreshHome = findChild(home, "homeRefreshButton")
+        verify(refreshHome && refreshHome.enabled)
+        refreshHome.clicked()
+        tryVerify(function() { return latestHomeRequest() > failed.request_id })
+        compare(home.ongoingGames, [game])
+        verify(status.visible)
+        var fresh = {game_id: "fresh001", opponent_name: "Fresh opponent", is_my_turn: false}
+        endpoint.reply({type: "HomeState", request_id: latestHomeRequest(), ongoing_games: [fresh]})
+        compare(home.ongoingGames, [fresh])
+        verify(app.online)
+        verify(!status.visible)
+        app.setLiveClockEnabled(true)
+    }
+
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length
