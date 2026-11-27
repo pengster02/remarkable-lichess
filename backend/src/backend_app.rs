@@ -278,6 +278,13 @@ struct ReviewScope {
     loaded_variations: bool,
 }
 
+// Keep the rating lookup and rejection tied to the sign-in that requested
+// the review. Reading live state can switch accounts, and an ID alone can't distinguish re-logins.
+struct ReviewAccount {
+    player_id: String,
+    credential_rejected: Arc<AtomicBool>,
+}
+
 impl GameRequest {
     fn matches(&self, request_id: Option<u32>) -> bool {
         request_id.is_some() && self.request_id == request_id
@@ -1060,7 +1067,9 @@ impl LichessBackend {
         filters: GameHistoryFilters,
         cursor: Option<HistoryCursor>,
     ) {
-        let (Some(client), Some(my_id)) = (self.client.clone(), self.my_id.clone()) else {
+        let (Some(client), Some(my_id), Some(account)) =
+            (self.client.clone(), self.my_id.clone(), self.account_stream.as_ref())
+        else {
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameHistoryFailed {
                     request_id, message: "Not signed in to Lichess".into(), retry_after_ms: None,
@@ -1070,6 +1079,7 @@ impl LichessBackend {
             self.send(replier, &reply);
             return;
         };
+        let credential_rejected = account.credential_rejected.clone();
         stop_game_request(&mut self.history_load).await;
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
@@ -1088,6 +1098,10 @@ impl LichessBackend {
                     games: games.into_iter().map(|g| history_game_to_summary(g, &my_id)).collect(),
                     next_cursor,
                 },
+                Err(error) if is_unauthorized(&error) => {
+                    report_account_rejection(&replier, &credential_rejected);
+                    return;
+                }
                 Err(error) if is_rate_limited(&error) => {
                     *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
                     history_rate_limit_reply(request_id, LICHESS_RATE_LIMIT_DELAY)
@@ -1110,19 +1124,31 @@ impl LichessBackend {
     async fn start_pgn_export(
         &mut self, replier: &BackendReplier<Self>, game_id: String, request_id: u32,
     ) {
-        let Some(client) = self.client.clone() else {
-            self.send(replier, &BackendMessage::PgnExportFailed {
-                game_id, request_id, message: "Not signed in to Lichess".into(), retry_after_ms: None,
-            });
+        let (Some(client), Some(account)) = (self.client.clone(), self.account_stream.as_ref()) else {
+            self.send(replier, &pgn_export_failure(&game_id, request_id, "Not signed in to Lichess", None));
             return;
         };
+        let credential_rejected = account.credential_rejected.clone();
         stop_game_request(&mut self.pgn_export).await;
         let config_dir = self.token_path.parent().unwrap_or_else(|| Path::new(".")).to_owned();
         let replier = replier.clone();
         let write_lock = self.write_lock.clone();
         let retry_after = self.game_export_retry_after.clone();
         let task = tokio::spawn(async move {
-            let reply = export_pgn(&client, &config_dir, game_id, request_id, &retry_after).await;
+            let reply = match export_pgn(&client, &config_dir, &game_id, request_id, &retry_after).await {
+                Ok(reply) => reply,
+                Err(GameExportFailure::RateLimited(remaining)) => {
+                    pgn_export_failure(&game_id, request_id, GAME_EXPORT_RATE_LIMIT_MESSAGE, Some(remaining))
+                }
+                Err(GameExportFailure::Request(error)) if is_unauthorized(&error) => {
+                    report_account_rejection(&replier, &credential_rejected);
+                    return;
+                }
+                Err(GameExportFailure::Request(error)) => {
+                    log::warn!("could not download game PGN: {error}");
+                    pgn_export_failure(&game_id, request_id, "Could not download the game's PGN from Lichess.", None)
+                }
+            };
             send_locked(&replier, &write_lock, &reply);
         });
         self.pgn_export = Some(GameRequest { request_id: Some(request_id), task, completion: None });
@@ -1134,7 +1160,9 @@ impl LichessBackend {
         game_id: String,
         request_id: Option<u32>,
     ) {
-        let Some(client) = self.client.clone() else {
+        let (Some(client), Some(player_id), Some(account)) =
+            (self.client.clone(), self.my_id.clone(), self.account_stream.as_ref())
+        else {
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameMovesFailed {
                     request_id, message: "Not signed in to Lichess".into(), retry_after_ms: None,
@@ -1144,6 +1172,7 @@ impl LichessBackend {
             self.send(replier, &reply);
             return;
         };
+        let account = ReviewAccount { player_id, credential_rejected: account.credential_rejected.clone() };
         stop_game_request(&mut self.review_export).await;
         stop_task(&mut self.opening_explorer).await;
         // Scope writes to the backend's reviewed game. A front-end game ID can
@@ -1152,7 +1181,7 @@ impl LichessBackend {
             review_id, game_id: game_id.clone(), loaded_variations: false,
         });
         let task = tokio::spawn(Self::fetch_game_review(
-            client, self.my_id.clone(), replier.clone(), self.write_lock.clone(),
+            client, account, replier.clone(), self.write_lock.clone(),
             game_id, request_id, self.game_export_retry_after.clone(),
         ));
         self.review_export = Some(GameRequest { request_id, task, completion: None });
@@ -1160,7 +1189,7 @@ impl LichessBackend {
 
     async fn fetch_game_review(
         client: LichessClient,
-        my_id: Option<String>,
+        account: ReviewAccount,
         replier: BackendReplier<Self>,
         write_lock: Arc<std::sync::Mutex<()>>,
         game_id: String,
@@ -1182,16 +1211,19 @@ impl LichessBackend {
                 fail(GAME_EXPORT_RATE_LIMIT_MESSAGE.into(), Some(remaining));
                 return;
             }
+            Err(GameExportFailure::Request(error)) if is_unauthorized(&error) => {
+                report_account_rejection(&replier, &account.credential_rejected);
+                return;
+            }
             Err(GameExportFailure::Request(error)) => {
                 fail(error.to_string(), None);
                 return;
             }
         };
-        let rating_diff = my_id.as_deref().and_then(|my_id| {
-            let players = export.players.as_ref()?;
+        let rating_diff = export.players.as_ref().and_then(|players| {
             [&players.white, &players.black]
                 .into_iter()
-                .find(|side| side.user.as_ref().is_some_and(|user| user.id.as_deref() == Some(my_id)))
+                .find(|side| side.user.as_ref().is_some_and(|user| user.id.as_deref() == Some(account.player_id.as_str())))
                 .and_then(|side| side.rating_diff)
         });
         let moves: Vec<String> = export.moves.split_whitespace().map(str::to_string).collect();
@@ -1221,7 +1253,7 @@ impl LichessBackend {
         send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
             request_id, moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
             clock_ms, analysis, rating_diff,
-            variation_storage: request_id.zip(my_id.as_ref()).map(|_| true),
+            variation_storage: request_id.map(|_| true),
         });
     }
 
@@ -2251,34 +2283,32 @@ fn export_wait_ms(remaining: Duration) -> u32 {
     remaining.as_millis().max(1) as u32
 }
 
-async fn export_pgn(
-    client: &LichessClient, config_dir: &Path, game_id: String, request_id: u32,
-    retry_after: &Mutex<Option<Instant>>,
-) -> BackendMessage {
-    let failed = |message: &str, delay: Option<Duration>| BackendMessage::PgnExportFailed {
-        game_id: game_id.clone(), request_id, message: message.into(),
+fn pgn_export_failure(game_id: &str, request_id: u32, message: &str, delay: Option<Duration>) -> BackendMessage {
+    BackendMessage::PgnExportFailed {
+        game_id: game_id.to_owned(), request_id, message: message.into(),
         retry_after_ms: delay.map(export_wait_ms),
+    }
+}
+
+// Let the account worker classify HTTP failures. Formatting them here loses
+// the authentication status, and verifying the profile again adds another read.
+async fn export_pgn(
+    client: &LichessClient, config_dir: &Path, game_id: &str, request_id: u32,
+    retry_after: &Mutex<Option<Instant>>,
+) -> Result<BackendMessage, GameExportFailure> {
+    let Some(valid_id) = PgnGameId::parse(game_id.to_owned()) else {
+        return Ok(pgn_export_failure(game_id, request_id, "This game does not have a valid Lichess ID.", None));
     };
-    let Some(valid_id) = PgnGameId::parse(game_id.clone()) else {
-        return failed("This game does not have a valid Lichess ID.", None);
-    };
-    let pgn = match request_game_export(retry_after, client.export_pgn(valid_id)).await {
-        Ok(pgn) => pgn,
-        Err(GameExportFailure::RateLimited(remaining)) => {
-            return failed(GAME_EXPORT_RATE_LIMIT_MESSAGE, Some(remaining));
-        }
-        Err(GameExportFailure::Request(error)) => {
-            log::warn!("could not download game PGN: {error}");
-            return failed("Could not download the game's PGN from Lichess.", None);
-        }
-    };
-    match pgn.save(config_dir) {
-        Ok(path) => BackendMessage::PgnExported { game_id, request_id, path: path.to_string_lossy().into_owned() },
+    let pgn = request_game_export(retry_after, client.export_pgn(valid_id)).await?;
+    Ok(match pgn.save(config_dir) {
+        Ok(path) => BackendMessage::PgnExported {
+            game_id: game_id.to_owned(), request_id, path: path.to_string_lossy().into_owned(),
+        },
         Err(error) => {
             log::warn!("could not save game PGN: {error}");
-            failed("Could not save the PGN file.", None)
+            pgn_export_failure(game_id, request_id, "Could not save the PGN file.", None)
         }
-    }
+    })
 }
 
 async fn fetch_opening_explorer(
