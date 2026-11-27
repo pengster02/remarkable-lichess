@@ -32,7 +32,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
@@ -375,9 +375,9 @@ struct GameRequest {
 struct ReviewScope {
     review_id: u32,
     game_id: String,
-    // Readiness belongs to this request. Locking the dispatcher from the
-    // worker can block cancellation, and a global flag can authorize the next review.
-    ready: Arc<AtomicBool>,
+    // A boolean cannot verify a branch root. A second export can drift from
+    // the replay already on screen, so publish that replay's positions once.
+    archive_fens: Arc<OnceLock<Vec<String>>>,
     loaded_variations: bool,
 }
 
@@ -388,7 +388,7 @@ struct GameReviewRequest {
     request_id: Option<u32>,
     player_id: String,
     credential_rejected: Arc<AtomicBool>,
-    ready: Option<Arc<AtomicBool>>,
+    archive_fens: Option<Arc<OnceLock<Vec<String>>>>,
 }
 
 impl GameRequest {
@@ -1294,11 +1294,11 @@ impl LichessBackend {
         // Scope writes to the backend's reviewed game. A front-end game ID can
         // outlive an account change, while a token-derived key breaks on re-login.
         self.review_scope = request_id.map(|review_id| ReviewScope {
-            review_id, game_id: game_id.clone(), ready: Arc::new(AtomicBool::new(false)), loaded_variations: false,
+            review_id, game_id: game_id.clone(), archive_fens: Arc::new(OnceLock::new()), loaded_variations: false,
         });
         let request = GameReviewRequest {
             game_id, request_id, player_id, credential_rejected,
-            ready: self.review_scope.as_ref().map(|scope| scope.ready.clone()),
+            archive_fens: self.review_scope.as_ref().map(|scope| scope.archive_fens.clone()),
         };
         let task = tokio::spawn(Self::fetch_game_review(
             client, request, replier.clone(), self.write_lock.clone(), self.game_export_retry_after.clone(),
@@ -1313,7 +1313,7 @@ impl LichessBackend {
         write_lock: Arc<std::sync::Mutex<()>>,
         retry_after: Arc<Mutex<Option<Instant>>>,
     ) {
-        let GameReviewRequest { game_id, request_id, player_id, credential_rejected, ready } = request;
+        let GameReviewRequest { game_id, request_id, player_id, credential_rejected, archive_fens } = request;
         let fail = |message, delay: Option<Duration>| {
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameMovesFailed {
@@ -1371,8 +1371,8 @@ impl LichessBackend {
                 MoveAnalysis { eval_cp, mate_in, judgment, judgment_comment }
             })
             .collect();
-        if let Some(ready) = ready {
-            ready.store(true, Ordering::Release);
+        if let Some(archive_fens) = archive_fens {
+            archive_fens.get_or_init(|| replay.fens.clone());
         }
         send_locked(&replier, &write_lock, &BackendMessage::GameMoves {
             game_id: export.id, request_id, moves: replay.moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
@@ -1389,13 +1389,13 @@ impl LichessBackend {
         if scope.review_id != review_id {
             return;
         }
-        if !scope.ready.load(Ordering::Acquire) {
+        let Some(archive_fens) = scope.archive_fens.get() else {
             self.send(replier, &BackendMessage::ReviewVariationsLoadFailed {
                 review_id, message: "Open this game in Review before loading saved variations.".into(),
             });
             return;
-        }
-        let reply = match variations::load(config_dir, account_id, &scope.game_id) {
+        };
+        let reply = match variations::load(config_dir, account_id, &scope.game_id, archive_fens) {
             Ok(variations) => {
                 scope.loaded_variations = true;
                 BackendMessage::ReviewVariations { review_id, variations }
@@ -1422,17 +1422,19 @@ impl LichessBackend {
         if scope.review_id != review_id {
             return;
         }
-        let reply = if !scope.loaded_variations {
-            BackendMessage::ReviewVariationsSaveFailed {
+        let reply = match scope.archive_fens.get().filter(|_| scope.loaded_variations) {
+            Some(archive_fens) => match variations::save(config_dir, account_id, &scope.game_id, archive_fens, variations) {
+                Ok(()) => BackendMessage::ReviewVariationsSaved { review_id, request_id },
+                Err(error) => {
+                    log::warn!("could not save review variations: {error}");
+                    BackendMessage::ReviewVariationsSaveFailed {
+                        review_id, request_id, message: "Could not save variations.".into(),
+                    }
+                }
+            },
+            None => BackendMessage::ReviewVariationsSaveFailed {
                 review_id, request_id, message: "Reload the review before saving variations.".into(),
-            }
-        } else if let Err(error) = variations::save(config_dir, account_id, &scope.game_id, &variations) {
-            log::warn!("could not save review variations: {error}");
-            BackendMessage::ReviewVariationsSaveFailed {
-                review_id, request_id, message: "Could not save variations.".into(),
-            }
-        } else {
-            BackendMessage::ReviewVariationsSaved { review_id, request_id }
+            },
         };
         self.send(replier, &reply);
     }
@@ -1441,7 +1443,7 @@ impl LichessBackend {
         &mut self, replier: &BackendReplier<Self>, request: OpeningExplorerRequest,
     ) {
         if !self.review_scope.as_ref().is_some_and(|scope| {
-            scope.review_id == request.review_id && scope.ready.load(Ordering::Acquire)
+            scope.review_id == request.review_id && scope.archive_fens.get().is_some()
         }) {
             return;
         }

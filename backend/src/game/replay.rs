@@ -67,13 +67,17 @@ fn replay_from_position(mut pos: Chess, moves: &[impl AsRef<str>]) -> Result<Exp
     let mut canonical_moves = Vec::with_capacity(moves.len());
     fens.push(fen_string(&pos));
     for san_str in moves {
-        let m = resolve_san(&pos, san_str.as_ref())?;
-        // Raw suffixes can disagree with the board, and a second flag can drift
-        // from the move sheet. Derive notation and position from one legal play.
-        canonical_moves.push(SanPlus::from_move_and_play_unchecked(&mut pos, m).to_string());
+        canonical_moves.push(play_san(&mut pos, san_str.as_ref())?);
         fens.push(fen_string(&pos));
     }
     Ok(ExportReplay { moves: canonical_moves, fens, initial_in_check })
+}
+
+pub(crate) fn play_san(pos: &mut Chess, san: &str) -> Result<String> {
+    let m = resolve_san(pos, san)?;
+    // Raw suffixes can disagree with the board, and a second flag can drift
+    // from the move sheet. Derive notation and position from one legal play.
+    Ok(SanPlus::from_move_and_play_unchecked(pos, m).to_string())
 }
 
 fn resolve_san(pos: &Chess, san: &str) -> Result<Move> {
@@ -137,7 +141,7 @@ impl OpeningExplorerPosition {
     }
 }
 
-fn fen_string(pos: &Chess) -> String {
+pub(crate) fn fen_string(pos: &Chess) -> String {
     Fen::from_position(pos, EnPassantMode::Legal).to_string()
 }
 
