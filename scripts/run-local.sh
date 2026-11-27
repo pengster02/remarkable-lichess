@@ -119,7 +119,7 @@ if [ -n "${PREVIOUS_ID}" ]; then
   if [ "${PREVIOUS_MOUNT}" != "volume ${CONFIG_VOLUME}" ]; then
     NEEDS_MIGRATION=1
   fi
-  if [ "${NEEDS_MIGRATION}" = 1 ] || { [ "${TOKEN_MODE}" = replace ] && [ -n "$emulator_token" ]; }; then
+  if [ "${NEEDS_MIGRATION}" = 1 ]; then
     if [ "${PREVIOUS_RUNNING}" = true ]; then
       docker stop "${PREVIOUS_ID}" >/dev/null
       PREVIOUS_STOPPED=1
@@ -131,16 +131,6 @@ if [ -n "${PREVIOUS_ID}" ]; then
     exit 1
   fi
 fi
-
-# Docker retains env vars and command arguments. The one-shot helper reads stdin.
-if [ -n "$emulator_token" ] &&
-  ! printf '%s\n' "$emulator_token" | docker run --rm --network none -i --mount "${CONFIG_MOUNT}" \
-    --entrypoint /bin/bash "${IMAGE}" /usr/local/bin/seed-token.sh "${CONFIG_DIR}" "${TOKEN_MODE}"; then
-  echo "Could not seed the emulator token." >&2
-  restart_previous
-  exit 1
-fi
-unset emulator_token
 
 RUN_ARGS=(
   --name "${NAME}"
@@ -164,13 +154,30 @@ RUN_ARGS=(
   -e XOVI_SRC=/workspace/xovi
 )
 
+TOKEN_STAGED=0
+update_emulator_token() {
+  docker run --rm --network none -i --mount "${CONFIG_MOUNT}" \
+    --entrypoint /bin/bash "${IMAGE}" /usr/local/bin/seed-token.sh "${CONFIG_DIR}" "$1" "${CONTAINER_ID}"
+}
+
 rollback_launch() {
+  local token_restored=1
   if [ -n "${CONTAINER_ID}" ] && ! docker rm -f "${CONTAINER_ID}" >/dev/null; then
     echo "Could not remove failed replacement ${CONTAINER_ID}." >&2
+    if [ "${TOKEN_STAGED}" = 1 ]; then
+      echo "The previous sign-in backup remains available for that replacement." >&2
+      return
+    fi
+  fi
+  if [ "${TOKEN_STAGED}" = 1 ] && ! update_emulator_token rollback </dev/null; then
+    echo "Could not restore the emulator sign-in. The previous container will stay stopped." >&2
+    token_restored=0
   fi
   if [ -n "${PREVIOUS_ID}" ]; then
     if docker rename "${PREVIOUS_ID}" "${NAME}"; then
-      restart_previous
+      if [ "$token_restored" = 1 ]; then
+        restart_previous
+      fi
     else
       echo "Could not restore the emulator name. The previous container is ${PREVIOUS_ID}." >&2
     fi
@@ -196,9 +203,23 @@ if [ -n "${PREVIOUS_ID}" ] && [ "${PREVIOUS_RUNNING}" = true ] && [ "${PREVIOUS_
   fi
   PREVIOUS_STOPPED=1
 fi
+# Docker retains env vars and arguments. Stdin keeps the token private, and
+# the candidate ID lets us restore the previous value if Docker rejects start.
+if [ -n "$emulator_token" ]; then
+  TOKEN_STAGED=1
+  if ! printf '%s\n' "$emulator_token" | update_emulator_token "${TOKEN_MODE}"; then
+    echo "Could not seed the emulator token." >&2
+    rollback_launch
+    exit 1
+  fi
+fi
+unset emulator_token
 if ! docker start "${CONTAINER_ID}" >/dev/null; then
   rollback_launch
   exit 1
+fi
+if [ "${TOKEN_STAGED}" = 1 ] && ! update_emulator_token commit </dev/null; then
+  echo "Could not remove the private sign-in backup for ${CONTAINER_ID}." >&2
 fi
 if [ -n "${PREVIOUS_ID}" ] && ! docker rm "${PREVIOUS_ID}" >/dev/null; then
   echo "The previous container is still available as ${PREVIOUS_ID}." >&2
