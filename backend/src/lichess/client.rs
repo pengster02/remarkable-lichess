@@ -23,13 +23,6 @@ pub struct LichessClient {
 const ONE_SHOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const HISTORY_PAGE_SIZE: usize = 20;
 
-// Direct stream reads can act on a 401 header. Always reading the body delays
-// sign-out, while skipping every error body loses Board and match diagnostics.
-enum StreamErrorBody {
-    Read,
-    SkipUnauthorized,
-}
-
 #[derive(Debug)]
 struct HttpResponseError {
     status: reqwest::StatusCode,
@@ -215,10 +208,9 @@ impl LichessClient {
     async fn send_direct_authenticated(
         &self,
         context: &str,
-        method: reqwest::Method,
-        url: impl reqwest::IntoUrl,
+        request: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
-        let response = self.send_logged(context, self.bearer(self.no_redirect_http.request(method, url))).await?;
+        let response = self.send_logged(context, self.bearer(request)).await?;
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(http_response_error(context, status, None));
@@ -229,16 +221,15 @@ impl LichessClient {
         Ok(response)
     }
 
-    async fn send_stream_logged(
+    async fn send_direct_authenticated_stream(
         &self,
         context: &str,
         builder: reqwest::RequestBuilder,
-        error_body: StreamErrorBody,
     ) -> Result<reqwest::Response> {
         // Bound stream setup only. A connect timeout leaves headers unbounded,
         // while a request-wide timeout also cuts off a healthy streaming body.
         let deadline = tokio::time::Instant::now() + self.request_timeout;
-        let response = match tokio::time::timeout_at(deadline, self.send_with_logging(context, builder)).await {
+        let response = match tokio::time::timeout_at(deadline, self.send_with_logging(context, self.bearer(builder))).await {
             Ok(result) => result?,
             Err(_) => {
                 log::warn!("{context}: timed out waiting for Lichess response headers");
@@ -249,7 +240,7 @@ impl LichessClient {
         if status.is_success() {
             return Ok(response);
         }
-        if matches!(error_body, StreamErrorBody::SkipUnauthorized) && status == reqwest::StatusCode::UNAUTHORIZED {
+        if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(http_response_error(context, status, None));
         }
 
@@ -529,7 +520,7 @@ impl LichessClient {
     }
 
     async fn post_direct_authenticated(&self, context: &str, path: &str) -> Result<()> {
-        self.send_direct_authenticated(context, reqwest::Method::POST, format!("{}{path}", self.base_url))
+        self.send_direct_authenticated(context, self.no_redirect_http.post(format!("{}{path}", self.base_url)))
             .await.map(drop)
     }
 
@@ -583,7 +574,7 @@ impl LichessClient {
     /// (challenges targeted at you) matters here.
     pub async fn get_challenges(&self) -> Result<Vec<IncomingChallenge>> {
         let resp = self
-            .send_direct_authenticated("get_challenges", reqwest::Method::GET, format!("{}/api/challenge", self.base_url))
+            .send_direct_authenticated("get_challenges", self.no_redirect_http.get(format!("{}/api/challenge", self.base_url)))
             .await?;
         let parsed = resp.json::<ChallengeListResponse>().await?;
         Ok(parsed.incoming)
@@ -593,7 +584,7 @@ impl LichessClient {
         let mut url = reqwest::Url::parse(&self.base_url)?;
         url.path_segments_mut().map_err(|_| anyhow!("Invalid Lichess URL"))?
             .pop_if_empty().extend(["api", "challenge", id, "show"]);
-        let resp = self.send_direct_authenticated("get_challenge_terms", reqwest::Method::GET, url).await?;
+        let resp = self.send_direct_authenticated("get_challenge_terms", self.no_redirect_http.get(url)).await?;
         let detail = resp.json::<ChallengeDetails>().await?;
         anyhow::ensure!(detail.id == id, "Lichess returned details for another challenge");
         Ok(detail.terms)
@@ -634,8 +625,8 @@ impl LichessClient {
             form.push(("color", color.to_string()));
         }
         let resp = self
-            .send_stream_logged("create_seek", self.bearer(self.http.post(format!("{}/api/board/seek", self.base_url)))
-                .form(&form), StreamErrorBody::Read)
+            .send_direct_authenticated_stream("create_seek", self.no_redirect_http.post(format!("{}/api/board/seek", self.base_url))
+                .form(&form))
             .await?;
         Ok(response_to_lines(resp))
     }
@@ -670,14 +661,14 @@ impl LichessClient {
             _ => username,
         };
         let resp = self
-            .send_stream_logged("create_challenge", self.bearer(self.http.post(format!("{}/api/challenge/{}", self.base_url, username)))
+            .send_direct_authenticated_stream("create_challenge", self.no_redirect_http.post(format!("{}/api/challenge/{}", self.base_url, username))
                 .form(&[
                     ("rated", rated.to_string()),
                     ("clock.limit", (minutes * 60).to_string()),
                     ("clock.increment", increment.to_string()),
                     ("keepAliveStream", "true".to_string()),
                     ("color", color.to_string()),
-                ]), StreamErrorBody::Read)
+                ]))
             .await?;
         let mut lines = response_to_lines(resp);
         let first_line = tokio::time::timeout(self.request_timeout, async {
@@ -701,7 +692,7 @@ impl LichessClient {
     /// restriction only applies to `isBoardCompatible` seeks, not challenge/ai).
     pub async fn challenge_ai(&self, level: u8, minutes: u32, increment: u32, color: &str) -> Result<String> {
         let resp = self
-            .send_logged("challenge_ai", self.bearer(self.http.post(format!("{}/api/challenge/ai", self.base_url)))
+            .send_direct_authenticated("challenge_ai", self.no_redirect_http.post(format!("{}/api/challenge/ai", self.base_url))
                 .form(&[
                     ("level", level.to_string()),
                     ("clock.limit", (minutes * 60).to_string()),
@@ -709,9 +700,6 @@ impl LichessClient {
                     ("color", color.to_owned()),
                 ]))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("challenge_ai", resp).await);
-        }
         Ok(resp.json::<CreatedGame>().await?.id)
     }
 
@@ -727,16 +715,13 @@ impl LichessClient {
         rated: bool,
     ) -> Result<ChallengeOpenJson> {
         let resp = self
-            .send_logged("create_open_challenge", self.bearer(self.http.post(format!("{}/api/challenge/open", self.base_url)))
+            .send_direct_authenticated("create_open_challenge", self.no_redirect_http.post(format!("{}/api/challenge/open", self.base_url))
                 .form(&[
                     ("rated", rated.to_string()),
                     ("clock.limit", (minutes * 60).to_string()),
                     ("clock.increment", increment.to_string()),
                 ]))
             .await?;
-        if !resp.status().is_success() {
-            return Err(error_from_response("create_open_challenge", resp).await);
-        }
         Ok(resp.json::<ChallengeOpenJson>().await?)
     }
 
@@ -746,10 +731,9 @@ impl LichessClient {
     ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = String> + Send>>> {
         // A redirected request could drop its bearer and make a valid account look unauthorized.
         let resp = self
-            .send_stream_logged(
+            .send_direct_authenticated_stream(
                 &format!("stream {url_path}"),
-                self.bearer(self.no_redirect_http.get(format!("{}{}", self.base_url, url_path))),
-                StreamErrorBody::SkipUnauthorized,
+                self.no_redirect_http.get(format!("{}{}", self.base_url, url_path)),
             )
             .await?;
         Ok(response_to_lines(resp))
@@ -1733,6 +1717,29 @@ mod tests {
         let requests = server.received_requests().await.unwrap();
         let body = String::from_utf8(requests[0].body.clone()).unwrap();
         assert!(!body.contains("color="), "expected no color field, got body: {body}");
+    }
+
+    #[tokio::test]
+    async fn match_creation_does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        for route in ["/api/board/seek", "/api/challenge/opponent", "/api/challenge/ai", "/api/challenge/open"] {
+            Mock::given(method("POST")).and(path(route))
+                .and(header("Authorization", "Bearer test-token"))
+                .respond_with(ResponseTemplate::new(307).insert_header("Location", "/unexpected"))
+                .expect(1).mount(&server).await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for error in [
+            client.create_seek(10, 0, false, "random").await.err(),
+            client.create_challenge("opponent", 10, 0, false, "random").await.err(),
+            client.challenge_ai(3, 10, 0, "random").await.err(),
+            client.create_open_challenge(10, 0, false).await.err(),
+        ] {
+            let error = error.expect("a redirected request must fail");
+            assert_eq!(error.downcast_ref::<HttpResponseError>().unwrap().status,
+                reqwest::StatusCode::TEMPORARY_REDIRECT);
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 4);
     }
 
     #[tokio::test]
