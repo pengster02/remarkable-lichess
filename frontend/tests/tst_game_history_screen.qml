@@ -68,6 +68,20 @@ TestCase {
         compare(history.filterSummary(), "Casual · Blitz · Played Black")
     }
 
+    function test_ultraBulletIsSelectableAtCompactWidth() {
+        width = 620
+        history.openFilters()
+        var ultraBullet = findChild(history, "historySpeed_ultraBullet")
+        verify(ultraBullet && waitForRendering(ultraBullet))
+        compare(ultraBullet.text, "UltraBullet")
+        mouseClick(ultraBullet)
+        compare(history.draftSpeed, "ultraBullet")
+        compare(sentMessages.length, 0)
+        history.applyFilters()
+        compare(sentMessages[0].speed, "ultraBullet")
+        compare(history.filterSummary(), "All games · UltraBullet · Both sides")
+    }
+
     function test_loadErrorStopsProgressAndRemainsVisible() {
         history.requestFiltered()
         history.handleMessage({type: "GameHistoryFailed", request_id: sentMessages[0].request_id,

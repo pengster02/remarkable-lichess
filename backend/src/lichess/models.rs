@@ -489,11 +489,8 @@ where
         .map(|name| GameOpening { name: name.to_owned() }))
 }
 
-// Request-side, not a Lichess response shape -- the subset of GET
-// /api/games/user/{username}'s real query params (confirmed against its
-// documented Filtering Options: since/until/max/vs/rated/perfType/color/
-// analysed/ongoing/finished/sort) that this app's history screen exposes.
-// `speed` maps to the endpoint's own `perfType` param name.
+// Keep the exported speed key open to new values. A closed enum needs a
+// release per speed, and deriving it from the clock can disagree with Lichess.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GameHistoryFilters {
     pub rated: Option<bool>,
