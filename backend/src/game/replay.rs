@@ -2,6 +2,7 @@ use super::rules::{resolve_uci_move, starting_position, supports_variant};
 use crate::protocol::OpeningExplorerData;
 use anyhow::{Context, Result};
 use shakmaty::{fen::Fen, san::SanPlus, uci::UciMove, Chess, EnPassantMode, Move, Position};
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct ExportReplay {
@@ -101,15 +102,34 @@ impl OpeningExplorerPosition {
         Ok(Self { root_fen, play, position })
     }
 
-    pub fn normalize_moves(&self, data: &mut OpeningExplorerData) {
-        data.moves.retain_mut(|row| {
+    pub fn normalize_moves(&self, mut data: OpeningExplorerData) -> Result<OpeningExplorerData> {
+        let had_moves = !data.moves.is_empty();
+        let mut counts_by_move = HashMap::new();
+        let mut remaining_counts = [data.white, data.draws, data.black];
+        let mut moves = Vec::with_capacity(data.moves.len());
+        for mut row in data.moves {
             let Ok(chess_move) = resolve_uci_move(&self.position, &row.uci) else {
-                return false;
+                continue;
             };
+            // Castling aliases resolve to the same move. Summing can double-count
+            // games, and keeping the first conflicting row guesses which is right.
+            let counts = [row.white, row.draws, row.black];
+            if let Some(previous) = counts_by_move.insert(chess_move, counts) {
+                anyhow::ensure!(previous == counts, "conflicting statistics for one opening move");
+                continue;
+            }
+            // The server aggregates all moves before truncating the returned list.
+            anyhow::ensure!(counts != [0; 3], "opening move has no recorded games");
+            for (remaining, count) in remaining_counts.iter_mut().zip(counts) {
+                *remaining = remaining.checked_sub(count).context("opening moves exceed the position totals")?;
+            }
             row.uci = UciMove::from_standard(chess_move).to_string();
             row.san = SanPlus::from_move(self.position.clone(), chess_move).to_string();
-            true
-        });
+            moves.push(row);
+        }
+        anyhow::ensure!(!had_moves || !moves.is_empty(), "no opening moves are legal in this position");
+        data.moves = moves;
+        Ok(data)
     }
 }
 
@@ -145,14 +165,14 @@ mod tests {
     fn opening_explorer_preserves_the_played_path_and_normalizes_castling() {
         let root = "r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1";
         let explorer = OpeningExplorerPosition::from_replay(root, &[], root).unwrap();
-        let mut data: OpeningExplorerData = serde_json::from_value(serde_json::json!({
+        let data: OpeningExplorerData = serde_json::from_value(serde_json::json!({
             "white": 4, "draws": 2, "black": 3,
             "moves": [
                 {"san": "O-O", "uci": "e1h1", "white": 4, "draws": 2, "black": 3},
                 {"san": "bad", "uci": "a1a8", "white": 0, "draws": 0, "black": 0}
             ]
         })).unwrap();
-        explorer.normalize_moves(&mut data);
+        let data = explorer.normalize_moves(data).unwrap();
         assert_eq!(data.moves.len(), 1);
         assert_eq!(data.moves[0].uci, "e1g1");
         assert_eq!(data.moves[0].san, "O-O");
@@ -163,6 +183,32 @@ mod tests {
         assert_eq!(explorer.root_fen, root);
         assert_eq!(explorer.play, ["e1g1"]);
         assert!(OpeningExplorerPosition::from_replay(root, &played, root).is_err());
+    }
+
+    #[test]
+    fn opening_explorer_checks_counts_and_identity_after_resolving_moves() {
+        use serde_json::json;
+
+        let root = "r3k2r/ppp1pppp/8/3pP3/8/8/PPPP1PPP/R3K2R w KQkq d6 0 3";
+        let explorer = OpeningExplorerPosition::from_replay(root, &[], root).unwrap();
+        let data = |moves| serde_json::from_value(json!({"white": 10, "draws": 4, "black": 6, "moves": moves})).unwrap();
+        let row = |uci, white, draws, black| json!({"uci": uci, "san": "ignored", "white": white, "draws": draws, "black": black});
+        let castle = row("e1h1", 8, 2, 3);
+        let en_passant = row("e5d6", 2, 1, 3);
+        let illegal = row("h8h7", 0, 0, 0);
+        let result = explorer.normalize_moves(data(json!([castle, row("e1g1", 8, 2, 3), illegal, en_passant]))).unwrap();
+        assert_eq!(result.moves.iter().map(|row| row.san.as_str()).collect::<Vec<_>>(), ["O-O", "exd6"]);
+        assert_eq!(result.moves[0].white, 8);
+        assert!(explorer.normalize_moves(data(json!([]))).unwrap().moves.is_empty());
+        for (moves, error) in [
+            (json!([illegal]), "no opening moves are legal"),
+            (json!([castle, row("e1g1", 1, 2, 3)]), "conflicting statistics"),
+            (json!([castle, row("e5d6", 3, 2, 3)]), "exceed the position totals"),
+            (json!([row("e5d6", u64::MAX, 1, 0)]), "exceed the position totals"),
+            (json!([row("e5d6", 0, 0, 0)]), "no recorded games"),
+        ] {
+            assert!(explorer.normalize_moves(data(moves)).unwrap_err().to_string().contains(error), "{error}");
+        }
     }
 
     #[test]
