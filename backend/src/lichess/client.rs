@@ -465,7 +465,13 @@ impl LichessClient {
         if !resp.status().is_success() {
             return Err(error_from_response("get_cloud_evaluation", resp).await);
         }
-        Ok(Some(resp.json::<CloudEvaluation>().await?))
+        let evaluation = resp.json::<CloudEvaluation>().await
+            .context("Lichess returned an unreadable cloud evaluation. Try again.")?;
+        // Lichess echoes the full FEN after replacing underscores and trimming.
+        // A legal PV can fit another board, and comparing only pieces loses turn and rights.
+        anyhow::ensure!(evaluation.fen == fen.replace('_', " ").trim(),
+            "Lichess returned a cloud evaluation for a different position. Try again.");
+        Ok(Some(evaluation))
     }
 
     pub async fn get_opening_explorer(
@@ -1497,6 +1503,48 @@ mod tests {
         assert_eq!(evaluation.depth, 31);
         assert_eq!(evaluation.pvs[0].cp, Some(24));
         assert_eq!(evaluation.pvs[0].moves, "e2e4 e7e5 g1f3");
+    }
+
+    #[tokio::test]
+    async fn cloud_evaluation_checks_the_echoed_full_fen() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let fen = "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3";
+        let legacy = format!(" {} ", fen.replace(' ', "_"));
+        let cases = [
+            (legacy, Some(fen.to_owned()), true),
+            (fen.into(), Some(fen.replace("3pP3", "3p1P2")), false),
+            (fen.into(), Some(fen.replace(" w ", " b ")), false),
+            (fen.into(), Some(fen.replace("KQkq", "Kkq")), false),
+            (fen.into(), Some(fen.replace("d6", "-")), false),
+            (fen.into(), Some(fen.replace("0 3", "1 3")), false),
+            (fen.into(), Some(fen.replace(" 0 3", "")), false),
+            (fen.into(), None, false),
+        ];
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        for (requested, returned, matches) in cases {
+            let mut body = serde_json::json!({"depth": 31, "knodes": 123456,
+                "pvs": [{"cp": 24, "moves": "g1f3"}]});
+            let expected_error = if returned.is_some() { "different position" } else { "unreadable" };
+            if let Some(returned) = returned {
+                body["fen"] = returned.into();
+            }
+            let _mock = Mock::given(method("GET"))
+                .and(path("/api/cloud-eval"))
+                .and(query_param("fen", requested.as_str()))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount_as_scoped(&server)
+                .await;
+            let reply = client.get_cloud_evaluation(&requested).await;
+            if matches {
+                assert_eq!(reply.unwrap().unwrap().fen, fen);
+            } else {
+                let error = reply.unwrap_err().to_string();
+                assert!(error.contains(expected_error), "{error}");
+            }
+        }
     }
 
     #[tokio::test]
