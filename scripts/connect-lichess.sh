@@ -89,10 +89,31 @@ else
   esac
   exit 1
 fi
+# An in-place write can truncate the old token, and a shared staging name can race concurrent saves.
+if ! printf '%s\n' "${TOKEN}" | python3 -c '
+import os, sys, tempfile
+from pathlib import Path
+
+# Keep custom token paths that point to a separate file working after the rename.
+path = Path(sys.argv[1]).resolve()
+temporary = None
+try:
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".lichess-token.", delete=False) as staged:
+        temporary = Path(staged.name)
+        os.fchmod(staged.fileno(), 0o600)
+        staged.write(sys.stdin.buffer.read())
+        staged.flush()
+        os.fsync(staged.fileno())
+    os.replace(temporary, path)
+    temporary = None
+finally:
+    if temporary is not None:
+        temporary.unlink(missing_ok=True)
+' "${TOKEN_FILE}" 2>/dev/null; then
+  echo "Could not save the Lichess token to ${TOKEN_FILE}. Check the folder permissions and available space." >&2
+  exit 1
+fi
 echo "Token OK — signed in as ${USERNAME}"
-if [ -f "${TOKEN_FILE}" ]; then chmod 600 "${TOKEN_FILE}"; fi
-(umask 077; printf '%s\n' "${TOKEN}" > "${TOKEN_FILE}")
-chmod 600 "${TOKEN_FILE}"
 echo "Saved to ${TOKEN_FILE}"
 
 rm -f "$ACCOUNT_RESPONSE"
