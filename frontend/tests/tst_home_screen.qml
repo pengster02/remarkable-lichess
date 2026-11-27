@@ -37,6 +37,7 @@ TestCase {
         home.connectionMessage = ""
         home.loadError = ""
         home.challengesError = ""
+        home.challengesRetryable = true
         home.actionError = ""
         home.pendingInvitation = null
         home.pendingChallenges = []
@@ -74,6 +75,23 @@ TestCase {
         compare(home.loadedOnce, true)
         compare(home.loadError, "")
         compare(home.challengesError, "Couldn't load challenges.")
+        verify(findChild(home, "retryChallengesButton").visible)
+    }
+
+    function test_missingChallengePermissionKeepsGameRefreshAvailable() {
+        home.online = true
+        home.pendingChallenges = [{id: "old", challenger: "Opponent"}]
+        var message = "Sign in with Read challenges permission."
+        home.handleMessage({type: "ChallengesLoadFailed", retryable: false, message: message})
+        verify(!findChild(home, "retryChallengesButton").visible)
+        compare(home.pendingChallenges.length, 0)
+        home.refreshChallenges()
+        compare(sentMessages.length, 0)
+        home.refresh()
+        compare(sentMessages.length, 1)
+        compare(sentMessages[0].type, "RequestHome")
+        compare(home.challengesError, message)
+        verify(home.online)
     }
 
     function test_genericActionErrorIsVisibleWithoutChangingLoadState() {

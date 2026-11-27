@@ -567,7 +567,11 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_after_ms: Option<u32>,
     },
-    ChallengesLoadFailed { message: String },
+    ChallengesLoadFailed {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        retryable: Option<bool>,
+    },
     SeekCreated {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<u32>,

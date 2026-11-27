@@ -3,7 +3,10 @@ use crate::game::outcome::outcome;
 use crate::game::replay::OpeningExplorerPosition;
 use crate::game::session::GameSession;
 use crate::game::rules::{analysis_position, apply_analysis_move, replay_uci_moves_with_history, supports_variant};
-use crate::lichess::client::{board_stream_rejection, is_auth_rejection, is_rate_limited, LichessClient, LICHESS_BASE_URL};
+use crate::lichess::client::{
+    board_stream_rejection, is_auth_rejection, is_challenge_read_denial, is_rate_limited, LichessClient,
+    LICHESS_BASE_URL,
+};
 use crate::lichess::oauth;
 use crate::lichess::models::{
     ChallengeResolution, ChallengeResult, ChallengeTerms, EventGame, EventStreamMessage, GameStreamMessage,
@@ -27,6 +30,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -112,6 +116,7 @@ struct AccountStream {
     task: tokio::task::JoinHandle<()>,
     challenge_refresh: mpsc::Sender<()>,
     challenge_support: Arc<Mutex<HashMap<String, BoardSupport>>>,
+    challenge_read_denied: Arc<AtomicBool>,
 }
 
 // Preserve the reason for both Home and the preflight reply. A bool loses the
@@ -1444,21 +1449,37 @@ impl LichessBackend {
         let event_refresh = challenge_refresh.clone();
         let challenge_support = Arc::new(Mutex::new(HashMap::new()));
         let support = challenge_support.clone();
+        // Only an explicit server denial proves the list is unavailable.
+        // Guessing from scopes can miss alternate grants, and every 403 is too broad.
+        let challenge_read_denied = Arc::new(AtomicBool::new(false));
+        let denied = challenge_read_denied.clone();
         let task = tokio::spawn(async move {
             // Both futures drop together when the account is replaced or signed out.
             let refresh = async {
                 while refreshes.recv().await.is_some() {
-                    send_pending_challenges(&client, &replier, &write_lock, &support).await;
+                    let reply = load_pending_challenges(&client, &support).await;
+                    let missing_scope = matches!(reply, BackendMessage::ChallengesLoadFailed { retryable: Some(false), .. });
+                    if missing_scope {
+                        denied.store(true, Ordering::Relaxed);
+                    }
+                    send_locked(&replier, &write_lock, &reply);
+                    if missing_scope {
+                        break;
+                    }
                 }
             };
             tokio::join!(read_account_events(&client, &replier, &write_lock, &event_refresh), refresh);
         });
-        self.account_stream = Some(AccountStream { task, challenge_refresh, challenge_support });
+        self.account_stream = Some(AccountStream { task, challenge_refresh, challenge_support, challenge_read_denied });
     }
 
-    fn queue_challenge_refresh(&self) {
+    fn queue_challenge_refresh(&self, replier: &BackendReplier<Self>) {
         if let Some(account) = &self.account_stream {
-            let _ = account.challenge_refresh.try_send(());
+            if account.challenge_read_denied.load(Ordering::Relaxed) {
+                self.send(replier, &challenge_read_denial());
+            } else {
+                let _ = account.challenge_refresh.try_send(());
+            }
         }
     }
 
@@ -1707,14 +1728,12 @@ fn send_locked(replier: &BackendReplier<LichessBackend>, lock: &Arc<std::sync::M
 /// Shared by the RequestChallenges dispatch and the account event stream's
 /// challenge/challengeCanceled/challengeDeclined handling below -- both just need
 /// a fresh GET /api/challenge snapshot pushed to the frontend.
-async fn send_pending_challenges(
+async fn load_pending_challenges(
     client: &LichessClient,
-    replier: &BackendReplier<LichessBackend>,
-    write_lock: &Arc<std::sync::Mutex<()>>,
     support: &Mutex<HashMap<String, BoardSupport>>,
-) {
+) -> BackendMessage {
     use crate::protocol::{ChallengeInfo, ChallengeTimeControlKind};
-    let msg = match client.get_challenges().await {
+    match client.get_challenges().await {
         Ok(challenges) => {
             let mut known_support = HashMap::new();
             let challenges = challenges
@@ -1757,14 +1776,25 @@ async fn send_pending_challenges(
             *support.lock().await = known_support;
             BackendMessage::PendingChallenges { challenges }
         }
+        Err(error) if is_challenge_read_denial(&error) => {
+            support.lock().await.clear();
+            challenge_read_denial()
+        }
         Err(e) => {
             log::warn!("couldn't load challenges: {e}");
             BackendMessage::ChallengesLoadFailed {
                 message: "Couldn't load challenges. Retry when connected.".to_string(),
+                retryable: None,
             }
         }
-    };
-    send_locked(replier, write_lock, &msg);
+    }
+}
+
+fn challenge_read_denial() -> BackendMessage {
+    BackendMessage::ChallengesLoadFailed {
+        message: "To see incoming challenges, sign in with a token that has Read challenges (challenge:read) permission.".into(),
+        retryable: Some(false),
+    }
 }
 
 enum GameExportFailure {
@@ -2678,7 +2708,7 @@ impl AppLoadBackend for LichessBackend {
                 })
                 .await;
             }
-            FrontendMessage::RequestChallenges => self.queue_challenge_refresh(),
+            FrontendMessage::RequestChallenges => self.queue_challenge_refresh(replier),
             FrontendMessage::AcceptChallenge { id, request_id } => {
                 self.start_challenge_action(replier, ChallengeRequest {
                     challenge_id: id, request_id, action: ChallengeAction::Accept,
