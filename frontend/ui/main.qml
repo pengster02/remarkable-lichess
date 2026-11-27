@@ -74,6 +74,7 @@ Rectangle {
     RequestCooldown { id: matchCreationCooldown }
     RequestCooldown { id: challengeActionCooldown }
     RequestCooldown { id: challengeListCooldown }
+    RequestCooldown { id: moveSubmissionCooldown }
     // One timer covers both formats across navigation. Per-dialog timers miss
     // other entry points, while disabling all lookups would block the archive list.
     RequestCooldown { id: gameExportCooldown }
@@ -495,6 +496,8 @@ Rectangle {
                 }
             } else if (msg.type === "MatchCreationCooldown") {
                 matchCreationCooldown.extend(msg.retry_after_ms)
+            } else if (msg.type === "MoveSubmissionCooldown") {
+                moveSubmissionCooldown.extend(msg.retry_after_ms)
             } else if (msg.type === "SeekCreated" || msg.type === "SeekFailed" ||
                        msg.type === "SeekEnded" || msg.type === "ChallengeCreated" ||
                        msg.type === "ChallengeCreateFailed" ||
@@ -595,6 +598,7 @@ Rectangle {
                        msg.type === "GameOver" || msg.type === "MoveRejected" ||
                        msg.type === "GameStreamReconnecting" || msg.type === "GameStreamFailed" ||
                        msg.type === "OpponentGone" || msg.type === "MovePreview") {
+                if (msg.type === "MoveRejected") moveSubmissionCooldown.extend(msg.retry_after_ms)
                 // Deliberately never navigates on its own (confirmed via the PC
                 // emulator: a bare reconnect message with no real game yet threw the
                 // user onto a genuinely empty, un-escapable Board screen). Only
@@ -807,6 +811,9 @@ Rectangle {
             }
             if (item.hasOwnProperty("requestedGameId")) {
                 item.requestedGameId = Qt.binding(function() { return root.selectedGameId })
+            }
+            if (item.hasOwnProperty("moveSubmissionCoolingDown")) {
+                item.moveSubmissionCoolingDown = Qt.binding(function() { return moveSubmissionCooldown.running })
             }
         }
     }
