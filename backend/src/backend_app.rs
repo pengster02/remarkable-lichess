@@ -1389,10 +1389,11 @@ impl LichessBackend {
         replier: &BackendReplier<Self>,
         request: MatchRequest,
     ) {
-        let Some(client) = self.client.clone() else {
+        let (Some(client), Some(account)) = (self.client.clone(), self.account_stream.as_ref()) else {
             self.send(replier, &request.failure("Sign in to Lichess to find an opponent.".into()));
             return;
         };
+        let credential_rejected = account.credential_rejected.clone();
         if let Err(message) = request.validate() {
             self.send(replier, &request.failure(message.into()));
             return;
@@ -1420,7 +1421,7 @@ impl LichessBackend {
         };
         let task = tokio::spawn(run_match_request(
             client, replier.clone(), self.write_lock.clone(), request, creation_done,
-            self.match_creation_cooldown.clone(),
+            self.match_creation_cooldown.clone(), credential_rejected,
         ));
         self.pending_match = Some(GameRequest { request_id, task, completion });
     }
@@ -2689,6 +2690,7 @@ async fn run_match_request(
     request: MatchRequest,
     creation_done: Option<oneshot::Sender<()>>,
     cooldown: RateLimitCooldown,
+    credential_rejected: Arc<AtomicBool>,
 ) {
     let MatchRequest { minutes, increment, request_id, .. } = request;
     let result = match &request.kind {
@@ -2736,6 +2738,10 @@ async fn run_match_request(
     };
     let reply = match result {
         Ok(reply) => reply,
+        Err(error) if is_unauthorized(&error) => {
+            report_account_rejection(&replier, &credential_rejected);
+            return;
+        }
         Err(error) if is_rate_limited(&error) => {
             cooldown.start();
             request.rate_limited(LICHESS_RATE_LIMIT_DELAY.as_millis() as u32)
