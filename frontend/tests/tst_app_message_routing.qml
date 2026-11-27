@@ -2129,6 +2129,54 @@ TestCase {
         compare(gameMoveRequests().length, 1)
     }
 
+    function test_historyOffersPgnAndRetryAfterReplayValidationFails() {
+        width = 620
+        var history = screen.item
+        endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest, games: [
+            {game_id: "broken01", opponent_name: "Opponent 1"},
+            {game_id: "other001", opponent_name: "Opponent 2"}
+        ]})
+        var card = findChild(history, "historyGameRow")
+        verify(card && waitForRendering(card))
+        mouseClick(card, card.width / 2, card.height / 2)
+        var request = gameMoveRequests().slice(-1)[0]
+        endpoint.reply({type: "GameMovesFailed", request_id: request.request_id, game_id: "other001",
+                        pgn_fallback: true, message: "Wrong game"})
+        verify(!findChild(card, "historyFallbackExportPgn").visible)
+        endpoint.reply({type: "GameMovesFailed", request_id: request.request_id,
+                        pgn_fallback: true, message: "Could not replay this game."})
+        var exportButton = findChild(card, "historyFallbackExportPgn")
+        var retryButton = findChild(card, "historyRetryReview")
+        verify(exportButton.visible && retryButton.visible && waitForRendering(exportButton))
+        compare(history.games[0].pgn_fallback, true)
+        compare(history.games[1].pgn_fallback, undefined)
+        mouseClick(exportButton)
+        var dialog = findChild(app, "pgnExportDialog")
+        verify(dialog.visible && !dialog.saving)
+        compare(dialog.gameId, "broken01")
+        compare(pgnRequests().length, 0)
+        findChild(dialog, "savePgnButton").clicked()
+        var save = pgnRequests().slice(-1)[0]
+        compare(save.game_id, "broken01")
+        endpoint.reply({type: "PgnExported", request_id: save.request_id, game_id: save.game_id,
+                        path: "/tmp/broken01.pgn"})
+        verify(waitForRendering(dialog))
+        dialog.dismissed()
+        verify(waitForRendering(retryButton))
+        mouseClick(retryButton)
+        var retry = gameMoveRequests().slice(-1)[0]
+        compare(gameMoveRequests().length, 2)
+        compare(retry.game_id, "broken01")
+        verify(retry.request_id !== request.request_id)
+        replyWithMoves(retry.request_id, "broken01")
+        verify(String(screen.source).endsWith("GameReviewScreen.qml"))
+        findChild(screen.item, "reviewBackButton").clicked()
+        var restoredCard = findChild(screen.item, "historyGameRow")
+        verify(restoredCard && waitForRendering(restoredCard))
+        compare(restoredCard.modelData.game_id, "broken01")
+        verify(!findChild(restoredCard, "historyFallbackExportPgn").visible)
+    }
+
     function test_finishedBoardExportsUnsupportedVariantAndCancelsOnSelectionChange() {
         app.openGame("atomic01")
         var board = screen.item
