@@ -1305,6 +1305,39 @@ TestCase {
         return messages[messages.length - 1].request_id
     }
 
+    function test_signInProbeCannotOverwriteAuthenticatedConnectivity() {
+        endpoint.reply({type: "AuthenticationRequired"})
+        var probe = {type: "ConnectivityState", online: false, wifi_connected: false,
+                     message: "Wi-Fi is disconnected"}
+        endpoint.reply(probe)
+        compare(app.connectivityLabel(false), "Offline — Wi-Fi disconnected")
+        compare(app.connectionMessage, probe.message)
+
+        endpoint.reply({type: "TokenVerified", username: "player"})
+        compare(app.connectivityLabel(false), "Connecting…")
+        compare(app.wifiConnected, null)
+        compare(app.connectionMessage, "")
+        endpoint.reply(probe)
+        compare(app.connectivityLabel(false), "Connecting…")
+        endpoint.reply({type: "HomeState", request_id: latestHomeRequest(), wifi_connected: true,
+                        ongoing_games: [{game_id: "active", is_my_turn: true}]})
+        compare(app.connectivityLabel(false), "Online")
+        app.openGame("active")
+        endpoint.reply(boardState("active"))
+        endpoint.reply(probe)
+        compare(app.connectivityLabel(false), "Online")
+        compare(app.wifiConnected, true)
+        compare(screen.item.gameId, "active")
+
+        app.navigateTo("HomeScreen.qml")
+        endpoint.reply({type: "HomeLoadFailed", request_id: latestHomeRequest(), wifi_connected: true,
+                        message: "Can't reach Lichess. Check your connection and retry."})
+        compare(app.connectivityLabel(false), "Offline — Lichess unreachable")
+        endpoint.reply({type: "AuthenticationRequired"})
+        endpoint.reply({type: "ConnectivityState", online: true, wifi_connected: null})
+        compare(app.connectivityLabel(false), "Online")
+    }
+
     function test_homeGamesAndRatingsAreScopedToTheCurrentVisit() {
         app.navigateTo("HomeScreen.qml")
         var home = screen.item

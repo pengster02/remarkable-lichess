@@ -623,6 +623,7 @@ fn wifi_link_state() -> Option<bool> {
 
 pub struct LichessBackend {
     qr_sign_in_available: bool,
+    sign_in_connectivity: Option<tokio::task::JoinHandle<()>>,
     token_path: PathBuf,
     // Sibling file next to the token (see settings::load/save) -- app-level
     // preferences (see backend/src/settings.rs), not per-account like the token.
@@ -693,6 +694,7 @@ impl LichessBackend {
         let settings_path = token_path.with_file_name("settings.json");
         Self {
             qr_sign_in_available: true,
+            sign_in_connectivity: None,
             token_path,
             settings_path,
             client: None,
@@ -807,7 +809,7 @@ impl LichessBackend {
                 return;
             }
         }
-        self.stop_authenticated_activity().await;
+        self.stop_account_activity().await;
         self.client = Some(client);
         self.my_id = Some(my_id);
         self.username = Some(username.clone());
@@ -853,15 +855,15 @@ impl LichessBackend {
         self.spawn_sign_in(replier, request, verify_sign_in(token, self.account_profile.clone()));
     }
 
-    /// The top status bar is on every screen, but every other connectivity
-    /// report comes out of Home loading, which returns early without a
-    /// token -- so before sign-in nothing ever set it and it sat on
-    /// "Connecting..." forever. Detached so the sign-in QR isn't held up behind
-    /// a network round trip.
-    fn spawn_connectivity_report(&self, replier: &BackendReplier<Self>) {
+    // Awaiting the probe would hold up sign-in. Detaching it lets an old
+    // Offline report arrive after sign-in or frontend replacement.
+    fn spawn_connectivity_report(&mut self, replier: &BackendReplier<Self>) {
+        if self.client.is_some() || self.sign_in_connectivity.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
         let replier = replier.clone();
         let write_lock = Arc::clone(&self.write_lock);
-        tokio::spawn(async move {
+        self.sign_in_connectivity = Some(tokio::spawn(async move {
             let wifi_connected = wifi_link_state();
             // No point probing Lichess when the link itself is down, and the
             // wait would be a timeout rather than an answer.
@@ -879,7 +881,7 @@ impl LichessBackend {
                 &write_lock,
                 &BackendMessage::ConnectivityState { online, wifi_connected, message },
             );
-        });
+        }));
     }
 
     async fn start_qr_sign_in(&mut self, replier: &BackendReplier<Self>, request_id: Option<u32>) {
@@ -1530,13 +1532,14 @@ impl LichessBackend {
     }
 
     async fn clear_authenticated_account(&mut self) {
-        self.stop_authenticated_activity().await;
+        self.stop_account_activity().await;
         self.client = None;
         self.my_id = None;
         self.username = None;
     }
 
-    async fn stop_authenticated_activity(&mut self) {
+    async fn stop_account_activity(&mut self) {
+        stop_task(&mut self.sign_in_connectivity).await;
         self.review_scope = None;
         stop_task(&mut self.opening_explorer).await;
         stop_game_request(&mut self.pgn_export).await;
@@ -3103,11 +3106,12 @@ impl AppLoadBackend for LichessBackend {
     async fn handle_message(&mut self, replier: &BackendReplier<Self>, message: Message) {
         if message.msg_type == MSG_SYSTEM_TERMINATE {
             self.stop_sign_in(None).await;
-            self.stop_authenticated_activity().await;
+            self.stop_account_activity().await;
             return;
         }
         if message.msg_type == MSG_SYSTEM_NEW_COORDINATOR {
             // The new frontend starts its request sequence over.
+            stop_task(&mut self.sign_in_connectivity).await;
             self.review_scope = None;
             stop_task(&mut self.opening_explorer).await;
             stop_game_request(&mut self.pgn_export).await;

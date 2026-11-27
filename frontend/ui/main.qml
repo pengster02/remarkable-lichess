@@ -92,9 +92,8 @@ Rectangle {
     property int requestSequence: 0
     property var pendingReview: null
 
-    // Connectivity lives at the root (not per-screen) so the persistent top bar
-    // can show it on every screen -- fed by the backend's ConnectivityState (see
-    // the message router below and backend_app.rs's wifi_link_state).
+    // Keep the last report across screens. The sign-in probe and authenticated
+    // Home replies describe different phases of the connection.
     property bool connectivityKnown: false
     property bool online: false
     property var wifiConnected: null
@@ -444,6 +443,14 @@ Rectangle {
                     root.pendingInvitation = null
                     pgnExport.reset()
                 }
+                if (!root.hasToken) {
+                    // A replayed sign-in does not check the network. Keeping the
+                    // old probe or assuming Online can show the wrong startup state.
+                    root.connectivityKnown = false
+                    root.online = false
+                    root.wifiConnected = null
+                    root.connectionMessage = ""
+                }
                 root.hasToken = true
                 root.authenticationState = "authenticated"
                 root.username = msg.username || ""
@@ -474,7 +481,7 @@ Rectangle {
                     screenLoader.item.handleMessage(msg)
                 }
             } else if (msg.type === "ConnectivityState") {
-                root.applyConnectivity(msg)
+                if (!root.hasToken) root.applyConnectivity(msg)
             } else if (msg.type === "HomeState" || msg.type === "HomeLoadFailed" ||
                        msg.type === "HomeRatings") {
                 var home = screenLoader.item
