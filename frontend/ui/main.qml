@@ -497,7 +497,8 @@ Rectangle {
                        msg.type === "ChallengeActionFailed") {
                 if (msg.type === "ChallengeActionFailed") challengeActionCooldown.extend(msg.retry_after_ms)
                 root.handleChallengeResponse(msg)
-            } else if (msg.type === "GameFinished" || msg.type === "AccountEventsResumed") {
+            } else if (msg.type === "GameFinished" || msg.type === "AccountEventsResumed" ||
+                       msg.type === "HomeGameUpdated") {
                 var homeForEvent = screenLoader.item
                 if (root.hasToken && homeForEvent && homeForEvent.acceptsHomeReply) {
                     homeForEvent.handleMessage(msg)

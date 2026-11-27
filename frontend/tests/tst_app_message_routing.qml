@@ -1759,6 +1759,43 @@ TestCase {
         app.setLiveClockEnabled(true)
     }
 
+    function test_reconnectedHomeUpdatesKnownTurnsAndClocksDuringCooldown() {
+        app.navigateTo("HomeScreen.qml")
+        app.setLiveClockEnabled(false)
+        var home = screen.item
+        var request = latestHomeRequest()
+        var waiting = {game_id: "replay01", opponent_name: "Replay", is_my_turn: false}
+        var other = {game_id: "other001", opponent_name: "Other", is_my_turn: true,
+                     correspondence_seconds_left: 300}
+        endpoint.reply({type: "HomeLoadFailed", request_id: request, retry_after_ms: 5000,
+                        cached_games: {games: [waiting, other], age_ms: 21750}})
+        endpoint.reply({type: "AccountEventsResumed"})
+        var nowPlaying = Object.assign({}, waiting, {is_my_turn: true, correspondence_seconds_left: 100})
+        endpoint.reply({type: "HomeGameUpdated", game: nowPlaying})
+        compare(home.ongoingGames.map(function(game) { return game.game_id }), ["replay01", "other001"])
+        verify(home.ongoingGames[0].is_my_turn)
+        compare(home.correspondenceTimeLeftMs(waiting.game_id), 100000)
+        compare(home.correspondenceTimeLeftMs(other.game_id), 279000)
+        verify(findChild(home, "homeGameSummary").text.indexOf("your move") !== -1)
+
+        var resume = findChild(home, "homeResumeButton")
+        endpoint.reply({type: "HomeGameUpdated", game: Object.assign({}, nowPlaying, {correspondence_seconds_left: 80})})
+        compare(findChild(home, "homeResumeButton"), resume)
+        compare(home.correspondenceTimeLeftMs(waiting.game_id), 80000)
+        endpoint.reply({type: "HomeGameUpdated", game: waiting})
+        verify(!home.ongoingGames[0].is_my_turn)
+        compare(home.correspondenceTimeLeftMs(waiting.game_id), null)
+        compare(home.correspondenceTimeLeftMs(other.game_id), 279000)
+        wait(350)
+        compare(latestHomeRequest(), request)
+        verify(!findChild(home, "homeGamesRefreshButton").enabled)
+
+        endpoint.reply({type: "GameFinished", game_id: waiting.game_id})
+        endpoint.reply({type: "HomeGameUpdated", game: nowPlaying})
+        compare(home.ongoingGames, [other])
+        app.setLiveClockEnabled(true)
+    }
+
     function test_latestSelectionGetsItsOwnReplayAndHeader() {
         var first = choose("first")
         var messageCount = endpoint.sentMessages.length
@@ -4262,6 +4299,8 @@ TestCase {
         app.navigateTo("SeekScreen.qml")
         screen.item.submitSeek()
         endpoint.reply({type: "SeekCreated", request_id: screen.item.matchRequestId})
+        verify(screen.item.waiting)
+        endpoint.reply({type: "HomeGameUpdated", game: {game_id: "previous", board_supported: true}})
         verify(screen.item.waiting)
         endpoint.reply({type: "GameStarted", game_id: "challenge", from_realtime_lobby: false})
         verify(String(screen.source).endsWith("SeekScreen.qml"))

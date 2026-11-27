@@ -612,6 +612,10 @@ Rectangle {
         }
         homeScreen.correspondenceNowMs = receivedAtMs
         homeScreen.correspondenceClocks = clocks
+        homeScreen.updateGameRows(next)
+    }
+
+    function updateGameRows(next) {
         var shown = homeScreen.ongoingGames
         // An equal snapshot should keep the Resume delegates and their input state.
         if (next.length !== shown.length || next.some(function(game, index) {
@@ -621,6 +625,21 @@ Rectangle {
                 game.variant !== old.variant || game.board_supported !== old.board_supported ||
                 game.board_unavailable_reason !== old.board_unavailable_reason
         })) homeScreen.ongoingGames = next
+    }
+
+    function showGamePreview(game) {
+        if (homeScreen.loadError.length === 0 || homeScreen.finishedGameIds.indexOf(game.game_id) !== -1) return
+        var clocks = Object.assign({}, homeScreen.correspondenceClocks)
+        delete clocks[game.game_id]
+        homeScreen.correspondenceNowMs = Date.now()
+        homeScreen.recordGameClock(clocks, game, 0, homeScreen.correspondenceNowMs)
+        homeScreen.correspondenceClocks = clocks
+
+        var next = homeScreen.ongoingGames.slice()
+        var index = next.findIndex(function(listed) { return listed.game_id === game.game_id })
+        if (index === -1) next.push(game)
+        else next[index] = game
+        homeScreen.updateGameRows(next)
     }
 
     function handleMessage(msg) {
@@ -651,18 +670,12 @@ Rectangle {
             }
         } else if (msg.type === "GameStarted") {
             var alreadyListed = homeScreen.ongoingGames.some(function(game) { return game.game_id === msg.game_id })
+            if (msg.home_game) homeScreen.showGamePreview(msg.home_game)
             if (!alreadyListed && homeScreen.finishedGameIds.indexOf(msg.game_id) === -1) {
-                if (msg.home_game && homeScreen.loadError.length > 0) {
-                    // Keep the existing clock receipts. Rebuilding the list would
-                    // reset them, and waiting for GET leaves a new start hidden in a cooldown.
-                    var clocks = Object.assign({}, homeScreen.correspondenceClocks)
-                    homeScreen.correspondenceNowMs = Date.now()
-                    homeScreen.recordGameClock(clocks, msg.home_game, 0, homeScreen.correspondenceNowMs)
-                    homeScreen.correspondenceClocks = clocks
-                    homeScreen.ongoingGames = homeScreen.ongoingGames.concat([msg.home_game])
-                }
                 homeScreen.queueGamesRefresh()
             }
+        } else if (msg.type === "HomeGameUpdated") {
+            homeScreen.showGamePreview(msg.game)
         } else if (msg.type === "GameFinished") {
             if (homeScreen.finishedGameIds.indexOf(msg.game_id) !== -1) return
             var remaining = homeScreen.ongoingGames.filter(function(game) { return game.game_id !== msg.game_id })
