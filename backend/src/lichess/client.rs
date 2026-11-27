@@ -80,6 +80,7 @@ pub(crate) fn is_rate_limited(error: &anyhow::Error) -> bool {
 /// Shared with the OAuth sign-in flow (see lichess::oauth), which talks to the
 /// same host before any client exists to hold it.
 pub const LICHESS_BASE_URL: &str = "https://lichess.org";
+pub(super) const LICHESS_USER_AGENT: &str = "remarkable-lichess";
 const OPENING_EXPLORER_URL: &str = "https://explorer.lichess.org";
 
 /// Unauthenticated "is Lichess there at all" check, for the sign-in screen --
@@ -94,6 +95,7 @@ pub async fn is_reachable(base_url: &str) -> bool {
     let Ok(http) = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(8))
         .timeout(std::time::Duration::from_secs(10))
+        .user_agent(LICHESS_USER_AGENT)
         .build()
     else {
         return false;
@@ -161,7 +163,7 @@ impl LichessClient {
         // the full request would kill those by design, not just dead connects.
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(15))
-            .user_agent("remarkable-lichess")
+            .user_agent(LICHESS_USER_AGENT)
             .build()
             .expect("reqwest client with a timeout always builds");
         Self {
@@ -171,7 +173,7 @@ impl LichessClient {
             no_redirect_http: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
-                .user_agent("remarkable-lichess")
+                .user_agent(LICHESS_USER_AGENT)
                 .build()
                 .expect("nonredirecting HTTP client always builds"),
             base_url,
