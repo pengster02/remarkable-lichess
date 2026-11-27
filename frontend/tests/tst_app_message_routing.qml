@@ -2095,6 +2095,32 @@ TestCase {
         verify(String(screen.source).endsWith("LoginScreen.qml"))
     }
 
+    function test_historyOffersPgnForOnlyTheReplayThatExceededTheLimit() {
+        var history = screen.item
+        endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest, games: [
+            {game_id: "large001", review_supported: true},
+            {game_id: "small001", review_supported: true}
+        ]})
+        history.selectGameForReview(history.games[0])
+        var request = gameMoveRequests().slice(-1)[0]
+        endpoint.reply({type: "GameMovesFailed", request_id: request.request_id, game_id: "small001",
+                        review_supported: false, message: "Wrong game"})
+        verify(history.openingReview)
+        verify(history.games[0].review_supported)
+        endpoint.reply({type: "GameMovesFailed", request_id: request.request_id,
+                        review_supported: false, message: "This game is too large for Review."})
+        verify(!history.openingReview)
+        compare(history.games[0].review_supported, false)
+        verify(history.games[1].review_supported)
+        var card = findChild(history, "historyGameRow")
+        verify(card && waitForRendering(card))
+        mouseClick(card, card.width / 2, card.height / 2)
+        var dialog = findChild(app, "pgnExportDialog")
+        verify(dialog.visible && !dialog.saving)
+        compare(dialog.gameId, "large001")
+        compare(gameMoveRequests().length, 1)
+    }
+
     function test_finishedBoardExportsUnsupportedVariantAndCancelsOnSelectionChange() {
         app.openGame("atomic01")
         var board = screen.item

@@ -576,6 +576,12 @@ Rectangle {
             }
         } else if (msg.type === "GameMovesFailed") {
             gameHistoryScreen.errorMessage = msg.message
+            if (msg.review_supported === false) {
+                gameHistoryScreen.games = gameHistoryScreen.games.map(function(game) {
+                    return game.game_id === msg.game_id
+                        ? Object.assign({}, game, {review_supported: false}) : game
+                })
+            }
         }
     }
 }

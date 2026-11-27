@@ -555,7 +555,7 @@ Rectangle {
                         (msg.game_id !== undefined && msg.game_id !== request.gameId)) return
                 root.pendingReview = null
                 if (msg.type === "GameMovesFailed") {
-                    screenLoader.item.handleMessage(msg)
+                    screenLoader.item.handleMessage(Object.assign({game_id: request.gameId}, msg))
                 } else {
                     root.reviewGame = request.game && typeof msg.rating_diff === "number"
                         ? Object.assign({}, request.game, {rating_diff: msg.rating_diff})

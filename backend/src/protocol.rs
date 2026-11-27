@@ -920,6 +920,8 @@ pub enum BackendMessage {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         retry_after_ms: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        review_supported: Option<bool>,
     },
     ReviewVariations { review_id: u32, variations: ReviewVariations },
     ReviewVariationsLoadFailed { review_id: u32, message: String },
@@ -1393,6 +1395,7 @@ mod tests {
             request_id: 7,
             message: "unavailable".into(),
             retry_after_ms: None,
+            review_supported: None,
         }).unwrap();
         assert_eq!(failure, serde_json::json!({
             "type": "GameMovesFailed", "request_id": 7, "message": "unavailable",
@@ -1401,9 +1404,19 @@ mod tests {
             request_id: 8,
             message: "limited".into(),
             retry_after_ms: Some(60000),
+            review_supported: None,
         }).unwrap();
         assert_eq!(limited, serde_json::json!({
             "type": "GameMovesFailed", "request_id": 8, "message": "limited", "retry_after_ms": 60000,
+        }));
+        let unavailable = serde_json::to_value(BackendMessage::GameMovesFailed {
+            request_id: 9,
+            message: "too large".into(),
+            retry_after_ms: None,
+            review_supported: Some(false),
+        }).unwrap();
+        assert_eq!(unavailable, serde_json::json!({
+            "type": "GameMovesFailed", "request_id": 9, "message": "too large", "review_supported": false,
         }));
     }
 

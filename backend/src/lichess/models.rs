@@ -529,6 +529,10 @@ pub struct MoveJudgment {
     pub comment: Option<String>,
 }
 
+// Generated captions are short. Truncating can change the advice, while
+// accepting arbitrary lengths can overwhelm the move sheet and its reply.
+const MAX_JUDGMENT_COMMENT_BYTES: usize = 512;
+
 // GET /game/export/{id} (Accept: application/json) response -- confirmed
 // against lichess-org/api's games-exportOneGame.json.yaml example and
 // game-export-gameId.yaml's own query params. That endpoint returns dozens of
@@ -596,7 +600,8 @@ where
                 return None;
             }
             let comment = judgment.get("comment").and_then(serde_json::Value::as_str)
-                .filter(|comment| !comment.trim().is_empty()).map(str::to_owned);
+                .filter(|comment| comment.len() <= MAX_JUDGMENT_COMMENT_BYTES && !comment.trim().is_empty())
+                .map(str::to_owned);
             Some(MoveJudgment { name: name.into(), comment })
         });
         GameMoveAnalysis { score, judgment }
@@ -934,6 +939,24 @@ mod tests {
             assert_eq!(export.moves, "e4");
             assert!(export.analysis.is_empty());
         }
+    }
+
+    #[test]
+    fn game_export_bounds_caption_bytes_without_losing_the_judgment() {
+        let caption = "♞".repeat(170) + "!!";
+        assert_eq!(caption.len(), MAX_JUDGMENT_COMMENT_BYTES);
+        let export: GameExport = serde_json::from_value(serde_json::json!({
+            "id": "abcd1234", "moves": "e4 e5", "analysis": [
+                {"eval": 0, "judgment": {"name": "Mistake", "comment": caption}},
+                {"eval": 25, "judgment": {"name": "Blunder", "comment": format!("{caption}!")}}
+            ]
+        })).unwrap();
+        assert_eq!(export.analysis[0].judgment.as_ref().unwrap().comment.as_deref(), Some(caption.as_str()));
+        let oversized = &export.analysis[1];
+        assert_eq!(oversized.score, Some(ArchivedScore::Centipawns(25)));
+        let judgment = oversized.judgment.as_ref().unwrap();
+        assert_eq!(judgment.name, "Blunder");
+        assert_eq!(judgment.comment, None);
     }
 
     #[test]
