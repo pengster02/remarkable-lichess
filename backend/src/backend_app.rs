@@ -73,17 +73,23 @@ impl StreamReconnectDelay {
 }
 
 #[derive(Clone, Default)]
-struct StreamCooldown(Arc<std::sync::Mutex<Option<Instant>>>);
+struct RateLimitCooldown(Arc<std::sync::Mutex<Option<Instant>>>);
 
-impl StreamCooldown {
+impl RateLimitCooldown {
     fn start(&self) {
-        *self.0.lock().expect("stream cooldown lock poisoned") =
+        *self.0.lock().expect("rate-limit lock poisoned") =
             Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
     }
 
     fn pending_deadline(&self) -> Option<Instant> {
-        self.0.lock().expect("stream cooldown lock poisoned")
+        self.0.lock().expect("rate-limit lock poisoned")
             .filter(|deadline| *deadline > Instant::now())
+    }
+
+    fn remaining_ms(&self) -> Option<u32> {
+        self.pending_deadline().map(|deadline| {
+            deadline.saturating_duration_since(Instant::now()).as_millis().max(1) as u32
+        })
     }
 }
 
@@ -237,12 +243,27 @@ impl MatchRequest {
     }
 
     fn failure(&self, message: String) -> BackendMessage {
+        self.failed_reply(message, None)
+    }
+
+    fn rate_limited(&self, retry_after_ms: u32) -> BackendMessage {
+        let seconds = retry_after_ms.div_ceil(1000);
+        self.failed_reply(
+            format!("Lichess is limiting game creation. Try again in {seconds}s."), Some(retry_after_ms),
+        )
+    }
+
+    fn failed_reply(&self, message: String, retry_after_ms: Option<u32>) -> BackendMessage {
         match (self.request_id, &self.kind) {
-            (Some(request_id), MatchKind::Seek { .. }) => BackendMessage::SeekFailed { request_id, message },
-            (Some(request_id), MatchKind::Direct { .. }) => {
-                BackendMessage::ChallengeCreateFailed { request_id, message }
+            (Some(request_id), MatchKind::Seek { .. }) => {
+                BackendMessage::SeekFailed { request_id, message, retry_after_ms }
             }
-            (Some(request_id), _) => BackendMessage::MatchCreationFailed { request_id, message },
+            (Some(request_id), MatchKind::Direct { .. }) => {
+                BackendMessage::ChallengeCreateFailed { request_id, message, retry_after_ms }
+            }
+            (Some(request_id), _) => {
+                BackendMessage::MatchCreationFailed { request_id, message, retry_after_ms }
+            }
             (None, _) => BackendMessage::ErrorMsg { message },
         }
     }
@@ -476,11 +497,14 @@ pub struct LichessBackend {
     username: Option<String>,
     session: Arc<Mutex<Option<GameSession>>>,
     pending_match: Option<GameRequest>,
+    // Per-form state can be bypassed by switching actions. An account-wide
+    // deadline would also block requests needed for games already in progress.
+    match_creation_cooldown: RateLimitCooldown,
     account_stream: Option<AccountStream>,
     // A task-local deadline is lost on replacement. A shared limit across stream
     // families could block a Board connection when only account events were limited.
-    account_stream_cooldown: StreamCooldown,
-    game_stream_cooldown: StreamCooldown,
+    account_stream_cooldown: RateLimitCooldown,
+    game_stream_cooldown: RateLimitCooldown,
     pending_challenge_action: Option<GameRequest>,
     home_games: Option<tokio::task::JoinHandle<()>>,
     home_ratings: Option<tokio::task::JoinHandle<()>>,
@@ -528,9 +552,10 @@ impl LichessBackend {
             username: None,
             session: Arc::new(Mutex::new(None)),
             pending_match: None,
+            match_creation_cooldown: RateLimitCooldown::default(),
             account_stream: None,
-            account_stream_cooldown: StreamCooldown::default(),
-            game_stream_cooldown: StreamCooldown::default(),
+            account_stream_cooldown: RateLimitCooldown::default(),
+            game_stream_cooldown: RateLimitCooldown::default(),
             pending_challenge_action: None,
             home_games: None,
             home_ratings: None,
@@ -1216,6 +1241,10 @@ impl LichessBackend {
             }
         }
         stop_game_request(&mut self.pending_match).await;
+        if let Some(retry_after_ms) = self.match_creation_cooldown.remaining_ms() {
+            self.send(replier, &request.rate_limited(retry_after_ms));
+            return;
+        }
         let request_id = request.request_id;
         let (creation_done, completion) = if request.is_creation() {
             let (done, in_flight) = oneshot::channel();
@@ -1225,6 +1254,7 @@ impl LichessBackend {
         };
         let task = tokio::spawn(run_match_request(
             client, replier.clone(), self.write_lock.clone(), request, creation_done,
+            self.match_creation_cooldown.clone(),
         ));
         self.pending_match = Some(GameRequest { request_id, task, completion });
     }
@@ -1747,7 +1777,7 @@ async fn read_account_events(
     write_lock: &Arc<std::sync::Mutex<()>>,
     refresh_challenges: &mpsc::Sender<()>,
     credential_rejected: &Arc<AtomicBool>,
-    cooldown: &StreamCooldown,
+    cooldown: &RateLimitCooldown,
 ) {
     let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(30));
     // Reconnect replays ongoing games. A per-connection set repeats old
@@ -2298,16 +2328,17 @@ async fn run_match_request(
     write_lock: Arc<std::sync::Mutex<()>>,
     request: MatchRequest,
     creation_done: Option<oneshot::Sender<()>>,
+    cooldown: RateLimitCooldown,
 ) {
     let MatchRequest { minutes, increment, request_id, .. } = request;
-    let reply = match &request.kind {
+    let result = match &request.kind {
         MatchKind::Seek { rated, color } => match client.create_seek(minutes, increment, *rated, color).await {
             Ok(mut lines) => {
                 send_locked(&replier, &write_lock, &BackendMessage::SeekCreated { request_id });
                 while let Ok(Some(_)) = next_stream_line(&mut lines, STREAM_IDLE_TIMEOUT).await {}
-                BackendMessage::SeekEnded { request_id }
+                Ok(BackendMessage::SeekEnded { request_id })
             }
-            Err(error) => request.failure(error.to_string()),
+            Err(error) => Err(error),
         },
         MatchKind::Direct { username, rated, color } => match client.create_challenge(
             username, minutes, increment, *rated, color,
@@ -2323,18 +2354,16 @@ async fn run_match_request(
                     Some(ChallengeResolution::Canceled) => Some("Challenge canceled.".into()),
                     None => Some("Lost the challenge connection. Check Home if the game started.".into()),
                 };
-                BackendMessage::ChallengeResolved {
+                Ok(BackendMessage::ChallengeResolved {
                     game_id, request_id, error, connection_lost: resolution.is_none().then_some(true),
-                }
+                })
             }
-            Err(error) => request.failure(error.to_string()),
+            Err(error) => Err(error),
         },
-        MatchKind::Computer { level, color } => match client.challenge_ai(*level, minutes, increment, color).await {
-            Ok(game_id) => BackendMessage::ComputerGameCreated { game_id, request_id },
-            Err(error) => request.failure(error.to_string()),
-        },
-        MatchKind::Open { rated } => match client.create_open_challenge(minutes, increment, *rated).await {
-            Ok(challenge) => BackendMessage::OpenChallengeCreated {
+        MatchKind::Computer { level, color } => client.challenge_ai(*level, minutes, increment, color).await
+            .map(|game_id| BackendMessage::ComputerGameCreated { game_id, request_id }),
+        MatchKind::Open { rated } => client.create_open_challenge(minutes, increment, *rated).await
+            .map(|challenge| BackendMessage::OpenChallengeCreated {
                 game_id: challenge.id,
                 qr_codes: Box::new(OpenChallengeQrCodes::from_links(
                     &challenge.url, &challenge.url_white, &challenge.url_black,
@@ -2343,9 +2372,15 @@ async fn run_match_request(
                 url_white: challenge.url_white,
                 url_black: challenge.url_black,
                 request_id,
-            },
-            Err(error) => request.failure(error.to_string()),
-        },
+            }),
+    };
+    let reply = match result {
+        Ok(reply) => reply,
+        Err(error) if is_rate_limited(&error) => {
+            cooldown.start();
+            request.rate_limited(LICHESS_RATE_LIMIT_DELAY.as_millis() as u32)
+        }
+        Err(error) => request.failure(error.to_string()),
     };
     drop(creation_done);
     send_locked(&replier, &write_lock, &reply);
@@ -2403,7 +2438,7 @@ fn spawn_game_stream(
     session_handle: Arc<Mutex<Option<GameSession>>>,
     my_id: String,
     write_lock: Arc<std::sync::Mutex<()>>,
-    cooldown: StreamCooldown,
+    cooldown: RateLimitCooldown,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reconnect = StreamReconnectDelay::new(Duration::from_secs(5));
@@ -2733,6 +2768,9 @@ impl AppLoadBackend for LichessBackend {
                 }
             }
             self.handle_request_settings(replier);
+            if let Some(retry_after_ms) = self.match_creation_cooldown.remaining_ms() {
+                self.send(replier, &BackendMessage::MatchCreationCooldown { retry_after_ms });
+            }
             if self.account_stream.as_ref().is_some_and(|account| account.credential_rejected.load(Ordering::Relaxed)) {
                 self.reject_authenticated_account(replier).await;
             } else if self.client.is_none() {

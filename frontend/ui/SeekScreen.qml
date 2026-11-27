@@ -37,8 +37,12 @@ Rectangle {
     readonly property bool creatingMatch: pendingAction === "open" || pendingAction === "computer"
     readonly property bool canCancelMatch: matchRequestId > 0 && (connectingMatch || waiting)
     readonly property bool showingSetup: !waiting && !connectingMatch && !seekEnded
-    readonly property bool canSubmit: !waiting && pendingAction.length === 0
+    property bool matchCreationCoolingDown: false
+    readonly property bool canSubmit: !waiting && pendingAction.length === 0 && !matchCreationCoolingDown
     property string formError: ""
+    readonly property string setupNotice: matchCreationCoolingDown
+        ? "Lichess is limiting game creation. Try again shortly."
+        : formError
     property Item setupRetryItem: null
     // Immediate feedback keeps the form in view. A shared floor rejects valid
     // direct games, while waiting for the backend would briefly hide the form.
@@ -312,8 +316,8 @@ Rectangle {
         anchors.bottom: backButton.top
         anchors.margins: theme.pageSideMargin
         anchors.bottomMargin: theme.spacingSmall
-        visible: seekScreen.formError.length > 0
-        text: seekScreen.formError
+        visible: seekScreen.setupNotice.length > 0
+        text: seekScreen.setupNotice
         textFormat: Text.PlainText
         font.pixelSize: theme.fontLabel
         wrapMode: Text.Wrap
@@ -484,7 +488,7 @@ Rectangle {
             text: seekScreen.seekEnded ? "Search again" : "Find an opponent"
             highlighted: true
             visible: seekScreen.showingSetup || seekScreen.seekEnded
-            enabled: seekScreen.pendingAction.length === 0
+            enabled: seekScreen.canSubmit
             onClicked: seekScreen.submitSeek()
         }
 
@@ -526,7 +530,7 @@ Rectangle {
                 text: seekScreen.pendingAction === "challenge"
                     ? "Sending challenge…"
                     : "Challenge"
-                enabled: seekScreen.pendingAction.length === 0
+                enabled: seekScreen.canSubmit
                 onClicked: seekScreen.submitChallenge()
             }
         }
@@ -539,7 +543,7 @@ Rectangle {
                 ? "Creating link…"
                 : "Create a shareable challenge"
             visible: seekScreen.showingSetup && seekScreen.openChallengeUrls === null
-            enabled: seekScreen.pendingAction.length === 0
+            enabled: seekScreen.canSubmit
             onClicked: seekScreen.submitOpenChallenge()
         }
 
@@ -587,7 +591,7 @@ Rectangle {
                 text: seekScreen.pendingAction === "computer"
                     ? "Starting game…"
                     : "Start casual computer game"
-                enabled: seekScreen.pendingAction.length === 0
+                enabled: seekScreen.canSubmit
                 onClicked: seekScreen.submitComputerGame()
             }
         }
@@ -635,7 +639,7 @@ Rectangle {
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
             seekScreen.seekEnded = false
-            seekScreen.showSetupError(msg.message || "Lichess could not find an opponent.",
+            seekScreen.showSetupError(msg.retry_after_ms > 0 ? "" : msg.message || "Lichess could not find an opponent.",
                                       findOpponentButton, true)
         } else if (msg.type === "SeekEnded") {
             if (!seekScreen.waiting || msg.request_id !== seekScreen.matchRequestId) return
@@ -652,7 +656,7 @@ Rectangle {
             if (seekScreen.pendingAction !== "challenge" || msg.request_id !== seekScreen.matchRequestId) return
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
-            seekScreen.showSetupError(msg.message || "Lichess could not create the challenge.",
+            seekScreen.showSetupError(msg.retry_after_ms > 0 ? "" : msg.message || "Lichess could not create the challenge.",
                                       playerChallengeSection, true)
         } else if (msg.type === "ChallengeResolved") {
             if (!seekScreen.waiting || msg.game_id !== seekScreen.waitingChallengeGameId ||
@@ -685,7 +689,7 @@ Rectangle {
             var retry = seekScreen.pendingAction === "computer" ? computerGameButton : openChallengeButton
             seekScreen.pendingAction = ""
             seekScreen.clearWaiting()
-            seekScreen.showSetupError(msg.message || "Lichess could not create that game.", retry)
+            seekScreen.showSetupError(msg.retry_after_ms > 0 ? "" : msg.message || "Lichess could not create that game.", retry)
         } else if (msg.type === "GameStarted") {
             if (seekScreen.trackingDirectChallenge) {
                 if (msg.board_supported === false || !msg.game_id) return

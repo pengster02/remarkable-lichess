@@ -122,6 +122,10 @@ pub async fn is_reachable(base_url: &str) -> bool {
 /// falls back to a bounded plain-text reason and ignores HTML error pages.
 async fn error_from_response(context: &str, resp: reqwest::Response) -> anyhow::Error {
     let status = resp.status();
+    // Record the rate limit even if the body stalls and the caller cancels.
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return http_response_error(context, status, None);
+    }
     let body = resp.text().await.unwrap_or_default();
     let json_reason = serde_json::from_str::<serde_json::Value>(&body)
         .ok()
@@ -221,10 +225,6 @@ impl LichessClient {
             return Ok(response);
         }
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            // A replacement task must inherit the limit even if the response body stalls.
-            return Err(http_response_error(context, status, None));
-        }
         let error = tokio::time::timeout_at(deadline, error_from_response(context, response))
             .await
             .unwrap_or_else(|_| http_response_error(context, status, None));
@@ -450,9 +450,6 @@ impl LichessClient {
         let response = self.send_logged(context, self.bearer(builder)).await?;
         match response.status() {
             status if status.is_success() => Ok(response),
-            // A slow error body can delay the gate or lose the 429 when the user cancels.
-            status @ reqwest::StatusCode::TOO_MANY_REQUESTS =>
-                Err(http_response_error(context, status, None)),
             _ => Err(error_from_response(context, response).await),
         }
     }
