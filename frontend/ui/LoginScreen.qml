@@ -16,6 +16,7 @@ Rectangle {
     property var qrRows: []
     property int qrModules: 0
     property string errorMessage: ""
+    property string savedSignInError: ""
     property bool manualEntry: !qrSignInAvailable
 
     // What the screen is showing, named once here instead of repeating the
@@ -72,6 +73,17 @@ Rectangle {
                 title: "Lichess"
                 detail: "Chess, made for paper"
                 pieceSource: "../assets/pieces/cburnett/wK.png"
+            }
+
+            Text {
+                objectName: "savedSignInErrorText"
+                visible: loginScreen.savedSignInError.length > 0
+                width: parent.width
+                wrapMode: Text.WordWrap
+                textFormat: Text.PlainText
+                font.pixelSize: theme.fontLabel
+                color: theme.errorText
+                text: loginScreen.savedSignInError
             }
 
             SectionCard {
@@ -227,6 +239,7 @@ Rectangle {
         loginScreen.manualEntry = false
         loginScreen.phase = "starting"
         loginScreen.errorMessage = ""
+        loginScreen.savedSignInError = ""
         loginScreen.qrRows = []
         loginScreen.qrModules = 0
         loginScreen.authorizeUrl = ""
@@ -257,6 +270,7 @@ Rectangle {
             return
         }
         loginScreen.errorMessage = ""
+        loginScreen.savedSignInError = ""
         loginScreen.phase = "verifying"
         loginScreen.signInRequestId = loginScreen.nextRequestId()
         loginScreen.backendSender({type: "SaveToken", token: token, request_id: loginScreen.signInRequestId})
@@ -269,7 +283,9 @@ Rectangle {
 
     function handleMessage(msg) {
         if (msg.type === "TokenInvalid") {
-            loginScreen.errorMessage = msg.reason || "Lichess rejected the sign-in."
+            // An automatic QR response can clear the current attempt error.
+            // A separate message survives it without blocking either sign-in option.
+            loginScreen.savedSignInError = msg.reason || "Lichess rejected the sign-in."
             return
         }
         if (loginScreen.signInRequestId === 0 || msg.request_id !== loginScreen.signInRequestId) return
