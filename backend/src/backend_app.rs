@@ -1347,10 +1347,7 @@ impl LichessBackend {
                 return;
             }
         };
-        let rating_diff = export.players.as_ref().and_then(|players| {
-            let ParticipantPerspective::Known(color) = players.perspective(&player_id) else { return None; };
-            players.player(color).rating_diff
-        });
+        let rating_diff = export.rating_diff(&player_id);
         let exported_moves: Vec<&str> = export.moves.split_whitespace().collect();
         let replay = match crate::game::replay::replay_export(
             export.variant.as_deref(), export.initial_fen.as_deref(), &exported_moves,

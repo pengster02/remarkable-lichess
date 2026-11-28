@@ -1,5 +1,5 @@
 use serde::Deserialize;
-#[cfg(feature = "transport")]
+#[cfg(any(feature = "transport", test))]
 use shakmaty::Color;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -448,29 +448,36 @@ pub struct GamePlayers {
     pub black: GamePlayerUser,
 }
 
-#[cfg(feature = "transport")]
+#[cfg(any(feature = "transport", test))]
 pub(crate) enum ParticipantPerspective {
     Known(Color),
     Unverified,
     Foreign,
 }
 
+#[cfg(any(feature = "transport", test))]
+impl ParticipantPerspective {
+    fn from_ids(account_id: &str, white: Option<&str>, black: Option<&str>) -> Self {
+        let white = white.filter(|id| !id.is_empty());
+        let black = black.filter(|id| !id.is_empty());
+        // An omitted user is weaker evidence than two different IDs. Assuming
+        // Black invents a side, while omitting every unmatched game loses old rows.
+        match (white == Some(account_id), black == Some(account_id)) {
+            (true, false) => Self::Known(Color::White),
+            (false, true) => Self::Known(Color::Black),
+            (false, false) if white.is_some() && black.is_some() => Self::Foreign,
+            _ => Self::Unverified,
+        }
+    }
+}
+
 #[cfg(feature = "transport")]
 impl GamePlayers {
     pub(crate) fn perspective(&self, account_id: &str) -> ParticipantPerspective {
         fn user_id(player: &GamePlayerUser) -> Option<&str> {
-            player.user.as_ref()?.id.as_deref().filter(|id| !id.is_empty())
+            player.user.as_ref()?.id.as_deref()
         }
-        let white = user_id(&self.white);
-        let black = user_id(&self.black);
-        // An omitted user is weaker evidence than two different IDs. Assuming
-        // Black invents a side, while omitting every unmatched game loses old rows.
-        match (white == Some(account_id), black == Some(account_id)) {
-            (true, false) => ParticipantPerspective::Known(Color::White),
-            (false, true) => ParticipantPerspective::Known(Color::Black),
-            (false, false) if white.is_some() && black.is_some() => ParticipantPerspective::Foreign,
-            _ => ParticipantPerspective::Unverified,
-        }
+        ParticipantPerspective::from_ids(account_id, user_id(&self.white), user_id(&self.black))
     }
 
     pub(crate) fn player(&self, color: Color) -> &GamePlayerUser {
@@ -577,7 +584,8 @@ pub struct GameExport {
     // unverified, and copying the request ID cannot detect a mismatched reply.
     pub id: String,
     pub variant: Option<String>,
-    pub players: Option<GamePlayers>,
+    #[serde(default, deserialize_with = "deserialize_review_metadata")]
+    players: Option<ReviewPlayers>,
     #[serde(rename = "initialFen")]
     pub initial_fen: Option<String>,
     // A missing sequence cannot be replayed. Defaulting it invents a board,
@@ -587,6 +595,63 @@ pub struct GameExport {
     pub clocks: Vec<Option<u32>>,
     #[serde(default, deserialize_with = "deserialize_export_analysis")]
     pub analysis: Vec<GameMoveAnalysis>,
+}
+
+#[cfg(any(feature = "transport", test))]
+impl GameExport {
+    pub(crate) fn rating_diff(&self, account_id: &str) -> Option<i32> {
+        fn user_id(player: Option<&ReviewPlayer>) -> Option<&str> {
+            player?.user.as_ref()?.id.as_deref()
+        }
+        let players = self.players.as_ref()?;
+        let white = players.white.as_ref();
+        let black = players.black.as_ref();
+        match ParticipantPerspective::from_ids(account_id, user_id(white), user_id(black)) {
+            ParticipantPerspective::Known(Color::White) => white?.rating_diff,
+            ParticipantPerspective::Known(Color::Black) => black?.rating_diff,
+            _ => None,
+        }
+    }
+}
+
+// Review only needs account IDs and rating changes. The History model lets
+// unused fields block replay, and discarding both players can lose a valid change.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct ReviewPlayers {
+    #[serde(default, deserialize_with = "deserialize_review_metadata")]
+    white: Option<ReviewPlayer>,
+    #[serde(default, deserialize_with = "deserialize_review_metadata")]
+    black: Option<ReviewPlayer>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct ReviewPlayer {
+    #[serde(default, deserialize_with = "deserialize_review_metadata")]
+    user: Option<ReviewPlayerUser>,
+    #[serde(default, rename = "ratingDiff", deserialize_with = "deserialize_review_metadata")]
+    rating_diff: Option<i32>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct ReviewPlayerUser {
+    id: Option<String>,
+}
+
+fn deserialize_review_metadata<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Metadata<T> {
+        Valid(T),
+        Unusable(serde::de::IgnoredAny),
+    }
+    Ok(match Metadata::deserialize(deserializer)? {
+        Metadata::Valid(value) => Some(value),
+        Metadata::Unusable(_) => None,
+    })
 }
 
 fn deserialize_export_clocks<'de, D>(deserializer: D) -> Result<Vec<Option<u32>>, D::Error>
@@ -889,6 +954,42 @@ mod tests {
         // for the (common) case of an untimed or never-analyzed game.
         assert!(export.clocks.is_empty());
         assert_eq!(export.analysis, Vec::new());
+    }
+
+    #[test]
+    fn game_export_preserves_replay_and_only_attributes_a_unique_account_rating() {
+        use serde_json::json;
+
+        let player = json!({"user": {"id": "player", "name": false}, "ratingDiff": -7, "rating": "bad"});
+        let foreign = json!({"user": {"id": "opponent"}, "ratingDiff": 12});
+        let cases = [
+            (json!({"white": player, "black": foreign}), Some(-7)),
+            (json!({"white": foreign, "black": player}), Some(-7)),
+            (json!({"white": player, "black": {"user": {"id": 19}, "ratingDiff": 9}}), Some(-7)),
+            (json!({"white": player, "black": false}), Some(-7)),
+            (json!({"black": player}), Some(-7)),
+            (json!({"white": {"user": {"id": "player"}, "ratingDiff": 0}}), Some(0)),
+            (json!({"white": player, "black": {"user": {"id": "player"}, "ratingDiff": "bad"}}), None),
+            (json!({"white": {"user": {"id": "other"}}, "black": foreign}), None),
+            (json!({"white": {"user": {"id": "Player"}, "ratingDiff": 7}}), None),
+            (json!({"white": {"user": {"name": "player"}, "ratingDiff": 7}}), None),
+            (json!({"white": {"user": {"id": "player"}, "ratingDiff": "-7"}, "black": foreign}), None),
+            (json!({"white": {"user": {"id": "player"}, "ratingDiff": 2147483648_u32}}), None),
+            (json!({"white": {"user": {"id": "player"}}, "black": foreign}), None),
+            (json!(null), None),
+            (json!("bad"), None),
+        ];
+        for (players, expected) in cases {
+            let export: GameExport = serde_json::from_value(json!({
+                "id": "abcd1234", "moves": "e4 e5", "players": players,
+                "clocks": [3000, 2990], "analysis": [{"eval": 25}, {"mate": -2}],
+            })).unwrap();
+            assert_eq!(export.rating_diff("player"), expected, "{players}");
+            assert_eq!(export.moves, "e4 e5");
+            assert_eq!(export.clocks, [Some(3000), Some(2990)]);
+            assert_eq!(export.analysis[0].score, Some(ArchivedScore::Centipawns(25)));
+            assert_eq!(export.analysis[1].score, Some(ArchivedScore::Mate(-2)));
+        }
     }
 
     #[test]
