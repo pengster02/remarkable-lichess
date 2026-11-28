@@ -4752,7 +4752,7 @@ TestCase {
     function test_loadedBoardKeepsReconnectFailureReadable_data() {
         return [
             {tag: "Paper Pro Move", width: 954, height: 1696, shrinks: false},
-            {tag: "short viewport", width: 620, height: 1100, shrinks: true}
+            {tag: "inline notice with room left for the board", width: 620, height: 1260, shrinks: true}
         ]
     }
 
@@ -4798,6 +4798,59 @@ TestCase {
         if (data.shrinks) verify(square.width < originalSquareSize)
         else compare(square.width, originalSquareSize)
         verify(back.visible && back.enabled)
+        mouseClick(back, back.width / 2, back.height / 2)
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+    }
+
+    function test_shortBoardKeepsAPositionAndMakesConnectionDetailsReachable_data() {
+        return [{tag: "900 pixels", height: 900}, {tag: "1100 pixels", height: 1100}]
+    }
+
+    function test_shortBoardKeepsAPositionAndMakesConnectionDetailsReachable(data) {
+        width = 620
+        height = data.height
+        app.openGame("selected")
+        endpoint.reply(boardState("selected"))
+        var board = screen.item
+        verify(waitForRendering(board))
+        var message = "Updates stopped. Reference <board>" + "LongReference".repeat(10) +
+            ". Return to Home and reopen this game."
+        endpoint.reply({type: "GameStreamFailed", game_id: "selected", message: message})
+
+        var square = findChild(board, "boardSquare-a8")
+        var toolbar = findChild(board, "boardToolbar")
+        var detailButton = findChild(board, "boardGameActionsButton")
+        var back = findChild(board, "boardBackButton")
+        var inlineNotice = findChild(board, "boardStreamFailureNotice")
+        tryVerify(function() { return toolbar.y + toolbar.height <= back.y })
+        verify(square.width > 0)
+        verify(back.visible && detailButton.enabled && !inlineNotice.visible)
+        compare(detailButton.text, "Connection details")
+        compare(board.fen, startFen)
+        verify(!board.moveInputAvailable)
+        var sent = endpoint.sentMessages.length
+        mouseClick(detailButton, detailButton.width / 2, detailButton.height / 2)
+        var dialog = findChild(board, "boardStreamFailureDialog")
+        verify(dialog && dialog.visible)
+        var detail = findChild(dialog, "boardStreamFailureDetail")
+        compare(detail.text, message)
+        compare(detail.textFormat, Text.PlainText)
+        verify(!detail.truncated && detail.contentWidth <= detail.width)
+        var close = findChild(dialog, "boardStreamFailureClose")
+        verify(close.visible && close.enabled)
+        verify(waitForRendering(dialog))
+        mouseClick(close, close.width / 2, close.height / 2)
+        tryVerify(function() { return !findChild(board, "boardStreamFailureDialog") })
+        compare(endpoint.sentMessages.length, sent)
+
+        mouseClick(detailButton, detailButton.width / 2, detailButton.height / 2)
+        verify(findChild(board, "boardStreamFailureDialog"))
+        height = 1696
+        tryVerify(function() { return inlineNotice.visible && !findChild(board, "boardStreamFailureDialog") })
+        height = data.height
+        tryCompare(detailButton, "text", "Connection details")
+        verify(!findChild(board, "boardStreamFailureDialog"))
+        verify(waitForRendering(board))
         mouseClick(back, back.width / 2, back.height / 2)
         verify(String(screen.source).endsWith("HomeScreen.qml"))
     }
