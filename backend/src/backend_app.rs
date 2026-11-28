@@ -1550,10 +1550,10 @@ impl LichessBackend {
                     return request.unavailable();
                 }
                 if pv.cp.is_some() == pv.mate.is_some() || pv.mate == Some(0) {
-                    return request.failed("Lichess returned an unusable cloud score. Try again.".into(), None);
+                    return request.failed("Invalid cloud score. Try again.".into(), None);
                 }
                 if pv.moves.trim().is_empty() {
-                    return request.failed("Lichess returned an empty best line. Try again.".into(), None);
+                    return request.failed("Cloud best line is empty. Try again.".into(), None);
                 }
                 match replay_uci_game_from_position(position, &pv.moves) {
                     Ok(replay) => BackendMessage::CloudEvaluation {
@@ -1567,7 +1567,10 @@ impl LichessBackend {
                             best_line: replay.move_history,
                         },
                     },
-                    Err(e) => request.failed(format!("couldn't read cloud best line: {e}"), None),
+                    Err(error) => {
+                        log::warn!("could not replay cloud best line: {error:#}");
+                        request.failed("Invalid cloud best line. Try again.".into(), None)
+                    }
                 }
             }
             Ok(None) => request.unavailable(),
@@ -1575,7 +1578,11 @@ impl LichessBackend {
                 *retry_after.lock().await = Some(Instant::now() + LICHESS_RATE_LIMIT_DELAY);
                 request.failed(CLOUD_RATE_LIMIT_MESSAGE.into(), Some(LICHESS_RATE_LIMIT_DELAY))
             }
-            Err(error) => request.failed(error.to_string(), None),
+            Err(error) => {
+                // Raw provider errors can overflow Review. A silent failure hides the retry.
+                log::warn!("could not load cloud evaluation: {error:#}");
+                request.failed("Could not load cloud evaluation. Try again.".into(), None)
+            }
         }
     }
 
@@ -3930,7 +3937,37 @@ mod cloud_evaluation_tests {
                 assert_eq!(reply["evaluation"]["best_line"], json!(["e4"]));
             } else {
                 assert!(reply.get("evaluation").is_none());
+                if pv["moves"] == "e2e5" {
+                    assert_eq!(reply["message"], "Invalid cloud best line. Try again.");
+                }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_lookup_errors_return_a_short_retry_notice() {
+        let server = MockServer::start().await;
+        let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let cooldown = Mutex::new(None);
+        for response in [
+            ResponseTemplate::new(503).set_body_json(json!({"error": "Upstream lookup failed"})),
+            ResponseTemplate::new(200).set_body_string("invalid JSON"),
+        ] {
+            let _mock = Mock::given(method("GET"))
+                .and(path("/api/cloud-eval"))
+                .and(query_param("fen", fen))
+                .respond_with(response)
+                .expect(1)
+                .mount_as_scoped(&server)
+                .await;
+            let request = CloudEvaluationRequest { requested_fen: fen.into(), request_id: Some(29) };
+            let reply = LichessBackend::fetch_cloud_evaluation(&client, request, &cooldown).await;
+            assert_eq!(serde_json::to_value(reply).unwrap(), json!({
+                "type": "CloudEvaluationFailed", "request_id": 29, "requested_fen": fen,
+                "message": "Could not load cloud evaluation. Try again.",
+            }));
+            assert!(cooldown.lock().await.is_none());
         }
     }
 

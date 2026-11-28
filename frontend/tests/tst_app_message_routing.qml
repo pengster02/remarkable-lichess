@@ -3428,7 +3428,12 @@ TestCase {
         })
     }
 
-    function test_cloudEvaluationKeepsEachPositionsRequestAndError() {
+    function test_cloudEvaluationKeepsEachPositionsRequestAndError_data() {
+        return [{tag: "compact", viewport: 620}, {tag: "large", viewport: 954}]
+    }
+
+    function test_cloudEvaluationKeepsEachPositionsRequestAndError(data) {
+        width = data.viewport
         var reviewId = choose("cloud-game")
         var afterE4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
         endpoint.reply({type: "GameMoves", request_id: reviewId, moves: ["e4"], fens: [startFen, afterE4]})
@@ -3445,13 +3450,20 @@ TestCase {
         review.requestCloudEvaluation()
         compare(endpoint.sentMessages.length, count)
 
+        var message = "Lichess returned a cloud evaluation for a different position. Try this position again."
         endpoint.reply({type: "CloudEvaluationFailed", requested_fen: afterE4,
-                        request_id: second.request_id, message: "Try this position again"})
+                        request_id: second.request_id, message: message})
         endpoint.reply({type: "CloudEvaluation", requested_fen: startFen,
                         request_id: first.request_id, evaluation: {depth: 24, knodes: 50, eval_cp: 10}})
         compare(review.currentCloudEvaluation().depth, 24)
         review.goNext()
-        compare(review.cloudEvaluationLabel(), "Cloud evaluation failed: Try this position again")
+        var notice = findChild(review, "reviewCloudNotice")
+        verify(notice.visible)
+        compare(notice.text, message)
+        compare(notice.textFormat, Text.PlainText)
+        verify(!notice.truncated)
+        verify(notice.contentWidth <= notice.width)
+        verify(review.canRequestCloudEvaluation)
 
         review.requestCloudEvaluation()
         var retry = endpoint.sentMessages[endpoint.sentMessages.length - 1]

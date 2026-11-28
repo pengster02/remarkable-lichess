@@ -533,7 +533,7 @@ Rectangle {
             return "No cached cloud evaluation for this position."
         }
         if (gameReviewScreen.cloudEvaluationPhase === "failed") {
-            return "Cloud evaluation failed: " + gameReviewScreen.currentCloudState.message
+            return gameReviewScreen.currentCloudState.message
         }
         var evaluation = gameReviewScreen.currentCloudEvaluation()
         if (!evaluation) return ""
@@ -565,7 +565,9 @@ Rectangle {
         } else if (msg.type === "CloudEvaluationUnavailable") {
             gameReviewScreen.setCloudState(msg.requested_fen, {phase: "unavailable"})
         } else {
-            gameReviewScreen.setCloudState(msg.requested_fen, {phase: "failed", message: msg.message || "unknown error"})
+            gameReviewScreen.setCloudState(msg.requested_fen, {
+                phase: "failed", message: msg.message || "Could not load cloud evaluation. Try again."
+            })
         }
     }
 
@@ -780,12 +782,14 @@ Rectangle {
         }
 
         Text {
-            visible: gameReviewScreen.cloudEvaluationLabel().length > 0
+            objectName: "reviewCloudNotice"
+            visible: text.length > 0
             text: gameReviewScreen.cloudEvaluationLabel()
+            textFormat: Text.PlainText
             font.pixelSize: theme.fontSmall
             font.bold: gameReviewScreen.currentCloudEvaluation() !== null
             width: parent.width
-            elide: Text.ElideRight
+            wrapMode: Text.Wrap
             color: gameReviewScreen.cloudEvaluationPhase === "failed"
                 ? theme.errorText
                 : theme.textMuted
