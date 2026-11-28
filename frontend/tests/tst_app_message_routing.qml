@@ -2231,6 +2231,72 @@ TestCase {
         verify(!findChild(restoredCard, "historyFallbackExportPgn").visible)
     }
 
+    function test_reviewFailureKeepsTheHistoryActionReachable_data() {
+        return [
+            {tag: "retry after returning to History", restored: true},
+            {tag: "retry and export", fallback: true},
+            {tag: "large game export", tooLarge: true},
+            {tag: "paged away while pending", pagedAway: true}
+        ]
+    }
+
+    function test_reviewFailureKeepsTheHistoryActionReachable(data) {
+        width = 620
+        var history = screen.item
+        var games = []
+        for (var i = 0; i < 20; i++) {
+            games.push({game_id: "archive-" + i, opponent_name: "Opponent " + i, speed: "rapid"})
+        }
+        endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest, games: games})
+        if (data.restored) {
+            replyWithMoves(choose(games[0].game_id), "e4")
+            findChild(screen.item, "reviewBackButton").clicked()
+            history = screen.item
+        }
+        var pager = findChild(history, "historyList")
+        verify(waitForRendering(pager))
+        var cards = archiveRows(history)
+        var card = cards[7]
+        var cardBottom = card.y + card.height
+        height += cardBottom + 1 - pager.pageHeight
+        tryVerify(function() { return cardBottom <= pager.pageHeight && pager.pageHeight <= cardBottom + 2 })
+        verify(card.headingOnPage)
+        mouseClick(card, card.width / 2, card.height / 2)
+        var initial = gameMoveRequests().slice(-1)[0]
+        compare(initial.game_id, games[7].game_id)
+
+        var currentCard = card
+        if (data.pagedAway) {
+            var next = findChild(pager, "pageDownButton")
+            mouseClick(next)
+            mouseClick(next)
+            verify(!card.headingOnPage)
+            currentCard = cards.find(function(row) { return row.headingOnPage })
+        }
+        var heightBefore = pager.pageHeight
+        var failure = {type: "GameMovesFailed", request_id: initial.request_id,
+                       message: "Could not open this game. Try again."}
+        if (data.fallback) failure.pgn_fallback = true
+        if (data.tooLarge) failure.review_supported = false
+        endpoint.reply(failure)
+        tryVerify(function() { return pager.pageHeight < heightBefore && currentCard.headingOnPage })
+        if (data.pagedAway) {
+            verify(!card.headingOnPage)
+            return
+        }
+
+        if (data.tooLarge) {
+            mouseClick(card, card.width / 2, card.height / 2)
+            compare(findChild(app, "pgnExportDialog").gameId, games[7].game_id)
+            return
+        }
+        var retry = data.fallback ? findChild(card, "historyRetryReview") : card
+        mouseClick(retry, retry.width / 2, retry.height / 2)
+        var request = gameMoveRequests().slice(-1)[0]
+        compare(request.game_id, games[7].game_id)
+        verify(request.request_id > initial.request_id)
+    }
+
     function test_finishedBoardExportsUnsupportedVariantAndCancelsOnSelectionChange() {
         app.openGame("atomic01")
         var board = screen.item
