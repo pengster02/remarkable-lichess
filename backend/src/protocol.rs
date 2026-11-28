@@ -2,6 +2,7 @@ use crate::qr::QrMatrix;
 use crate::variations::ReviewVariations;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::num::NonZeroU32;
 
 pub const MSG_TYPE_FRONTEND_TO_BACKEND: u32 = 1;
 pub const MSG_TYPE_BACKEND_TO_FRONTEND: u32 = 2;
@@ -374,6 +375,10 @@ pub struct HistoryCursor {
     pub until_ms: i64,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub seen_at_cutoff: BTreeSet<String>,
+    // Count observed repeats at this timestamp. A fixed allowance can miss
+    // more repeats, while a second fetch would add a request to one tap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_rows_at_cutoff: Option<NonZeroU32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1335,14 +1340,23 @@ mod tests {
 
     #[test]
     fn request_game_history_accepts_the_returned_cursor() {
-        let cursor = HistoryCursor { until_ms: 1_765_526_400_000, seen_at_cutoff: BTreeSet::from(["arch0001".into()]) };
-        let response = serde_json::to_value(BackendMessage::GameHistory {
-            request_id: Some(1), games: vec![], next_cursor: Some(cursor.clone()),
-        }).unwrap();
-        let request = serde_json::from_value::<FrontendMessage>(serde_json::json!({
-            "type": "RequestGameHistory", "request_id": 2, "cursor": response["next_cursor"],
-        })).unwrap();
-        assert!(matches!(request, FrontendMessage::RequestGameHistory { cursor: Some(value), .. } if value == cursor));
+        for extra_rows_at_cutoff in [None, NonZeroU32::new(3)] {
+            let cursor = HistoryCursor {
+                until_ms: 1_765_526_400_000,
+                seen_at_cutoff: BTreeSet::from(["arch0001".into()]),
+                extra_rows_at_cutoff,
+            };
+            let response = serde_json::to_value(BackendMessage::GameHistory {
+                request_id: Some(1), games: vec![], next_cursor: Some(cursor.clone()),
+            }).unwrap();
+            let wire_cursor = &response["next_cursor"];
+            assert_eq!(wire_cursor.get("extra_rows_at_cutoff").and_then(serde_json::Value::as_u64),
+                extra_rows_at_cutoff.map(|rows| u64::from(rows.get())));
+            let request = serde_json::from_value::<FrontendMessage>(serde_json::json!({
+                "type": "RequestGameHistory", "request_id": 2, "cursor": wire_cursor,
+            })).unwrap();
+            assert!(matches!(request, FrontendMessage::RequestGameHistory { cursor: Some(value), .. } if value == cursor));
+        }
     }
 
     #[test]

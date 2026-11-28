@@ -10,6 +10,8 @@ use crate::pgn_export::{PgnExport, PgnGameId};
 use crate::protocol::{HistoryCursor, OpeningDatabase, OpeningExplorerData};
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
+use std::collections::HashSet;
+use std::num::NonZeroU32;
 
 #[derive(Clone)]
 pub struct LichessClient {
@@ -386,35 +388,44 @@ impl LichessClient {
     ) -> Result<(Vec<HistoryGame>, Option<HistoryCursor>)> {
         // Fetch one extra game to prove there is another page. Always showing
         // a load button causes empty requests, and fetching the archive is unbounded.
-        let overlap = cursor.as_ref().map_or(0, |cursor| cursor.seen_at_cutoff.len());
-        let max = u32::try_from(HISTORY_PAGE_SIZE + 1 + overlap)?;
-        let until_ms = cursor.as_ref().map(|cursor| cursor.until_ms);
-        let mut games = self.get_game_history(username, max, filters, until_ms).await?;
-        if let Some(cursor) = &cursor {
-            games.retain(|game| !cursor.seen_at_cutoff.contains(&game.id));
-        }
-        let next_cursor = if let Some(lookahead) = games.get(HISTORY_PAGE_SIZE) {
-            let cutoff = lookahead.created_at
+        let previous = cursor.as_ref();
+        let overlap = previous.map_or(0, |page| page.seen_at_cutoff.len());
+        let extra_rows = previous.and_then(|page| page.extra_rows_at_cutoff).map_or(0, NonZeroU32::get);
+        let max = u32::try_from(HISTORY_PAGE_SIZE + 1 + overlap)?
+            .checked_add(extra_rows).context("history page size exceeds the request limit")?;
+        let games = self.get_game_history(username, max, filters, previous.map(|page| page.until_ms)).await?;
+        let unseen = |game: &HistoryGame| previous.is_none_or(|page| !page.seen_at_cutoff.contains(&game.id));
+        let remaining = games.iter().filter(|game| unseen(game));
+        // A filled reply can run out of lookahead after overlap removal.
+        // Ending here hides games, and reusing the old cursor repeats the read.
+        let boundary = remaining.clone().nth(HISTORY_PAGE_SIZE)
+            .or_else(|| games.last().filter(|_| games.len() >= max as usize));
+        let next_cursor = if let Some(boundary) = boundary {
+            let cutoff = boundary.created_at
                 .ok_or_else(|| anyhow!("Lichess did not provide a date for the next history page"))?;
             let until_ms = cutoff.checked_add(1)
                 .ok_or_else(|| anyhow!("Lichess provided an invalid history date"))?;
-            let mut seen_at_cutoff = match cursor {
-                Some(previous) if previous.until_ms == until_ms => previous.seen_at_cutoff,
-                _ => Default::default(),
-            };
-            seen_at_cutoff.extend(games[..HISTORY_PAGE_SIZE].iter()
+            let same_cutoff = previous.filter(|page| page.until_ms == until_ms);
+            let mut seen_at_cutoff = same_cutoff.map(|page| page.seen_at_cutoff.clone()).unwrap_or_default();
+            seen_at_cutoff.extend(remaining.take(HISTORY_PAGE_SIZE)
                 .filter(|game| game.created_at == Some(cutoff))
                 .map(|game| game.id.clone()));
-            Some(HistoryCursor { until_ms, seen_at_cutoff })
+            let mut observed = HashSet::new();
+            let repeats = games.iter()
+                .filter(|game| game.created_at == Some(cutoff) && seen_at_cutoff.contains(&game.id))
+                .filter(|game| !observed.insert(game.id.as_str()))
+                .count();
+            let extra_rows_at_cutoff = NonZeroU32::new(u32::try_from(repeats)?)
+                .max(same_cutoff.and_then(|page| page.extra_rows_at_cutoff));
+            Some(HistoryCursor { until_ms, seen_at_cutoff, extra_rows_at_cutoff })
         } else {
             None
         };
-        games.truncate(HISTORY_PAGE_SIZE);
         // Page the archive before matching speed. perfType misses variant
         // games, and scanning ahead for matches can require unbounded requests.
-        if let Some(speed) = filters.speed.as_deref() {
-            games.retain(|game| game.speed.as_deref() == Some(speed));
-        }
+        let games = games.into_iter().filter(unseen).take(HISTORY_PAGE_SIZE)
+            .filter(|game| filters.speed.as_ref().is_none_or(|speed| game.speed.as_ref() == Some(speed)))
+            .collect();
         Ok((games, next_cursor))
     }
 
@@ -1351,6 +1362,79 @@ mod tests {
         }
         assert!(cursor.is_none());
         assert_eq!(received, (0..45).map(|i| format!("arch{i:04}")).collect());
+    }
+
+    #[tokio::test]
+    async fn history_recovers_when_known_repeats_consume_the_lookahead() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let cutoff = 1_765_526_400_000_i64;
+        for (max, numbers) in [
+            (21, (0..21).collect::<Vec<_>>()),
+            (41, std::iter::once(0).chain(0..40).collect()),
+            (62, std::iter::once(0).chain(0..44).collect()),
+        ] {
+            let body = numbers.into_iter().map(|number| serde_json::json!({
+                "id": format!("arch{number:04}"), "createdAt": cutoff,
+                "players": { "white": {}, "black": {} },
+            }).to_string()).collect::<Vec<_>>().join("\n");
+            let mut mock = Mock::given(method("GET")).and(path("/api/games/user/myuser"))
+                .and(query_param("max", max.to_string()));
+            if max != 21 {
+                mock = mock.and(query_param("until", (cutoff + 1).to_string()));
+            }
+            mock.respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .expect(1).mount(&server).await;
+        }
+
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let filters = GameHistoryFilters::default();
+        let (first, cursor) = client.get_game_history_page("myuser", &filters, None).await.unwrap();
+        assert_eq!(first.len(), 20);
+        assert!(cursor.as_ref().unwrap().extra_rows_at_cutoff.is_none());
+        let (older, cursor) = client.get_game_history_page("myuser", &filters, cursor).await.unwrap();
+        let cursor = cursor.expect("a full reply lost its lookahead to the extra repeated row");
+        assert_eq!(cursor.until_ms, cutoff + 1);
+        assert_eq!(cursor.extra_rows_at_cutoff, NonZeroU32::new(1));
+        assert_eq!(cursor.seen_at_cutoff, (0..40).map(|i| format!("arch{i:04}")).collect());
+        let (last, cursor) = client.get_game_history_page("myuser", &filters, Some(cursor)).await.unwrap();
+        assert!(cursor.is_none());
+        let games: Vec<String> = first.into_iter().chain(older).chain(last).map(|game| game.id).collect();
+        assert_eq!(games, (0..44).map(|i| format!("arch{i:04}")).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn history_advances_when_a_full_reply_only_contains_seen_rows() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let cutoff = 1_765_526_400_000_i64;
+        let row = |id| serde_json::json!({
+            "id": id, "createdAt": cutoff, "players": { "white": {}, "black": {} },
+        }).to_string() + "\n";
+        let duplicates = row("arch0000").repeat(22);
+        for (max, body) in [(22, duplicates.clone()), (43, duplicates + &row("arch0001"))] {
+            Mock::given(method("GET")).and(path("/api/games/user/myuser"))
+                .and(query_param("until", (cutoff + 1).to_string()))
+                .and(query_param("max", max.to_string()))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .expect(1).mount(&server).await;
+        }
+        let old: HistoryCursor = serde_json::from_value(serde_json::json!({
+            "until_ms": cutoff + 1, "seen_at_cutoff": ["arch0000"],
+        })).unwrap();
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let filters = GameHistoryFilters::default();
+        let (games, cursor) = client.get_game_history_page("myuser", &filters, Some(old.clone())).await.unwrap();
+        assert!(games.is_empty());
+        let cursor = cursor.expect("the full reply might have more rows");
+        assert_eq!(cursor.until_ms, old.until_ms);
+        assert_eq!(cursor.seen_at_cutoff, old.seen_at_cutoff);
+        assert_eq!(cursor.extra_rows_at_cutoff, NonZeroU32::new(21));
+        let (games, cursor) = client.get_game_history_page("myuser", &filters, Some(cursor)).await.unwrap();
+        assert_eq!(games.into_iter().map(|game| game.id).collect::<Vec<_>>(), ["arch0001"]);
+        assert!(cursor.is_none());
     }
 
     #[tokio::test]
