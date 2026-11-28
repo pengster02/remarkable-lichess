@@ -1636,7 +1636,7 @@ mod tests {
         let client = LichessClient::with_base_url("test-token".into(), server.uri());
         let data = client.get_opening_explorer_at(&server.uri(), OpeningDatabase::Masters, fen,
                                                 &["e2e4".into(), "e7e5".into()]).await.unwrap();
-        assert_eq!(data.opening.unwrap().eco, "C20");
+        assert_eq!(data.opening.unwrap().eco.as_deref(), Some("C20"));
         assert_eq!(data.moves[0].san, "Nf3");
         assert!(client.get_opening_explorer_at(&server.uri(), OpeningDatabase::Lichess, fen, &[]).await.is_err());
         let requests = server.received_requests().await.unwrap();
