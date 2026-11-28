@@ -53,10 +53,10 @@ AppDialog {
 
     Text {
         objectName: "openingName"
+        readonly property var opening: dialog.statistics ? dialog.statistics.opening : null
         width: parent.width
         visible: text.length > 0
-        text: dialog.statistics && dialog.statistics.opening
-            ? dialog.statistics.opening.eco + " · " + dialog.statistics.opening.name : ""
+        text: opening && opening.name ? (opening.eco ? opening.eco + " · " : "") + opening.name : ""
         font.pixelSize: theme.fontBody
         font.bold: true
         color: theme.text

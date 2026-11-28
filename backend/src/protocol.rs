@@ -460,8 +460,20 @@ pub struct OpeningExplorerRequest {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct OpeningExplorerName {
-    pub eco: String,
+    pub eco: Option<String>,
     pub name: String,
+}
+
+fn deserialize_explorer_opening<'de, D>(deserializer: D) -> Result<Option<OpeningExplorerName>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opening = serde_json::Value::deserialize(deserializer)?;
+    Ok(crate::lichess::models::opening_name(&opening).map(|name| {
+        let eco = opening.get("eco").and_then(serde_json::Value::as_str).map(str::trim)
+            .filter(|code| matches!(code.as_bytes(), [b'A'..=b'E', b'0'..=b'9', b'0'..=b'9']));
+        OpeningExplorerName { name: name.to_owned(), eco: eco.map(str::to_owned) }
+    }))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -478,8 +490,41 @@ pub struct OpeningExplorerData {
     pub white: u64,
     pub draws: u64,
     pub black: u64,
+    // Keep the name when the ECO is unusable. Strict decoding loses the
+    // continuations, and substituting a code can misidentify the opening.
+    #[serde(default, deserialize_with = "deserialize_explorer_opening")]
     pub opening: Option<OpeningExplorerName>,
     pub moves: Vec<OpeningExplorerMove>,
+}
+
+#[cfg(test)]
+#[test]
+fn opening_explorer_keeps_statistics_when_labels_are_incomplete() {
+    use serde_json::json;
+    let cases = [
+        (json!({"name": " Slav Defense ", "eco": " D10 "}), Some(("Slav Defense", Some("D10")))),
+        (json!({"name": "Slav Defense"}), Some(("Slav Defense", None))),
+        (json!({"name": "Slav Defense", "eco": 10}), Some(("Slav Defense", None))),
+        (json!({"name": "Slav Defense", "eco": "D100"}), Some(("Slav Defense", None))),
+        (json!({"eco": "D10"}), None),
+        (json!({"name": 10, "eco": "D10"}), None),
+        (json!({"name": "   "}), None),
+        (json!({"name": "♞".repeat(86)}), None),
+        (json!("Slav Defense"), None),
+        (json!([]), None),
+        (json!(null), None),
+    ];
+    for (opening, expected) in cases {
+        let data: OpeningExplorerData = serde_json::from_value(json!({
+            "opening": opening,
+            "white": 10, "draws": 4, "black": 6,
+            "moves": [{"uci": "e2e4", "san": "e4", "white": 5, "draws": 2, "black": 3}]
+        })).unwrap();
+        assert_eq!(data.opening.as_ref().map(|label| (label.name.as_str(), label.eco.as_deref())), expected);
+        assert_eq!((data.white, data.draws, data.black), (10, 4, 6));
+        assert_eq!(data.moves.len(), 1);
+        assert_eq!(data.moves[0].uci, "e2e4");
+    }
 }
 
 // Optional matrices preserve the links if encoding fails. Rejecting the

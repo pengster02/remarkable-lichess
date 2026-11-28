@@ -3126,6 +3126,34 @@ TestCase {
         compare(review.currentFen(), e5)
     }
 
+    function test_openingExplorerShowsMovesWithoutACompleteLabel_data() {
+        return [{tag: "no label", opening: null, label: ""},
+                {tag: "literal name without ECO", opening: {name: "<b>Slav Defense</b>", eco: null},
+                 label: "<b>Slav Defense</b>"}]
+    }
+
+    function test_openingExplorerShowsMovesWithoutACompleteLabel(data) {
+        var reviewId = choose("opening1")
+        replyWithMoves(reviewId, "e4")
+        var review = screen.item
+        findChild(review, "openOpeningExplorerButton").clicked()
+        var request = endpoint.sentMessages.slice(-1)[0]
+        compare(request.type, "RequestOpeningExplorer")
+        endpoint.reply({type: "OpeningExplorer", request_id: request.request_id, review_id: reviewId,
+                        database: request.database, fen: request.fen,
+                        data: {white: 5, draws: 2, black: 3, opening: data.opening, moves: [
+                            {uci: "e7e5", san: "e5", white: 4, draws: 2, black: 2}
+                        ]}})
+        var dialog = findChild(review, "openingExplorerDialog")
+        var name = findChild(dialog, "openingName")
+        compare(name.text, data.label)
+        compare(name.textFormat, Text.PlainText)
+        compare(name.visible, data.label.length > 0)
+        compare(findChild(dialog, "openingExplorerStatus").text, "10 games")
+        compare(findChild(dialog, "openingMove-e7e5").title, "e5")
+        verify(!findChild(dialog, "openingExplorerRetry").visible)
+    }
+
     function test_openingExplorerCooldownSurvivesAnotherReview() {
         var reviewId = choose("limited-opening")
         replyWithMoves(reviewId, "e4")

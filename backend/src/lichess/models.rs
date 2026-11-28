@@ -482,13 +482,16 @@ fn deserialize_history_opening<'de, D>(deserializer: D) -> Result<Option<GameOpe
 where
     D: serde::Deserializer<'de>,
 {
-    // A missing label should neither reject the page nor invent an opening.
-    // Allow room beyond the published names without copying arbitrary text to the reply.
-    const MAX_OPENING_NAME_BYTES: usize = 256;
     let opening = serde_json::Value::deserialize(deserializer)?;
-    Ok(opening.get("name").and_then(serde_json::Value::as_str).map(str::trim)
+    Ok(opening_name(&opening).map(|name| GameOpening { name: name.to_owned() }))
+}
+
+pub(crate) fn opening_name(opening: &serde_json::Value) -> Option<&str> {
+    // Rejecting the response hides usable game data. Truncating the label
+    // loses distinctions between named lines. Allow room beyond published names.
+    const MAX_OPENING_NAME_BYTES: usize = 256;
+    opening.get("name").and_then(serde_json::Value::as_str).map(str::trim)
         .filter(|name| !name.is_empty() && name.len() <= MAX_OPENING_NAME_BYTES)
-        .map(|name| GameOpening { name: name.to_owned() }))
 }
 
 // Keep the exported speed key open to new values. A closed enum needs a
