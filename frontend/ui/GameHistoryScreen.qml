@@ -99,6 +99,22 @@ Rectangle {
         }
     }
 
+    function anchorReviewCard(gameId) {
+        var position = captureHistoryPosition(gameId)
+        if (position) {
+            var card = historyRows.itemAt(position.reviewedIndex)
+            // A page number can lose its last card after reflow. Revealing an
+            // off-page card would undo paging while the request was pending.
+            if (card && card.headingOnPage) {
+                position.index = position.reviewedIndex
+                position.inset = 0
+            } else {
+                position.reviewedIndex = -1
+            }
+        }
+        restoredPosition = position
+    }
+
     function restorePosition() {
         var position = restoredPosition
         if (!position) return
@@ -401,6 +417,7 @@ Rectangle {
                     enabled: gameCard.headingOnPage && !gameCard.showReviewActions &&
                         (gameCard.canReview ? !gameHistoryScreen.gameExportCoolingDown : gameCard.canExport)
                     onClicked: {
+                        if (gameHistoryScreen.errorMessage) gameHistoryScreen.anchorReviewCard(modelData.game_id)
                         gameHistoryScreen.errorMessage = ""
                         if (gameCard.canReview) gameHistoryScreen.selectGameForReview(modelData)
                         else gameHistoryScreen.openPgnExport(modelData.game_id, false)
@@ -531,6 +548,7 @@ Rectangle {
                             compact: true
                             enabled: !gameHistoryScreen.openingReview && !gameHistoryScreen.gameExportCoolingDown
                             onClicked: {
+                                gameHistoryScreen.anchorReviewCard(gameCard.modelData.game_id)
                                 gameHistoryScreen.errorMessage = ""
                                 gameHistoryScreen.selectGameForReview(gameCard.modelData)
                             }
@@ -661,8 +679,8 @@ Rectangle {
                 else gameHistoryScreen.loadError = msg.message || "Lichess could not load game history."
             }
         } else if (msg.type === "GameMovesFailed") {
+            gameHistoryScreen.anchorReviewCard(msg.game_id)
             if (msg.review_supported === false || msg.pgn_fallback === true) {
-                gameHistoryScreen.restoredPosition = captureHistoryPosition(msg.game_id)
                 var updates = msg.review_supported === false ? {review_supported: false} : {pgn_fallback: true}
                 gameHistoryScreen.games = gameHistoryScreen.games.map(function(game) {
                     return game.game_id === msg.game_id
