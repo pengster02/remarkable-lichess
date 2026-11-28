@@ -26,6 +26,9 @@ Rectangle {
     property string errorMessage: ""
     property string loadError: ""
     property string olderLoadError: ""
+    property bool olderPageEmpty: false
+    readonly property string olderPageNotice: olderLoadError ||
+        (olderPageEmpty && !historyCoolingDown ? "No new games on that page." : "")
     property var nextHistoryCursor: null
     property double historyRetryAt: 0
     readonly property bool historyCoolingDown: historyRetryAt > 0
@@ -39,7 +42,7 @@ Rectangle {
     property string draftSpeed: "all"
     property string draftColor: "all"
     property var restoredPosition: null
-    property bool revealOlderRetryPending: false
+    property bool revealOlderFooterPending: false
 
     // Indices preserve existing cards on append and keep nested analysis in games.
     // An array model rebuilds cards, while a full ListModel mirrors game data.
@@ -90,6 +93,7 @@ Rectangle {
             loading: loading,
             loadError: loadError,
             olderLoadError: olderLoadError,
+            olderPageEmpty: olderPageEmpty,
             nextHistoryCursor: nextHistoryCursor,
             restoredPosition: captureHistoryPosition(reviewedGameId)
         }
@@ -130,7 +134,8 @@ Rectangle {
               "Lichess limited game history requests."
             : ""
         gameHistoryScreen.olderLoadError = ""
-        gameHistoryScreen.revealOlderRetryPending = false
+        gameHistoryScreen.olderPageEmpty = false
+        gameHistoryScreen.revealOlderFooterPending = false
         gameHistoryScreen.nextHistoryCursor = null
         gameHistoryScreen.restoredPosition = null
         gameHistoryScreen.games = []
@@ -139,8 +144,9 @@ Rectangle {
 
     function loadOlderGames() {
         if (!nextHistoryCursor || pendingHistoryRequest || openingReview || historyCoolingDown) return
-        revealOlderRetryPending = false
+        revealOlderFooterPending = false
         olderLoadError = ""
+        olderPageEmpty = false
         sendHistoryRequest(nextHistoryCursor)
     }
 
@@ -154,14 +160,14 @@ Rectangle {
     function showOlderLoadError(message) {
         // Measure before the wrapping row grows. A fixed height clips the
         // error, and revealing the footer unconditionally interrupts paging.
-        revealOlderRetryPending = olderButtonInView()
+        revealOlderFooterPending = olderButtonInView()
         olderLoadError = message
     }
 
-    function revealOlderRetry() {
-        if (!revealOlderRetryPending) return
-        revealOlderRetryPending = false
-        if (!olderLoadError || !olderGamesButton.visible || olderButtonInView()) return
+    function revealOlderFooter() {
+        if (!revealOlderFooterPending) return
+        revealOlderFooterPending = false
+        if (!olderPageNotice || !olderGamesButton.visible || olderButtonInView()) return
         restoredPosition = null
         historyList.showPageContaining(olderGamesButton.y, olderGamesButton.height)
     }
@@ -281,7 +287,7 @@ Rectangle {
 
         Text {
             visible: gameHistoryScreen.loading ||
-                (gameHistoryScreen.games.length === 0 && gameHistoryScreen.loadError.length === 0)
+                (gameHistoryScreen.games.length === 0 && !gameHistoryScreen.loadError && !gameHistoryScreen.olderPageEmpty)
             text: gameHistoryScreen.loading ? "Loading games..."
                 : gameHistoryScreen.nextHistoryCursor ? "No games to show on this page."
                 : "No games match these filters."
@@ -340,7 +346,7 @@ Rectangle {
         onPageHeightChanged: gameHistoryScreen.updateHistoryPageStops()
         onPageNavigationRequested: {
             gameHistoryScreen.restoredPosition = null
-            gameHistoryScreen.revealOlderRetryPending = false
+            gameHistoryScreen.revealOlderFooterPending = false
         }
 
         Column {
@@ -350,8 +356,8 @@ Rectangle {
             // Nested rows can reflow after their first layout at the Loader's width.
             onPositioningComplete: {
                 gameHistoryScreen.updateHistoryPageStops()
-                if (gameHistoryScreen.revealOlderRetryPending)
-                    Qt.callLater(gameHistoryScreen.revealOlderRetry)
+                if (gameHistoryScreen.revealOlderFooterPending)
+                    Qt.callLater(gameHistoryScreen.revealOlderFooter)
             }
 
             Repeater {
@@ -555,7 +561,7 @@ Rectangle {
                 title: gameHistoryScreen.loadingOlder ? "Loading older games…"
                     : gameHistoryScreen.historyCoolingDown ? "Retry available shortly"
                     : gameHistoryScreen.olderLoadError ? "Retry loading older games" : "Load older games"
-                subtitle: gameHistoryScreen.olderLoadError
+                subtitle: gameHistoryScreen.olderPageNotice
                 wrapSubtitle: true
                 onClicked: gameHistoryScreen.loadOlderGames()
             }
@@ -640,8 +646,15 @@ Rectangle {
             gameHistoryScreen.pendingHistoryRequest = 0
             gameHistoryScreen.loading = false
             if (msg.type === "GameHistory") {
+                var previousCount = gameHistoryScreen.games.length
                 gameHistoryScreen.applyHistoryPage(msg.games || [], older)
                 gameHistoryScreen.nextHistoryCursor = msg.next_cursor || null
+                if (older && gameHistoryScreen.nextHistoryCursor && gameHistoryScreen.games.length === previousCount) {
+                    // Keep the result with the next action. A header notice is
+                    // separate from the footer, and auto-paging adds unrequested reads.
+                    gameHistoryScreen.revealOlderFooterPending = olderButtonInView()
+                    gameHistoryScreen.olderPageEmpty = true
+                }
             } else {
                 if (older) gameHistoryScreen.showOlderLoadError(msg.message || "Lichess could not load older games.")
                 else gameHistoryScreen.loadError = msg.message || "Lichess could not load game history."
