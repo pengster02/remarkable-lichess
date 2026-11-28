@@ -1227,7 +1227,10 @@ impl LichessBackend {
                     history_rate_limit_reply(request_id, LICHESS_RATE_LIMIT_DELAY)
                 }
                 Err(error) => {
-                    history_failure(request_id, error.to_string(), None)
+                    // Keep the diagnosis available without putting raw HTTP details
+                    // on screen or losing the cause behind a generic error.
+                    log::warn!("could not load game history: {error:#}");
+                    history_failure(request_id, "Could not load games from Lichess. Try again.".into(), None)
                 }
             };
             if let Some(json) = encode_bounded_reply(&reply) {

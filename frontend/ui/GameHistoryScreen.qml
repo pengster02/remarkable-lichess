@@ -39,6 +39,7 @@ Rectangle {
     property string draftSpeed: "all"
     property string draftColor: "all"
     property var restoredPosition: null
+    property bool revealOlderRetryPending: false
 
     // Indices preserve existing cards on append and keep nested analysis in games.
     // An array model rebuilds cards, while a full ListModel mirrors game data.
@@ -129,6 +130,7 @@ Rectangle {
               "Lichess limited game history requests."
             : ""
         gameHistoryScreen.olderLoadError = ""
+        gameHistoryScreen.revealOlderRetryPending = false
         gameHistoryScreen.nextHistoryCursor = null
         gameHistoryScreen.restoredPosition = null
         gameHistoryScreen.games = []
@@ -137,8 +139,31 @@ Rectangle {
 
     function loadOlderGames() {
         if (!nextHistoryCursor || pendingHistoryRequest || openingReview || historyCoolingDown) return
+        revealOlderRetryPending = false
         olderLoadError = ""
         sendHistoryRequest(nextHistoryCursor)
+    }
+
+    function olderButtonInView() {
+        return olderGamesButton.visible &&
+            olderGamesButton.y >= historyList.contentY - historyList.positionTolerance &&
+            olderGamesButton.y + olderGamesButton.height <=
+                historyList.contentY + historyList.pageHeight + historyList.positionTolerance
+    }
+
+    function showOlderLoadError(message) {
+        // Measure before the wrapping row grows. A fixed height clips the
+        // error, and revealing the footer unconditionally interrupts paging.
+        revealOlderRetryPending = olderButtonInView()
+        olderLoadError = message
+    }
+
+    function revealOlderRetry() {
+        if (!revealOlderRetryPending) return
+        revealOlderRetryPending = false
+        if (!olderLoadError || !olderGamesButton.visible || olderButtonInView()) return
+        restoredPosition = null
+        historyList.showPageContaining(olderGamesButton.y, olderGamesButton.height)
     }
 
     function sendHistoryRequest(cursor) {
@@ -309,14 +334,21 @@ Rectangle {
         contentHeight: historyColumn.height
         keepRowsTogether: true
         onPageHeightChanged: gameHistoryScreen.updateHistoryPageStops()
-        onPageNavigationRequested: gameHistoryScreen.restoredPosition = null
+        onPageNavigationRequested: {
+            gameHistoryScreen.restoredPosition = null
+            gameHistoryScreen.revealOlderRetryPending = false
+        }
 
         Column {
             id: historyColumn
             width: parent.width
             spacing: theme.spacingSmall
             // Nested rows can reflow after their first layout at the Loader's width.
-            onPositioningComplete: gameHistoryScreen.updateHistoryPageStops()
+            onPositioningComplete: {
+                gameHistoryScreen.updateHistoryPageStops()
+                if (gameHistoryScreen.revealOlderRetryPending)
+                    Qt.callLater(gameHistoryScreen.revealOlderRetry)
+            }
 
             Repeater {
                 id: historyRows
@@ -511,7 +543,7 @@ Rectangle {
                 id: olderGamesButton
                 objectName: "loadOlderGamesButton"
                 width: historyColumn.width
-                height: theme.buttonMinHeight + theme.spacingSmall
+                minimumHeight: theme.buttonMinHeight + theme.spacingSmall
                 visible: gameHistoryScreen.nextHistoryCursor !== null
                 darkMode: gameHistoryScreen.darkMode
                 enabled: !gameHistoryScreen.loadingOlder && !gameHistoryScreen.openingReview &&
@@ -520,6 +552,7 @@ Rectangle {
                     : gameHistoryScreen.historyCoolingDown ? "Retry available shortly"
                     : gameHistoryScreen.olderLoadError ? "Retry loading older games" : "Load older games"
                 subtitle: gameHistoryScreen.olderLoadError
+                wrapSubtitle: true
                 onClicked: gameHistoryScreen.loadOlderGames()
             }
         }
@@ -607,7 +640,7 @@ Rectangle {
                 else gameHistoryScreen.games = msg.games || []
                 gameHistoryScreen.nextHistoryCursor = msg.next_cursor || null
             } else {
-                if (older) gameHistoryScreen.olderLoadError = msg.message || "Lichess could not load older games."
+                if (older) gameHistoryScreen.showOlderLoadError(msg.message || "Lichess could not load older games.")
                 else gameHistoryScreen.loadError = msg.message || "Lichess could not load game history."
             }
         } else if (msg.type === "GameMovesFailed") {
