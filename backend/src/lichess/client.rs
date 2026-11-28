@@ -393,7 +393,18 @@ impl LichessClient {
         let extra_rows = previous.and_then(|page| page.extra_rows_at_cutoff).map_or(0, NonZeroU32::get);
         let max = u32::try_from(HISTORY_PAGE_SIZE + 1 + overlap)?
             .checked_add(extra_rows).context("history page size exceeds the request limit")?;
-        let games = self.get_game_history(username, max, filters, previous.map(|page| page.until_ms)).await?;
+        let until_ms = previous.map(|page| page.until_ms);
+        let games = self.get_game_history(username, max, filters, until_ms).await?;
+        // A bad page cannot establish a new boundary. Sorting cannot recover
+        // omitted games, and dropping rows can consume the lookahead.
+        let mut last_date = None;
+        for date in games.iter().filter_map(|game| game.created_at) {
+            anyhow::ensure!(until_ms.is_none_or(|until| date < until),
+                "Lichess returned a game outside the requested history window");
+            anyhow::ensure!(last_date.is_none_or(|last| date <= last),
+                "Lichess returned history outside reverse chronological order");
+            last_date = Some(date);
+        }
         let unseen = |game: &HistoryGame| previous.is_none_or(|page| !page.seen_at_cutoff.contains(&game.id));
         let remaining = games.iter().filter(|game| unseen(game));
         // A filled reply can run out of lookahead after overlap removal.
@@ -1474,6 +1485,51 @@ mod tests {
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].id, "arch0020");
         assert!(older.is_none());
+    }
+
+    #[tokio::test]
+    async fn history_checks_raw_dates_before_paging_and_speed_filtering() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let cutoff = 1_765_526_400_000_i64;
+        let cases = [
+            ("misordered", vec![Some(cutoff - 1), Some(cutoff - 3), None, Some(cutoff - 2)],
+                Some("outside reverse chronological order")),
+            ("equal-cutoff", vec![Some(cutoff - 1), Some(cutoff)],
+                Some("outside the requested history window")),
+            ("seen-newer", vec![Some(cutoff + 1), Some(cutoff - 2)],
+                Some("outside the requested history window")),
+            ("usable", vec![Some(cutoff - 1), Some(cutoff - 1), None, Some(cutoff - 2)], None),
+        ];
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let cursor: HistoryCursor = serde_json::from_value(serde_json::json!({
+            "until_ms": cutoff, "seen_at_cutoff": ["arch0000"],
+        })).unwrap();
+        let filters = GameHistoryFilters { speed: Some("rapid".into()), ..Default::default() };
+        for (user, dates, expected_error) in cases {
+            let rows = dates.into_iter().enumerate().map(|(index, date)| {
+                serde_json::json!({
+                    "id": format!("arch{index:04}"),
+                    "createdAt": date,
+                    "speed": if index == 1 { "blitz" } else { "rapid" },
+                    "players": { "white": {}, "black": {} },
+                }).to_string()
+            }).collect::<Vec<_>>().join("\n");
+            Mock::given(method("GET")).and(path(format!("/api/games/user/{user}")))
+                .and(query_param("until", cutoff.to_string()))
+                .and(query_param("max", "22"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(rows))
+                .expect(1).mount(&server).await;
+            let result = client.get_game_history_page(user, &filters, Some(cursor.clone())).await;
+            if let Some(error) = expected_error {
+                assert!(result.unwrap_err().to_string().contains(error));
+            } else {
+                let (games, next) = result.unwrap();
+                assert!(next.is_none());
+                assert_eq!(games.into_iter().map(|game| game.id).collect::<Vec<_>>(), ["arch0002", "arch0003"]);
+            }
+        }
     }
 
     #[tokio::test]
