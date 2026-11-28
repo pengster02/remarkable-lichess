@@ -406,10 +406,10 @@ impl LichessClient {
             last_date = Some(date);
         }
         let unseen = |game: &HistoryGame| previous.is_none_or(|page| !page.seen_at_cutoff.contains(&game.id));
-        let remaining = games.iter().filter(|game| unseen(game));
+        let remaining = games.iter().enumerate().filter(|(_, game)| unseen(game));
         // A filled reply can run out of lookahead after overlap removal.
         // Ending here hides games, and reusing the old cursor repeats the read.
-        let boundary = remaining.clone().nth(HISTORY_PAGE_SIZE)
+        let boundary = remaining.clone().nth(HISTORY_PAGE_SIZE).map(|(_, game)| game)
             .or_else(|| games.last().filter(|_| games.len() >= max as usize));
         let next_cursor = if let Some(boundary) = boundary {
             let cutoff = boundary.created_at
@@ -418,12 +418,17 @@ impl LichessClient {
                 .ok_or_else(|| anyhow!("Lichess provided an invalid history date"))?;
             let same_cutoff = previous.filter(|page| page.until_ms == until_ms);
             let mut seen_at_cutoff = same_cutoff.map(|page| page.seen_at_cutoff.clone()).unwrap_or_default();
+            // Track undated rows that could tie. Ignoring them can repeat a
+            // page, and tracking every undated row can inflate the next read.
+            let cutoff_start = games.iter().rposition(|game| game.created_at.is_some_and(|date| date > cutoff))
+                .map_or(0, |index| index + 1);
+            let could_tie = |game: &HistoryGame| game.created_at.is_none_or(|date| date == cutoff);
             seen_at_cutoff.extend(remaining.take(HISTORY_PAGE_SIZE)
-                .filter(|game| game.created_at == Some(cutoff))
-                .map(|game| game.id.clone()));
+                .filter(|(index, game)| *index >= cutoff_start && could_tie(game))
+                .map(|(_, game)| game.id.clone()));
             let mut observed = HashSet::new();
-            let repeats = games.iter()
-                .filter(|game| game.created_at == Some(cutoff) && seen_at_cutoff.contains(&game.id))
+            let repeats = games[cutoff_start..].iter().take_while(|game| could_tie(game))
+                .filter(|game| seen_at_cutoff.contains(&game.id))
                 .filter(|game| !observed.insert(game.id.as_str()))
                 .count();
             let extra_rows_at_cutoff = NonZeroU32::new(u32::try_from(repeats)?)
@@ -1530,6 +1535,47 @@ mod tests {
                 assert_eq!(games.into_iter().map(|game| game.id).collect::<Vec<_>>(), ["arch0002", "arch0003"]);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn history_carries_only_undated_rows_that_can_share_the_cutoff() {
+        use wiremock::matchers::query_param;
+
+        let server = MockServer::start().await;
+        let cutoff = 1_765_526_400_000_i64;
+        for (max, numbers) in [(21, 0..21), (26, 15..25)] {
+            let rows = numbers.map(|index| {
+                let date = match index {
+                    0 | 15..=19 | 23 => None,
+                    1..=14 => Some(cutoff + 1),
+                    _ => Some(cutoff),
+                };
+                serde_json::json!({
+                    "id": format!("arch{index:04}"), "createdAt": date,
+                    "players": { "white": {}, "black": {} },
+                }).to_string()
+            }).collect::<Vec<_>>().join("\n");
+            let mut mock = Mock::given(method("GET")).and(path("/api/games/user/myuser"))
+                .and(query_param("max", max.to_string()));
+            if max != 21 {
+                mock = mock.and(query_param("until", (cutoff + 1).to_string()));
+            }
+            mock.respond_with(ResponseTemplate::new(200).set_body_string(rows))
+                .expect(1).mount(&server).await;
+        }
+        let client = LichessClient::with_base_url("test-token".into(), server.uri());
+        let filters = GameHistoryFilters::default();
+        let (first, next) = client.get_game_history_page("myuser", &filters, None).await.unwrap();
+        assert_eq!(first.len(), 20);
+        assert!(first[0].created_at.is_none());
+        let next = next.expect("dated lookahead");
+        assert_eq!(next.until_ms, cutoff + 1);
+        assert_eq!(next.seen_at_cutoff, (15..20).map(|i| format!("arch{i:04}")).collect());
+        let (older, next) = client.get_game_history_page("myuser", &filters, Some(next)).await.unwrap();
+        assert!(next.is_none());
+        assert_eq!(older.iter().map(|game| game.id.as_str()).collect::<Vec<_>>(),
+            ["arch0020", "arch0021", "arch0022", "arch0023", "arch0024"]);
+        assert!(older[3].created_at.is_none());
     }
 
     #[tokio::test]
