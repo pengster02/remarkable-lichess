@@ -2992,6 +2992,20 @@ TestCase {
         verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
     }
 
+    function test_reviewErrorWrapsAnUnbrokenDiagnostic() {
+        width = 620
+        var requestId = choose("review-failure")
+        var diagnostic = "Lichess could not load this game. " + "GameExportTemporarilyUnavailable_".repeat(6)
+        endpoint.reply({type: "GameMovesFailed", request_id: requestId, message: diagnostic})
+        var notice = findChild(screen.item, "historyErrorNotice")
+        verify(notice.visible)
+        compare(notice.text, diagnostic)
+        verify(notice.lineCount > 1)
+        verify(!notice.truncated)
+        verify(notice.contentWidth <= notice.width)
+        verify(choose("review-failure") > requestId)
+    }
+
     function test_customReviewStartsFromTheExportedPosition() {
         endpoint.reply({type: "GameHistory", request_id: screen.item.pendingHistoryRequest,
                         games: [{game_id: "custom-start", variant: "fromPosition",

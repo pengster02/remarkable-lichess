@@ -296,11 +296,12 @@ Rectangle {
         }
 
         Text {
+            objectName: "historyErrorNotice"
             visible: text.length > 0
             text: gameHistoryScreen.loadError || gameHistoryScreen.errorMessage
             font.pixelSize: theme.fontBody
             color: theme.errorText
-            wrapMode: Text.WordWrap
+            wrapMode: Text.Wrap
             width: parent.width
             textFormat: Text.PlainText
         }

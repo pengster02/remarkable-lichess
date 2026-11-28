@@ -1329,9 +1329,9 @@ impl LichessBackend {
         retry_after: Arc<Mutex<Option<Instant>>>,
     ) {
         let GameReviewRequest { game_id, request_id, player_id, credential_rejected, archive_fens } = request;
-        let fail = |message: String, delay: Option<Duration>, review_supported, pgn_fallback| {
-            // The parser can include a whole invalid SAN token in its error.
-            let message = if message.len() <= 512 { message } else { "Could not replay this game.".into() };
+        // Raw errors can overflow History, and truncating them can hide the recovery action.
+        let fail = |message: &str, delay: Option<Duration>, review_supported, pgn_fallback| {
+            let message = message.into();
             let reply = match request_id {
                 Some(request_id) => BackendMessage::GameMovesFailed {
                     request_id, message, retry_after_ms: delay.map(export_wait_ms), review_supported, pgn_fallback,
@@ -1343,7 +1343,7 @@ impl LichessBackend {
         let export = match request_game_export(&retry_after, client.export_game(&game_id)).await {
             Ok(export) => export,
             Err(GameExportFailure::RateLimited(remaining)) => {
-                fail(GAME_EXPORT_RATE_LIMIT_MESSAGE.into(), Some(remaining), None, None);
+                fail(GAME_EXPORT_RATE_LIMIT_MESSAGE, Some(remaining), None, None);
                 return;
             }
             Err(GameExportFailure::Request(error)) if is_unauthorized(&error) => {
@@ -1351,7 +1351,8 @@ impl LichessBackend {
                 return;
             }
             Err(GameExportFailure::Request(error)) => {
-                fail(error.to_string(), None, None, None);
+                log::warn!("could not open game for review: {error:#}");
+                fail("Could not open this game. Try again.", None, None, None);
                 return;
             }
         };
@@ -1361,8 +1362,9 @@ impl LichessBackend {
             export.variant.as_deref(), export.initial_fen.as_deref(), &exported_moves,
         ) {
             Ok(replay) => replay,
-            Err(e) => {
-                fail(format!("Could not replay this game: {e}"), None, None, Some(true));
+            Err(error) => {
+                log::warn!("could not replay game for review: {error:#}");
+                fail("Could not replay this game. Try again or export its PGN.", None, None, Some(true));
                 return;
             }
         };
@@ -1391,7 +1393,7 @@ impl LichessBackend {
             variation_storage: request_id.map(|_| true),
         };
         let Some(json) = encode_review_reply(&mut reply) else {
-            fail("This game is too large for Review. Export its PGN instead.".into(), None, Some(false), None);
+            fail("This game is too large for Review. Export its PGN instead.", None, Some(false), None);
             return;
         };
         if let (Some(archive_fens), BackendMessage::GameMoves { fens, .. }) = (archive_fens, reply) {
