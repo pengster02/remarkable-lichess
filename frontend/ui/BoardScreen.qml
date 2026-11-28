@@ -36,6 +36,8 @@ Rectangle {
     onGameIdChanged: reviewOpenError = ""
     property string requestedGameId: ""
     property string streamError: ""
+    readonly property string loadedStreamNotice: !boardScreen.awaitingBoard && boardScreen.streamError.length > 0
+        ? boardScreen.topStatusText() : ""
     property bool streamReconnecting: false
     property bool streamRateLimited: false
     property bool moveSubmissionCoolingDown: false
@@ -248,7 +250,8 @@ Rectangle {
         boardScreen.finalPositionGameId === (boardScreen.requestedGameId || boardScreen.gameId)
     readonly property bool gameplayAvailable: !boardScreen.gameOver &&
         !boardScreen.awaitingGameStart && !boardScreen.awaitingFinalPosition
-    readonly property bool moveInputAvailable: boardScreen.gameplayAvailable && !boardScreen.moveSubmissionCoolingDown
+    readonly property bool moveInputAvailable: boardScreen.gameplayAvailable &&
+        !boardScreen.moveSubmissionCoolingDown && boardScreen.streamError.length === 0
     property bool showGameOverDialog: false
     readonly property bool canNavigateHome: boardScreen.gameOver || boardScreen.awaitingBoard ||
         boardScreen.awaitingGameStart || boardScreen.awaitingFinalPosition ||
@@ -1023,6 +1026,7 @@ Rectangle {
         width: parent.width - 2 * theme.pageSideMargin
         visible: boardScreen.awaitingBoard
         text: visible ? boardScreen.topStatusText() : ""
+        textFormat: Text.PlainText
         font.pixelSize: theme.fontLarge
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.Wrap
@@ -1044,6 +1048,7 @@ Rectangle {
         visible: !boardScreen.awaitingBoard
 
         PlayerBar {
+            id: topPlayerBar
             objectName: "topPlayerBar"
             width: parent.width
             darkMode: boardScreen.darkMode
@@ -1063,7 +1068,7 @@ Rectangle {
             lowTime: boardScreen.isLowTime(clockMs, boardScreen.initialClockMs)
             materialAdvantage: boardScreen.showCapturedPieces ? boardScreen.materialAdvantageFor(boardScreen.topColor) : 0
             capturedPieces: boardScreen.showCapturedPieces ? boardScreen.capturedPiecesFor(boardScreen.topColor) : []
-            statusText: boardScreen.topStatusText()
+            statusText: boardScreen.loadedStreamNotice.length > 0 ? "" : boardScreen.topStatusText()
             statusEmphasized: boardScreen.activeTurnColor === boardScreen.yourColor
             pieceSet: boardScreen.pieceSet
         }
@@ -1071,6 +1076,7 @@ Rectangle {
         // Keeps the server-confirmed time control in view without shrinking the
         // board. Alternatives were putting it in a player name or the toolbar.
         Text {
+            id: gameDescriptionText
             objectName: "gameDescriptionText"
             width: parent.width
             height: theme.fontSmall + theme.spacingXs
@@ -1120,9 +1126,16 @@ Rectangle {
                     id: grid
                     columns: 8
                     rows: 8
+                    readonly property real heightWithNotice: backButton.y - boardColumn.y -
+                        topPlayerBar.height - bottomPlayerBar.height - 2 * boardColumn.spacing -
+                        (gameDescriptionText.visible ? gameDescriptionText.height + boardColumn.spacing : 0) -
+                        (fileLabels.visible ? fileLabels.height + boardColumn.spacing : 0) -
+                        boardToolbar.height - boardToolbar.anchors.topMargin -
+                        streamFailureNotice.height - streamFailureNotice.anchors.topMargin - theme.spacingXs
                     width: Math.max(0, Math.min(
                         boardColumn.width - rankLabels.width - theme.spacingXs,
-                        boardScreen.height * 0.5
+                        boardScreen.height * 0.5,
+                        streamFailureNotice.visible ? heightWithNotice : Infinity
                     ))
                     height: width
 
@@ -1291,6 +1304,7 @@ Rectangle {
         }
 
         Row {
+            id: fileLabels
             objectName: "boardFileLabels"
             x: boardSurface.x
             width: grid.width
@@ -1309,6 +1323,7 @@ Rectangle {
         }
 
         PlayerBar {
+            id: bottomPlayerBar
             objectName: "bottomPlayerBar"
             width: parent.width
             darkMode: boardScreen.darkMode
@@ -1365,6 +1380,23 @@ Rectangle {
             highlighted: boardScreen.viewingHistory
             onClicked: boardScreen.showMoves = true
         }
+    }
+
+    // Wrapping in the player bar shifts the board, while a dialog obscures it.
+    Text {
+        id: streamFailureNotice
+        objectName: "boardStreamFailureNotice"
+        anchors.top: boardToolbar.bottom
+        anchors.left: boardToolbar.left
+        anchors.right: boardToolbar.right
+        anchors.topMargin: theme.spacingXs
+        visible: text.length > 0
+        text: boardScreen.loadedStreamNotice
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        horizontalAlignment: Text.AlignHCenter
+        font.pixelSize: theme.fontSmall
+        color: theme.errorText
     }
 
     component FinishedGameAction: Column {
