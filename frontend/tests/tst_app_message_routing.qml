@@ -2103,6 +2103,60 @@ TestCase {
         verify(String(screen.source).endsWith("LoginScreen.qml"))
     }
 
+    function test_historyPgnSelectionCancelsPendingReview() {
+        var history = screen.item
+        endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest, games: [
+            {game_id: "replay01", review_supported: true},
+            {game_id: "variant1", variant: "atomic", review_supported: false}
+        ]})
+        var cards = archiveRows(history)
+        verify(waitForRendering(cards[0]) && waitForRendering(cards[1]))
+        mouseClick(cards[0])
+        var abandoned = gameMoveRequests().slice(-1)[0]
+        mouseClick(cards[1])
+        compare(endpoint.sentMessages.slice(-1)[0],
+                {type: "CancelGameReview", request_id: abandoned.request_id})
+        var dialog = findChild(app, "pgnExportDialog")
+        var save = findChild(dialog, "savePgnButton")
+        verify(dialog.visible && !dialog.saving && !history.openingReview)
+        compare(dialog.gameId, "variant1")
+        compare(pgnRequests().length, 0)
+
+        replyWithMoves(abandoned.request_id, "d4")
+        endpoint.reply({type: "GameMovesFailed", request_id: abandoned.request_id,
+                        pgn_fallback: true, message: "Old Review error"})
+        compare(screen.item, history)
+        verify(dialog.visible)
+        compare(history.errorMessage, "")
+        compare(history.games[0].pgn_fallback, undefined)
+        save.clicked()
+        var exportRequest = pgnRequests().slice(-1)[0]
+        compare(exportRequest.game_id, "variant1")
+
+        endpoint.reply({type: "PgnExportFailed", request_id: exportRequest.request_id,
+                        game_id: "replay01", message: "Wrong game"})
+        verify(dialog.saving)
+        endpoint.reply({type: "PgnExportFailed", request_id: exportRequest.request_id,
+                        game_id: "variant1", message: "Selected game could not be saved"})
+        compare(dialog.errorMessage, "Selected game could not be saved")
+        save.clicked()
+        var retry = pgnRequests().slice(-1)[0]
+        compare(retry.game_id, "variant1")
+        verify(retry.request_id > exportRequest.request_id)
+        findChild(dialog, "closePgnExportButton").clicked()
+        compare(endpoint.sentMessages.slice(-1)[0], {type: "CancelPgnExport", request_id: retry.request_id})
+        endpoint.reply({type: "PgnExported", request_id: retry.request_id, game_id: "variant1", path: "/late"})
+        verify(!dialog.visible && !dialog.saving)
+        compare(dialog.savedPath, "")
+
+        mouseClick(cards[0])
+        var deliberate = gameMoveRequests().slice(-1)[0]
+        compare(deliberate.game_id, "replay01")
+        verify(deliberate.request_id > abandoned.request_id)
+        replyWithMoves(deliberate.request_id, "e4")
+        compare(screen.item.pgnGameId, "replay01")
+    }
+
     function test_historyOffersPgnForOnlyTheReplayThatExceededTheLimit() {
         var history = screen.item
         endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest, games: [

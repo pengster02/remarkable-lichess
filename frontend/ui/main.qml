@@ -142,7 +142,11 @@ Rectangle {
     }
 
     function openPgnExport(gameId, saveNow) {
-        if (root.hasToken) pgnExport.openFor(gameId, saveNow)
+        if (!root.hasToken || !gameId) return
+        // A late Review can change the page under the PGN dialog. Hiding the
+        // dialog loses the new selection, and disabling Export makes it wait.
+        root.cancelPendingReview()
+        pgnExport.openFor(gameId, saveNow)
     }
 
     function nextRequestId() {
