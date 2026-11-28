@@ -24,6 +24,8 @@ pub struct LichessClient {
 
 const ONE_SHOT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 const HISTORY_PAGE_SIZE: usize = 20;
+const HTTP_ERROR_BODY_LIMIT: usize = 4 * 1024;
+const HTTP_ERROR_REASON_LIMIT: usize = 240;
 
 #[derive(Debug)]
 struct HttpResponseError {
@@ -115,38 +117,71 @@ pub async fn is_reachable(base_url: &str) -> bool {
     }
 }
 
-/// Lichess error responses carry an actionable `{"error": "..."}` JSON body (confirmed
-/// against the real API: a scope-missing 403 came back as `{"error":"Missing scope:
-/// board:play"}`) that every method here used to throw away, surfacing only the bare
-/// HTTP status code to whoever called it. Reads the body and prefers its `error` field;
-/// falls back to a bounded plain-text reason and ignores HTML error pages.
-async fn error_from_response(context: &str, resp: reqwest::Response) -> anyhow::Error {
+async fn error_from_response(context: &str, mut resp: reqwest::Response) -> anyhow::Error {
     let status = resp.status();
     // Record the rate limit even if the body stalls and the caller cancels.
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return http_response_error(context, status, None);
     }
-    let body = resp.text().await.unwrap_or_default();
-    let json_reason = serde_json::from_str::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
-        .filter(|s| !s.is_empty());
-    let reason = json_reason.or_else(|| {
-        let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
-        if compact.starts_with("<!DOCTYPE") || compact.starts_with("<html") {
+    if resp.headers().get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/html"))
+    {
+        return http_response_error(context, status, None);
+    }
+    // Reading the whole body before trimming lets an outage grow the buffer.
+    // Dropping every body loses actionable reasons such as missing scopes.
+    let mut body = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = HTTP_ERROR_BODY_LIMIT - body.len();
+                if chunk.len() > remaining {
+                    body.extend_from_slice(&chunk[..remaining]);
+                    return http_response_error(context, status, http_error_reason(&body, true));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => return http_response_error(context, status, http_error_reason(&body, false)),
+            Err(_) => return http_response_error(context, status, None),
+        }
+    }
+}
+
+fn http_error_reason(body: &[u8], truncated: bool) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim_start_matches('\u{feff}').trim();
+    if text.starts_with(['{', '[']) {
+        if truncated {
             return None;
         }
-        let mut chars = compact.chars();
-        let shortened: String = chars.by_ref().take(240).collect();
-        if chars.next().is_some() {
-            Some(format!("{shortened}..."))
-        } else if shortened.is_empty() {
-            None
-        } else {
-            Some(shortened)
-        }
+        let json: serde_json::Value = serde_json::from_str(text).ok()?;
+        return short_error_reason(json.get("error")?.as_str()?, false);
+    }
+    if ["<!doctype", "<html"].iter().any(|prefix| {
+        text.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    }) {
+        return None;
+    }
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    short_error_reason(&compact, truncated)
+}
+
+fn short_error_reason(reason: &str, truncated: bool) -> Option<String> {
+    if reason.trim().is_empty() {
+        return None;
+    }
+    let mut chars = reason.chars().map(|ch| match ch {
+        '\u{2028}' | '\u{2029}' => '\u{fffd}',
+        ch if ch.is_control() => '\u{fffd}',
+        ch => ch,
     });
-    http_response_error(context, status, reason)
+    let mut shortened: String = chars.by_ref().take(HTTP_ERROR_REASON_LIMIT).collect();
+    if truncated || chars.next().is_some() {
+        shortened.push_str("...");
+    }
+    Some(shortened)
 }
 
 pub(super) fn http_response_error(
@@ -841,6 +876,58 @@ mod tests {
                 return socket;
             }
         }
+    }
+
+    #[test]
+    fn http_error_reasons_fit_on_one_line_without_losing_short_messages() {
+        assert_eq!(http_error_reason(br#"{"error":"Missing scope: challenge:read"}"#, false).as_deref(),
+                   Some("Missing scope: challenge:read"));
+        assert_eq!(http_error_reason(b"\n Service \t unavailable \r\n", false).as_deref(),
+                   Some("Service unavailable"));
+        assert_eq!(http_error_reason(br#"{"error":"Try\nagain\u0000later\u2028please"}"#, false).as_deref(),
+                   Some("Try\u{fffd}again\u{fffd}later\u{fffd}please"));
+        for body in [
+            &b"<!doctype HTML>Gateway error"[..],
+            &b"<HtMl>Gateway error"[..],
+            &b""[..],
+            &br#"{"error":{}}"#[..],
+            &br#"{"error":"truncated"#[..],
+        ] {
+            assert_eq!(http_error_reason(body, false), None);
+        }
+
+        let preview = format!("{}...", "♞".repeat(240));
+        let long = "♞".repeat(300);
+        let json = serde_json::json!({ "error": long }).to_string();
+        assert_eq!(http_error_reason(json.as_bytes(), false).as_deref(), Some(preview.as_str()));
+        assert_eq!(http_error_reason(json.as_bytes(), true), None);
+        assert_eq!(http_error_reason(long.as_bytes(), true).as_deref(), Some(preview.as_str()));
+    }
+
+    #[tokio::test]
+    async fn oversized_http_error_finishes_before_the_chunked_body_ends() {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", server.local_addr().unwrap());
+        let (release, finalize) = oneshot::channel::<()>();
+        let writer = tokio::spawn(async move {
+            let mut socket = accept_http_request(server).await;
+            socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+            for _ in 0..3 {
+                socket.write_all(b"800\r\n").await.unwrap();
+                socket.write_all(&[b'x'; 2048]).await.unwrap();
+                socket.write_all(b"\r\n").await.unwrap();
+            }
+            let _ = finalize.await;
+        });
+        let client = LichessClient::with_base_url("test-token".into(), endpoint);
+        let result = tokio::time::timeout(Duration::from_secs(3), client.export_game("testgame")).await;
+        drop(release);
+        writer.await.unwrap();
+
+        let error = result.expect("error should return before EOF").unwrap_err();
+        let status = error.downcast_ref::<HttpResponseError>().unwrap();
+        assert_eq!(status.status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(status.reason.as_deref(), Some(format!("{}...", "x".repeat(240)).as_str()));
     }
 
     async fn read_http_stream(response: &'static [u8]) -> Vec<String> {
@@ -2383,6 +2470,7 @@ mod tests {
     async fn only_a_challenge_read_scope_denial_stops_list_retries() {
         for (status, reason, denied) in [
             (403, "Missing scope: challenge:read", true),
+            (403, "Missing scope:\nchallenge:read", false),
             (403, "Missing scope: board:play", false),
             (403, "Access denied", false),
             (503, "Missing scope: challenge:read", false),
