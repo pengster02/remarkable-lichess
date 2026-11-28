@@ -35,6 +35,16 @@ pub struct Account {
     pub perfs: Option<Perfs>,
 }
 
+// Keep the upstream row separate so only a position-checked move reaches the UI.
+// A required SAN would drop usable rows, and a default SAN could leak a blank label.
+#[derive(Debug, Deserialize)]
+pub struct OpeningExplorerSourceMove {
+    pub uci: String,
+    pub white: u64,
+    pub draws: u64,
+    pub black: u64,
+}
+
 #[cfg(any(feature = "transport", test))]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

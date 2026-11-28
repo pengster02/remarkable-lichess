@@ -1,5 +1,6 @@
 use super::rules::{resolve_uci_move, starting_position, supports_variant};
-use crate::protocol::OpeningExplorerData;
+use crate::lichess::models::OpeningExplorerSourceMove;
+use crate::protocol::{OpeningExplorerData, OpeningExplorerMove};
 use anyhow::{Context, Result};
 use shakmaty::{fen::Fen, san::SanPlus, uci::UciMove, Chess, EnPassantMode, Move, Position};
 use std::collections::HashMap;
@@ -110,12 +111,12 @@ impl OpeningExplorerPosition {
         Ok(Self { root_fen, play, position })
     }
 
-    pub fn normalize_moves(&self, mut data: OpeningExplorerData) -> Result<OpeningExplorerData> {
+    pub fn normalize_moves(&self, data: OpeningExplorerData<OpeningExplorerSourceMove>) -> Result<OpeningExplorerData> {
         let had_moves = !data.moves.is_empty();
         let mut counts_by_move = HashMap::new();
         let mut remaining_counts = [data.white, data.draws, data.black];
         let mut moves = Vec::with_capacity(data.moves.len());
-        for mut row in data.moves {
+        for row in data.moves {
             let Ok(chess_move) = resolve_uci_move(&self.position, &row.uci) else {
                 continue;
             };
@@ -131,13 +132,16 @@ impl OpeningExplorerPosition {
             for (remaining, count) in remaining_counts.iter_mut().zip(counts) {
                 *remaining = remaining.checked_sub(count).context("opening moves exceed the position totals")?;
             }
-            row.uci = UciMove::from_standard(chess_move).to_string();
-            row.san = SanPlus::from_move(self.position.clone(), chess_move).to_string();
-            moves.push(row);
+            moves.push(OpeningExplorerMove {
+                uci: UciMove::from_standard(chess_move).to_string(),
+                san: SanPlus::from_move(self.position.clone(), chess_move).to_string(),
+                white: row.white,
+                draws: row.draws,
+                black: row.black,
+            });
         }
         anyhow::ensure!(!had_moves || !moves.is_empty(), "no opening moves are legal in this position");
-        data.moves = moves;
-        Ok(data)
+        Ok(OpeningExplorerData { white: data.white, draws: data.draws, black: data.black, opening: data.opening, moves })
     }
 }
 
@@ -173,10 +177,10 @@ mod tests {
     fn opening_explorer_preserves_the_played_path_and_normalizes_castling() {
         let root = "r1bqk2r/ppppbppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1";
         let explorer = OpeningExplorerPosition::from_replay(root, &[], root).unwrap();
-        let data: OpeningExplorerData = serde_json::from_value(serde_json::json!({
+        let data = serde_json::from_value(serde_json::json!({
             "white": 4, "draws": 2, "black": 3,
             "moves": [
-                {"san": "O-O", "uci": "e1h1", "white": 4, "draws": 2, "black": 3},
+                {"uci": "e1h1", "white": 4, "draws": 2, "black": 3},
                 {"san": "bad", "uci": "a1a8", "white": 0, "draws": 0, "black": 0}
             ]
         })).unwrap();
@@ -216,6 +220,38 @@ mod tests {
             (json!([row("e5d6", 0, 0, 0)]), "no recorded games"),
         ] {
             assert!(explorer.normalize_moves(data(moves)).unwrap_err().to_string().contains(error), "{error}");
+        }
+    }
+
+    #[test]
+    fn opening_explorer_derives_display_san_without_relaxing_required_move_fields() {
+        use serde_json::json;
+
+        let root = "r3k2r/ppp1pppp/8/3pP3/8/8/PPPP1PPP/R3K2R w KQkq d6 0 3";
+        let explorer = OpeningExplorerPosition::from_replay(root, &[], root).unwrap();
+        let row = json!({"uci": "e5d6", "white": 2, "draws": 1, "black": 3});
+        let decode = |row| serde_json::from_value(json!({
+            "white": 10, "draws": 4, "black": 6, "moves": [row]
+        }));
+
+        for san in [None, Some(json!(null)), Some(json!(42)), Some(json!("O-O"))] {
+            let mut upstream = row.clone();
+            if let Some(san) = san {
+                upstream["san"] = san;
+            }
+            let data = explorer.normalize_moves(decode(upstream).unwrap()).unwrap();
+            assert_eq!(serde_json::to_value(data).unwrap(), json!({
+                "white": 10, "draws": 4, "black": 6, "opening": null,
+                "moves": [{"uci": "e5d6", "san": "exd6", "white": 2, "draws": 1, "black": 3}],
+            }));
+        }
+
+        for field in ["uci", "white", "draws", "black"] {
+            let mut upstream = row.clone();
+            upstream[field] = json!(null);
+            assert!(decode(upstream.clone()).is_err(), "{field}");
+            upstream.as_object_mut().unwrap().remove(field);
+            assert!(decode(upstream).is_err(), "{field}");
         }
     }
 

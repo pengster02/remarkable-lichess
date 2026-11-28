@@ -476,7 +476,7 @@ where
     }))
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct OpeningExplorerMove {
     pub uci: String,
     pub san: String,
@@ -486,7 +486,7 @@ pub struct OpeningExplorerMove {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct OpeningExplorerData {
+pub struct OpeningExplorerData<Move = OpeningExplorerMove> {
     pub white: u64,
     pub draws: u64,
     pub black: u64,
@@ -494,7 +494,7 @@ pub struct OpeningExplorerData {
     // continuations, and substituting a code can misidentify the opening.
     #[serde(default, deserialize_with = "deserialize_explorer_opening")]
     pub opening: Option<OpeningExplorerName>,
-    pub moves: Vec<OpeningExplorerMove>,
+    pub moves: Vec<Move>,
 }
 
 #[cfg(test)]
@@ -515,7 +515,7 @@ fn opening_explorer_keeps_statistics_when_labels_are_incomplete() {
         (json!(null), None),
     ];
     for (opening, expected) in cases {
-        let data: OpeningExplorerData = serde_json::from_value(json!({
+        let data: OpeningExplorerData<crate::lichess::models::OpeningExplorerSourceMove> = serde_json::from_value(json!({
             "opening": opening,
             "white": 10, "draws": 4, "black": 6,
             "moves": [{"uci": "e2e4", "san": "e4", "white": 5, "draws": 2, "black": 3}]
