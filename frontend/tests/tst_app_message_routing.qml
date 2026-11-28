@@ -4740,10 +4740,65 @@ TestCase {
         compare(loadingStatus.text, "Reconnecting...")
         endpoint.reply({type: "GameStreamFailed", game_id: "selected", message: "Game unavailable"})
         compare(loadingStatus.text, "Game unavailable")
+        compare(loadingStatus.textFormat, Text.PlainText)
+        verify(!findChild(screen.item, "boardStreamFailureNotice").visible)
         verify(back.enabled)
         back.clicked()
         verify(String(screen.source).endsWith("HomeScreen.qml"))
         endpoint.reply(boardState("selected"))
+        verify(String(screen.source).endsWith("HomeScreen.qml"))
+    }
+
+    function test_loadedBoardKeepsReconnectFailureReadable_data() {
+        return [
+            {tag: "Paper Pro Move", width: 954, height: 1696, shrinks: false},
+            {tag: "short viewport", width: 620, height: 1100, shrinks: true}
+        ]
+    }
+
+    function test_loadedBoardKeepsReconnectFailureReadable(data) {
+        width = data.width
+        height = data.height
+        app.openGame("selected")
+        var snapshot = boardState("selected")
+        snapshot.game_stream_connected = true
+        endpoint.reply(snapshot)
+        var board = screen.item
+        board.showCoordinates = true
+        var notice = findChild(board, "boardStreamFailureNotice")
+        var playerStatus = findChild(findChild(board, "topPlayerBar"), "playerStatusText")
+        var square = findChild(board, "boardSquare-a8")
+        verify(waitForRendering(board))
+        var originalSquareSize = square.width
+        verify(!notice.visible)
+        endpoint.reply({type: "GameStreamReconnecting", game_id: "selected"})
+        compare(playerStatus.text, "Reconnecting...")
+        verify(!notice.visible)
+
+        var message = "Updates stopped. Reference <board>" +
+            (data.shrinks ? "LongReference".repeat(10) : "") +
+            ". Return to Home and reopen this game."
+        endpoint.reply({type: "GameStreamFailed", game_id: "old", message: message})
+        verify(!notice.visible)
+        endpoint.reply({type: "GameStreamFailed", game_id: "selected", message: message})
+        verify(notice.visible)
+        compare(notice.text, message)
+        compare(notice.textFormat, Text.PlainText)
+        verify(!notice.truncated && notice.contentWidth <= notice.width)
+        verify(!playerStatus.visible)
+        compare(board.liveFen, snapshot.fen)
+        verify(!board.moveInputAvailable)
+
+        var back = findChild(board, "boardBackButton")
+        var toolbar = findChild(board, "boardToolbar")
+        tryVerify(function() {
+            return notice.y >= toolbar.y + toolbar.height && notice.y + notice.height <= back.y
+        })
+        verify(square.width > 0)
+        if (data.shrinks) verify(square.width < originalSquareSize)
+        else compare(square.width, originalSquareSize)
+        verify(back.visible && back.enabled)
+        mouseClick(back, back.width / 2, back.height / 2)
         verify(String(screen.source).endsWith("HomeScreen.qml"))
     }
 
