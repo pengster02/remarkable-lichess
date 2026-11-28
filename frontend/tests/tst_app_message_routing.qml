@@ -2474,6 +2474,72 @@ TestCase {
         verify(!findChild(history, "loadOlderGamesButton").visible)
     }
 
+    function test_filtersCancelPendingReview_data() {
+        return [
+            {tag: "changed filter", action: "apply"},
+            {tag: "unchanged filter", action: "unchanged"},
+            {tag: "dismissed draft", action: "dismiss"}
+        ]
+    }
+
+    function test_filtersCancelPendingReview(data) {
+        var history = screen.item
+        var game = {game_id: "samegame", opponent_name: "Opponent", rated: true}
+        var cursor = {until_ms: 1765526400001}
+        endpoint.reply({type: "GameHistory", request_id: history.pendingHistoryRequest,
+                        games: [game], next_cursor: cursor})
+        var historyCount = historyRequests().length
+        var abandoned = choose(game.game_id)
+        history.openFilters()
+        compare(endpoint.sentMessages.slice(-1)[0], {type: "CancelGameReview", request_id: abandoned})
+        verify(history.showFilters && !history.openingReview)
+        replyWithMoves(abandoned, "d4")
+        verify(screen.item === history && history.showFilters)
+
+        if (data.action === "apply") {
+            history.draftRated = "rated"
+            history.applyFilters()
+            compare(historyRequests().length, historyCount + 1)
+            var request = historyRequests().slice(-1)[0]
+            compare(request.rated, true)
+            endpoint.reply({type: "GameHistory", request_id: request.request_id,
+                            games: [game], next_cursor: cursor})
+        } else {
+            if (data.action === "dismiss") {
+                history.draftRated = "casual"
+                history.showFilters = false
+            } else {
+                history.applyFilters()
+            }
+            compare(history.filterRated, "all")
+            compare(historyRequests().length, historyCount)
+        }
+        verify(!history.showFilters)
+        compare(endpoint.sentMessages.filter(function(message) { return message.type === "CancelGameReview" }),
+                [{type: "CancelGameReview", request_id: abandoned}])
+        endpoint.reply({type: "GameMovesFailed", request_id: abandoned, retry_after_ms: 60000,
+                        message: "A late rate limit", pgn_fallback: true})
+        verify(history.gameExportCoolingDown)
+        compare(history.errorMessage, "")
+        compare(history.games[0].pgn_fallback, undefined)
+
+        app.gameExportRetryAt = 0
+        var current = choose(game.game_id)
+        verify(current > abandoned && history.openingReview)
+        replyWithMoves(abandoned, "d4")
+        verify(screen.item === history && history.openingReview)
+        endpoint.reply({type: "GameMoves", request_id: current, game_id: "another1",
+                        moves: ["d4"], fens: [startFen, startFen]})
+        verify(screen.item === history && history.openingReview)
+        replyWithMoves(current, "e4")
+        compare(screen.item.game.game_id, game.game_id)
+        compare(screen.item.moves, ["e4"])
+        findChild(screen.item, "reviewBackButton").clicked()
+        compare(screen.item.filterRated, data.action === "apply" ? "rated" : "all")
+        compare(screen.item.games, [game])
+        compare(screen.item.nextHistoryCursor, cursor)
+    }
+
     function openReviewFromPagedArchive(lastPage, nearBottom) {
         var requestId = applyHistoryFilters("rapid")
         var games = []
@@ -2550,10 +2616,17 @@ TestCase {
         verify(restoredPager.contentY < restoredOffset)
     }
 
-    function test_backFromReviewRestartsOnlyAnUnfinishedHistoryRead() {
-        var review = openReviewFromPagedArchive()
-        var interrupted = applyHistoryFilters("blitz")
+    function test_backFromReviewCanRetryAnInterruptedOlderPage() {
+        var requestId = applyHistoryFilters("blitz")
+        var history = screen.item
+        var game = {game_id: "current"}
+        var cursor = {until_ms: 1765526400001}
+        endpoint.reply({type: "GameHistory", request_id: requestId, games: [game], next_cursor: cursor})
+        history.loadOlderGames()
+        var interrupted = history.pendingHistoryRequest
+        verify(history.loadingOlder)
         var count = historyRequests().length
+        var review = choose(game.game_id)
         replyWithMoves(review, "e4")
         tryVerify(function() {
             return endpoint.sentMessages.some(function(message) {
@@ -2563,17 +2636,21 @@ TestCase {
         findChild(screen.item, "reviewBackButton").clicked()
 
         var returned = screen.item
+        compare(historyRequests().length, count)
+        compare(returned.games, [game])
+        compare(returned.nextHistoryCursor, cursor)
+        returned.loadOlderGames()
         var requests = historyRequests()
         compare(requests.length, count + 1)
         var resumed = requests[count]
         verify(resumed.request_id > interrupted)
         compare(resumed, {type: "RequestGameHistory", request_id: resumed.request_id,
-                          rated: true, speed: "blitz", color: "black"})
+                          rated: true, speed: "blitz", color: "black", cursor: cursor})
         endpoint.reply({type: "GameHistory", request_id: interrupted, games: [{game_id: "stale"}]})
-        verify(returned.loading)
-        compare(returned.games.length, 0)
-        endpoint.reply({type: "GameHistory", request_id: resumed.request_id, games: [{game_id: "current"}]})
-        compare(returned.games[0].game_id, "current")
+        verify(returned.loadingOlder)
+        compare(returned.games, [game])
+        endpoint.reply({type: "GameHistory", request_id: resumed.request_id, games: [{game_id: "older"}]})
+        compare(returned.games.map(function(row) { return row.game_id }), ["current", "older"])
     }
 
     function test_backFromFinishedBoardReviewStartsAFreshArchive_data() {

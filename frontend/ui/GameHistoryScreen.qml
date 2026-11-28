@@ -14,6 +14,7 @@ Rectangle {
     // RequestGameMoves *and* remembers the tapped row's own summary so
     // GameReviewScreen's header can show who was played, not just moves/fens.
     property var selectGameForReview
+    property var cancelGameReview
     property var openPgnExport
     property var games: []
     // "all"/"rated"/"casual" -- "all" sends rated: null, matching GET
@@ -120,6 +121,7 @@ Rectangle {
 
     function requestFiltered() {
         if (!gameHistoryScreen.backendSender || !gameHistoryScreen.nextRequestId) return
+        if (gameHistoryScreen.cancelGameReview) gameHistoryScreen.cancelGameReview()
         gameHistoryScreen.loading = !gameHistoryScreen.historyCoolingDown
         gameHistoryScreen.errorMessage = ""
         gameHistoryScreen.loadError = gameHistoryScreen.historyCoolingDown
@@ -190,6 +192,9 @@ Rectangle {
     }
 
     function openFilters() {
+        // The draft takes focus immediately. Waiting for Apply leaves a
+        // window for Review to replace the dialog, and disabling Filters traps the user in the wait.
+        if (cancelGameReview) cancelGameReview()
         draftRated = filterRated
         draftSpeed = filterSpeed
         draftColor = filterColor
