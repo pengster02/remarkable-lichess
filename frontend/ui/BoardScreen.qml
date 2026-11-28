@@ -43,6 +43,11 @@ Rectangle {
         ? boardScreen.streamFailure.message : ""
     readonly property string loadedStreamNotice: !boardScreen.awaitingBoard && boardScreen.streamError.length > 0
         ? boardScreen.topStatusText() : ""
+    readonly property bool streamFailureNeedsDetails: loadedStreamNotice.length > 0 &&
+        grid.heightWithNotice < Math.min(grid.widthWithoutNotice, grid.heightAboveBack, theme.touchTarget * 2)
+    property bool showStreamFailureDetails: false
+    onLoadedStreamNoticeChanged: showStreamFailureDetails = false
+    onStreamFailureNeedsDetailsChanged: if (!streamFailureNeedsDetails) showStreamFailureDetails = false
     property bool streamReconnecting: false
     property bool streamRateLimited: false
     property bool moveSubmissionCoolingDown: false
@@ -1132,16 +1137,19 @@ Rectangle {
                     id: grid
                     columns: 8
                     rows: 8
-                    readonly property real heightWithNotice: backButton.y - boardColumn.y -
+                    readonly property real widthWithoutNotice: Math.min(
+                        boardColumn.width - rankLabels.width - theme.spacingXs, boardScreen.height * 0.5)
+                    readonly property real heightAboveBack: backButton.y - boardColumn.y -
                         topPlayerBar.height - bottomPlayerBar.height - 2 * boardColumn.spacing -
                         (gameDescriptionText.visible ? gameDescriptionText.height + boardColumn.spacing : 0) -
                         (fileLabels.visible ? fileLabels.height + boardColumn.spacing : 0) -
-                        boardToolbar.height - boardToolbar.anchors.topMargin -
-                        streamFailureNotice.height - streamFailureNotice.anchors.topMargin - theme.spacingXs
+                        boardToolbar.height - boardToolbar.anchors.topMargin - theme.spacingXs
+                    readonly property real heightWithNotice: heightAboveBack -
+                        streamFailureNotice.implicitHeight - streamFailureNotice.anchors.topMargin
                     width: Math.max(0, Math.min(
-                        boardColumn.width - rankLabels.width - theme.spacingXs,
-                        boardScreen.height * 0.5,
-                        streamFailureNotice.visible ? heightWithNotice : Infinity
+                        widthWithoutNotice,
+                        !boardScreen.loadedStreamNotice ? Infinity :
+                            (boardScreen.streamFailureNeedsDetails ? heightAboveBack : heightWithNotice)
                     ))
                     height: width
 
@@ -1366,16 +1374,19 @@ Rectangle {
         visible: !boardScreen.awaitingBoard
 
         BoardToolButton {
+            objectName: "boardGameActionsButton"
             width: (parent.width - parent.spacing) / 2
-            text: boardScreen.gameActionsLabel()
-            enabled: boardScreen.streamError.length === 0
+            text: boardScreen.streamFailureNeedsDetails ? "Connection details" : boardScreen.gameActionsLabel()
+            enabled: boardScreen.streamError.length === 0 || boardScreen.streamFailureNeedsDetails
             highlighted: boardScreen.pendingGameAction.length > 0 ||
                 boardScreen.gameOver ||
                 (boardScreen.offerActionsAvailable &&
                     (boardScreen.drawOfferedByOpponent || boardScreen.takebackOfferedByOpponent)) ||
                 boardScreen.opponentGone
             onClicked: {
-                if (boardScreen.pendingGameAction.length === 0) {
+                if (boardScreen.streamFailureNeedsDetails) {
+                    boardScreen.showStreamFailureDetails = true
+                } else if (boardScreen.pendingGameAction.length === 0) {
                     boardScreen.showGameActions = true
                 }
             }
@@ -1388,7 +1399,7 @@ Rectangle {
         }
     }
 
-    // Wrapping in the player bar shifts the board, while a dialog obscures it.
+    // Always wrapping can erase the board, while always using a dialog hides a notice that fits.
     Text {
         id: streamFailureNotice
         objectName: "boardStreamFailureNotice"
@@ -1396,13 +1407,43 @@ Rectangle {
         anchors.left: boardToolbar.left
         anchors.right: boardToolbar.right
         anchors.topMargin: theme.spacingXs
-        visible: text.length > 0
+        visible: text.length > 0 && !boardScreen.streamFailureNeedsDetails
         text: boardScreen.loadedStreamNotice
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         horizontalAlignment: Text.AlignHCenter
         font.pixelSize: theme.fontSmall
         color: theme.errorText
+    }
+
+    Loader {
+        anchors.fill: parent
+        active: boardScreen.streamFailureNeedsDetails && boardScreen.showStreamFailureDetails
+        z: 200
+        sourceComponent: AppDialog {
+            objectName: "boardStreamFailureDialog"
+            darkMode: boardScreen.darkMode
+            title: "Connection lost"
+            onDismissed: boardScreen.showStreamFailureDetails = false
+
+            Text {
+                objectName: "boardStreamFailureDetail"
+                width: parent.width
+                text: boardScreen.loadedStreamNotice
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: theme.fontSmall
+                color: theme.errorText
+            }
+
+            footer: AppButton {
+                objectName: "boardStreamFailureClose"
+                width: parent.width
+                text: "Close"
+                compact: true
+                onClicked: boardScreen.showStreamFailureDetails = false
+            }
+        }
     }
 
     component FinishedGameAction: Column {
