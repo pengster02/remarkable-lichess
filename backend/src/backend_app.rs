@@ -1213,11 +1213,16 @@ impl LichessBackend {
                 return;
             }
             let reply = match client.get_game_history_page(&my_id, &filters, cursor).await {
-                Ok((games, next_cursor)) => BackendMessage::GameHistory {
-                    request_id,
-                    games: games.into_iter().filter_map(|game| history_game_to_summary(game, &my_id)).collect(),
-                    next_cursor,
-                },
+                Ok((games, next_cursor)) => {
+                    // Keep the first eligible summary. Deduplicating before
+                    // pagination could move the cursor, and merging rows could mix participants.
+                    let mut seen = HashSet::new();
+                    let games = games.into_iter()
+                        .filter_map(|game| history_game_to_summary(game, &my_id))
+                        .filter(|game| seen.insert(game.game_id.clone()))
+                        .collect();
+                    BackendMessage::GameHistory { request_id, games, next_cursor }
+                }
                 Err(error) if is_unauthorized(&error) => {
                     report_account_rejection(&replier, &credential_rejected);
                     return;

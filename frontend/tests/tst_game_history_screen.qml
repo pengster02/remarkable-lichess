@@ -115,6 +115,27 @@ TestCase {
         compare(history.games[0].game_id, "selected")
     }
 
+    function test_historyKeepsOneCardPerGameFromTheFirstPage() {
+        var first = {game_id: "first", opponent_name: "First opponent"}
+        var second = {game_id: "second", opponent_name: "Second opponent"}
+        var cursor = {until_ms: 1765526400001, seen_at_cutoff: ["first"]}
+        history.requestFiltered()
+        history.handleMessage({type: "GameHistory", request_id: sentMessages[0].request_id,
+                               games: [first, {game_id: "first", opponent_name: "Repeated row"}],
+                               next_cursor: cursor})
+        compare(history.games, [first])
+        var row = findChild(history, "historyGameRow")
+        verify(row && waitForRendering(row))
+
+        history.loadOlderGames()
+        compare(sentMessages[1].cursor, cursor)
+        history.handleMessage({type: "GameHistory", request_id: sentMessages[1].request_id,
+                               games: [{game_id: "first"}, second, {game_id: "second"}]})
+        compare(history.games, [first, second])
+        compare(findChild(history, "historyGameRow"), row)
+        compare(history.nextHistoryCursor, null)
+    }
+
     function loadGames(games) {
         history.requestFiltered()
         var request = sentMessages[sentMessages.length - 1].request_id
