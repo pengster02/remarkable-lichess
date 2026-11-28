@@ -179,16 +179,20 @@ Rectangle {
         gameHistoryScreen.backendSender(request)
     }
 
-    function appendHistory(newGames) {
-        var seen = new Set(games.map(function(game) { return game.game_id }))
-        var added = newGames.filter(function(game) {
+    function applyHistoryPage(newGames, older) {
+        var seen = new Set(older ? games.map(function(game) { return game.game_id }) : [])
+        var unique = newGames.filter(function(game) {
             if (seen.has(game.game_id)) return false
             seen.add(game.game_id)
             return true
         })
-        if (!added.length) return
-        restoredPosition = captureHistoryPosition()
-        games = games.concat(added)
+        if (older) {
+            if (!unique.length) return
+            restoredPosition = captureHistoryPosition()
+            games = games.concat(unique)
+        } else {
+            games = unique
+        }
     }
 
     function syncHistoryCardIndices() {
@@ -636,8 +640,7 @@ Rectangle {
             gameHistoryScreen.pendingHistoryRequest = 0
             gameHistoryScreen.loading = false
             if (msg.type === "GameHistory") {
-                if (older) gameHistoryScreen.appendHistory(msg.games || [])
-                else gameHistoryScreen.games = msg.games || []
+                gameHistoryScreen.applyHistoryPage(msg.games || [], older)
                 gameHistoryScreen.nextHistoryCursor = msg.next_cursor || null
             } else {
                 if (older) gameHistoryScreen.showOlderLoadError(msg.message || "Lichess could not load older games.")
