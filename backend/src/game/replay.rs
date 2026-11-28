@@ -48,7 +48,7 @@ pub fn replay_export(
     moves: &[impl AsRef<str>],
 ) -> Result<ExportReplay> {
     if let Some(variant) = variant {
-        anyhow::ensure!(supports_variant(variant), "Review is unavailable for {variant} games");
+        anyhow::ensure!(supports_variant(variant), "Review is unavailable for this variant");
     }
     // Trust the export's initial position. The normal opening can render a legal
     // but wrong line, and parsing a separate PGN duplicates the JSON export.
@@ -67,8 +67,9 @@ fn replay_from_position(mut pos: Chess, moves: &[impl AsRef<str>]) -> Result<Exp
     let mut fens = Vec::with_capacity(moves.len() + 1);
     let mut canonical_moves = Vec::with_capacity(moves.len());
     fens.push(fen_string(&pos));
-    for san_str in moves {
-        canonical_moves.push(play_san(&mut pos, san_str.as_ref())?);
+    for (index, san_str) in moves.iter().enumerate() {
+        canonical_moves.push(play_san(&mut pos, san_str.as_ref())
+            .with_context(|| format!("archive ply {}", index + 1))?);
         fens.push(fen_string(&pos));
     }
     Ok(ExportReplay { moves: canonical_moves, fens, initial_in_check })
@@ -82,10 +83,11 @@ pub(crate) fn play_san(pos: &mut Chess, san: &str) -> Result<String> {
 }
 
 fn resolve_san(pos: &Chess, san: &str) -> Result<Move> {
-    SanPlus::from_ascii(san.as_bytes())
-        .with_context(|| format!("parsing SAN move {san:?}"))?
-        .san.to_move(pos)
-        .with_context(|| format!("resolving SAN move {san:?} against the current position"))
+    // A rejected token has no length limit. Truncating the final log would
+    // still build the oversized error and could cut off the parser's cause.
+    let parsed = SanPlus::from_ascii(san.as_bytes()).context("parsing SAN move")?;
+    parsed.san.to_move(pos)
+        .with_context(|| format!("resolving SAN move {parsed} against the current position"))
 }
 
 pub struct OpeningExplorerPosition {
@@ -171,6 +173,23 @@ mod tests {
         assert!(fens[2].contains(" w "));
         // After 1. e4 e5 2. Nf3, Black to move, knight left g1.
         assert!(fens[3].contains(" b "));
+    }
+
+    #[test]
+    fn replay_reports_the_failed_ply_without_echoing_rejected_export_fields() {
+        let oversized = "Z".repeat(230_000);
+        let invalid = replay_export(Some("standard"), None, &["d4", oversized.as_str()]).unwrap_err();
+        assert_eq!(format!("{invalid:#}"), "archive ply 2: parsing SAN move: invalid san");
+
+        let illegal = replay_export(Some("standard"), None, &["d4", "e4"]).unwrap_err();
+        assert_eq!(format!("{illegal:#}"),
+            "archive ply 2: resolving SAN move e4 against the current position: illegal san");
+
+        let invalid_fen = replay_export(Some("fromPosition"), Some(&oversized), &["d4"]).unwrap_err();
+        assert_eq!(format!("{invalid_fen:#}"), "parsing initial FEN: invalid board part in fen");
+
+        let variant = replay_export(Some(&oversized), None, &["d4"]).unwrap_err();
+        assert_eq!(format!("{variant:#}"), "Review is unavailable for this variant");
     }
 
     #[test]
