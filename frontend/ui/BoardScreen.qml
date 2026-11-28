@@ -35,7 +35,12 @@ Rectangle {
     property string gameId: ""
     onGameIdChanged: reviewOpenError = ""
     property string requestedGameId: ""
-    property string streamError: ""
+    onRequestedGameIdChanged: streamFailure = null
+    // A bare message can follow a new selection. Clearing on snapshots alone misses pre-snapshot failures.
+    property var streamFailure: null
+    readonly property string streamError: boardScreen.streamFailure &&
+        boardScreen.streamFailure.gameId === (boardScreen.requestedGameId || boardScreen.gameId)
+        ? boardScreen.streamFailure.message : ""
     readonly property string loadedStreamNotice: !boardScreen.awaitingBoard && boardScreen.streamError.length > 0
         ? boardScreen.topStatusText() : ""
     property bool streamReconnecting: false
@@ -242,6 +247,7 @@ Rectangle {
     }
     property bool gameOver: false
     property bool finishedReviewSupported: true
+    property bool finishedPgnFallback: false
     readonly property bool finishedGameSelected: boardScreen.gameOver && boardScreen.gameId.length > 0 &&
         (!boardScreen.requestedGameId || boardScreen.requestedGameId === boardScreen.gameId)
     property bool awaitingGameStart: false
@@ -1430,6 +1436,20 @@ Rectangle {
             enabled: !boardScreen.finishedReviewSupported || (!boardScreen.openingReview && !boardScreen.gameExportCoolingDown)
             onClicked: boardScreen.openFinishedGame()
         }
+        // A replay error can clear on retry. Switching to PGN-only would lose that retry,
+        // while a notice alone leaves Export PGN out of reach.
+        Loader {
+            width: parent.width
+            active: finishedAction.visible && boardScreen.finishedReviewSupported &&
+                boardScreen.finishedPgnFallback && !!boardScreen.openPgnExport
+            visible: active
+            sourceComponent: AppButton {
+                objectName: finishedAction.exportButtonName
+                width: parent.width
+                text: "Export PGN"
+                onClicked: boardScreen.openPgnExport(boardScreen.gameId, false)
+            }
+        }
     }
 
     Loader {
@@ -2022,10 +2042,8 @@ Rectangle {
                 boardScreen.gameResult = result
             }
         } else {
-            outcome = reason && reason.length > 0
-                ? reason
-                : chessDisplay.resultLabel(result)
-            boardScreen.gameResult = result
+            outcome = reason || (result ? chessDisplay.resultLabel(result) : "Game ended")
+            boardScreen.gameResult = result || ""
         }
         boardScreen.gameOver = true
         boardScreen.awaitingGameStart = false
@@ -2041,6 +2059,7 @@ Rectangle {
 
     function showOutcomeWithoutFinalPosition(msg) {
         var gameChanged = boardScreen.gameId !== msg.game_id
+        var outcome = msg.outcome || {}
         if (gameChanged) {
             boardScreen.clearGameInput()
             boardScreen.fen = ""
@@ -2049,6 +2068,7 @@ Rectangle {
             boardScreen.positionHistory = []
             boardScreen.historyIndex = -1
             boardScreen.gameId = msg.game_id
+            boardScreen.finishedPgnFallback = false
         }
         var color = msg.your_color || ""
         var opponent = msg.opponent || {}
@@ -2057,13 +2077,24 @@ Rectangle {
             boardScreen.opponentRating = typeof opponent.rating === "number" ? opponent.rating : null
         }
         if (color) boardScreen.yourColor = color
-        if (typeof msg.outcome.rating_diff === "number") {
-            boardScreen.gameRatingChange = {gameId: msg.game_id, diff: msg.outcome.rating_diff}
+        if (typeof outcome.rating_diff === "number") {
+            boardScreen.gameRatingChange = {gameId: msg.game_id, diff: outcome.rating_diff}
         }
-        boardScreen.streamError = ""
+        boardScreen.streamFailure = null
         boardScreen.finalPositionUnavailable = true
-        boardScreen.finishedReviewSupported = msg.review_supported !== false
-        boardScreen.completeGame(msg.outcome.result, msg.outcome.reason, color)
+        if (gameChanged || !boardScreen.gameOver || msg.review_supported === false)
+            boardScreen.finishedReviewSupported = msg.review_supported !== false
+        boardScreen.completeGame(outcome.result || "", outcome.reason || "", color)
+    }
+
+    function finishAfterStreamRefusal() {
+        if (!boardScreen.awaitingFinalPosition || !boardScreen.streamError) return
+        // Waiting on a refused stream hides Review. Guessing the outcome can show a false result.
+        boardScreen.showOutcomeWithoutFinalPosition({
+            game_id: boardScreen.finalPositionGameId,
+            your_color: boardScreen.gameId === boardScreen.finalPositionGameId && boardScreen.liveFen.length > 0
+                ? boardScreen.yourColor : ""
+        })
     }
 
     function openFinishedGame() {
@@ -2099,8 +2130,9 @@ Rectangle {
             }
             if (!gameChanged && boardScreen.gameOver && (!boardScreen.finalPositionUnavailable || !msg.outcome)) return
             boardScreen.finalPositionUnavailable = false
-            boardScreen.finishedReviewSupported = true
-            boardScreen.streamError = ""
+            if (gameChanged) boardScreen.finishedPgnFallback = false
+            if (gameChanged || !boardScreen.gameOver) boardScreen.finishedReviewSupported = true
+            boardScreen.streamFailure = null
             if (typeof msg.game_stream_connected === "boolean") {
                 boardScreen.streamReconnecting = !msg.game_stream_connected
                 if (msg.game_stream_connected) boardScreen.streamRateLimited = false
@@ -2231,14 +2263,14 @@ Rectangle {
             if (promptScopeChanged || (boardScreen.boardNotice !== null && !boardScreen.boardNotice.positionBound)) {
                 boardScreen.boardNotice = null
             }
-            boardScreen.gameOver = false
-            boardScreen.showGameOverDialog = false
-            boardScreen.gameResult = ""
-            boardScreen.gameReason = ""
             if (msg.outcome) {
                 boardScreen.completeGame(msg.outcome.result, msg.outcome.reason)
                 return
             }
+            boardScreen.gameOver = false
+            boardScreen.showGameOverDialog = false
+            boardScreen.gameResult = ""
+            boardScreen.gameReason = ""
             if (awaitingFinal) {
                 boardScreen.waitForFinalPosition(nextGameId)
                 return
@@ -2258,15 +2290,18 @@ Rectangle {
                 boardScreen.applyPlayerStatus(players[playerIndex])
             }
         } else if (msg.type === "GameFinished") {
-            if (msg.game_id === (boardScreen.requestedGameId || boardScreen.gameId))
+            if (msg.game_id === (boardScreen.requestedGameId || boardScreen.gameId)) {
                 boardScreen.waitForFinalPosition(msg.game_id)
+                boardScreen.finishAfterStreamRefusal()
+            }
         } else if (msg.type === "FinalPositionUnavailable") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
-                    (boardScreen.gameId === msg.game_id && boardScreen.gameOver)) return
+                    (boardScreen.gameId === msg.game_id && boardScreen.gameOver && boardScreen.gameResult)) return
             boardScreen.showOutcomeWithoutFinalPosition(msg)
         } else if (msg.type === "GameOver") {
-            if (msg.game_id !== boardScreen.gameId || boardScreen.gameOver) return
-            boardScreen.completeGame(msg.result, msg.reason)
+            if (msg.game_id !== boardScreen.gameId || (boardScreen.gameOver && boardScreen.gameResult)) return
+            boardScreen.completeGame(msg.result, msg.reason,
+                boardScreen.finalPositionUnavailable ? boardScreen.resultPerspective : undefined)
         } else if (msg.type === "RatingDiff") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId)) return
             boardScreen.gameRatingChange = {gameId: msg.game_id, diff: msg.rating_diff}
@@ -2315,7 +2350,7 @@ Rectangle {
             moveRequestGate.clear()
         } else if (msg.type === "GameStreamReconnecting") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
-                    boardScreen.gameOver) return
+                    (boardScreen.gameOver && boardScreen.gameId === msg.game_id)) return
             // The move POST and game stream are independent connections. Rolling
             // back here made a valid optimistic move snap back whenever only the
             // stream dropped; MoveRejected or the next BoardState are authoritative.
@@ -2327,7 +2362,7 @@ Rectangle {
             boardScreen.opponentDeparture = null
         } else if (msg.type === "GameStreamFailed") {
             if (msg.game_id !== (boardScreen.requestedGameId || boardScreen.gameId) ||
-                    boardScreen.gameOver) return
+                    (boardScreen.gameOver && boardScreen.gameId === msg.game_id)) return
             boardScreen.rollbackMovePreview()
             moveRequestGate.clear()
             boardScreen.cancelPremove()
@@ -2337,7 +2372,8 @@ Rectangle {
             boardScreen.showGameActions = false
             boardScreen.streamReconnecting = false
             boardScreen.streamRateLimited = false
-            boardScreen.streamError = msg.message || "Could not load this game."
+            boardScreen.streamFailure = {gameId: msg.game_id, message: msg.message || "Could not load this game."}
+            boardScreen.finishAfterStreamRefusal()
         } else if (msg.type === "OpponentGone") {
             if (msg.game_id !== boardScreen.gameId || !boardScreen.gameplayAvailable) return
             boardScreen.opponentDeparture = msg.gone
@@ -2346,6 +2382,7 @@ Rectangle {
         } else if (msg.type === "GameMovesFailed") {
             boardScreen.reviewOpenError = msg.message || "Could not open this game for review."
             if (msg.review_supported === false) boardScreen.finishedReviewSupported = false
+            if (msg.pgn_fallback === true) boardScreen.finishedPgnFallback = true
         } else if (msg.type === "ErrorMsg") {
             boardScreen.boardNotice = {text: msg.message, positionBound: false}
         }

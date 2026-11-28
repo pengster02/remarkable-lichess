@@ -6373,6 +6373,151 @@ TestCase {
         compare(screen.item.gameDetailsLabel(), "Checkmate")
     }
 
+    function test_terminalStreamRefusalStillLetsYouReviewTheFinishedGame_data() {
+        return [
+            {tag: "finish first", finishFirst: true, loaded: true},
+            {tag: "refusal first", finishFirst: false, loaded: true},
+            {tag: "previous board was refused", finishFirst: true, loaded: false}
+        ]
+    }
+
+    function test_terminalStreamRefusalStillLetsYouReviewTheFinishedGame(data) {
+        if (!data.loaded) {
+            app.openGame("older")
+            var older = boardState("older")
+            older.your_color = "black"
+            older.opponent_player = {name: "Old opponent"}
+            endpoint.reply(older)
+            endpoint.reply({type: "GameStreamFailed", game_id: "older", message: "Old refusal"})
+        }
+        app.openGame("finished")
+        var board = screen.item
+        if (data.loaded) {
+            var snapshot = boardState("finished")
+            snapshot.opponent_player = {name: "Owl", rating: 1750}
+            endpoint.reply(snapshot)
+        }
+        var finish = {type: "GameFinished", game_id: "finished"}
+        var refused = {type: "GameStreamFailed", game_id: "finished", message: "Board unavailable"}
+        endpoint.reply(Object.assign({}, data.finishFirst ? refused : finish, {game_id: "older"}))
+        endpoint.reply(data.finishFirst ? finish : refused)
+        verify(!board.gameOver)
+        compare(board.awaitingFinalPosition, data.finishFirst)
+        compare(gameMoveRequests().length, 0)
+        endpoint.reply(data.finishFirst ? refused : finish)
+
+        verify(board.gameOver && board.finalPositionUnavailable && board.finishedGameSelected)
+        verify(!board.awaitingFinalPosition && !board.moveInputAvailable)
+        compare(board.gameResult, "")
+        compare(findChild(board, "gameOverSummary").text, "Game ended")
+        compare(board.liveFen, data.loaded ? startFen : "")
+        compare(findChild(board, "viewFinalBoardButton").visible, data.loaded)
+        compare(gameMoveRequests().length, 0)
+        var review = findChild(board, "reviewFinishedGameButton")
+        verify(review.visible && waitForRendering(review))
+        mouseClick(review, review.width / 2, review.height / 2)
+        var request = gameMoveRequests().slice(-1)[0]
+        compare(request.game_id, "finished")
+        endpoint.reply({type: "GameMoves", request_id: request.request_id, game_id: "finished",
+                        moves: [], fens: [startFen]})
+        compare(screen.item.pgnGameId, "finished")
+        compare(screen.item.game.result, "")
+        compare(screen.item.game.your_color, data.loaded ? "white" : "")
+        compare(screen.item.game.opponent_name, data.loaded ? "Owl" : "")
+    }
+
+    function test_finishedStreamRefusalKeepsExportCooldownAndLateResult_data() {
+        return [
+            {tag: "final snapshot", type: "BoardState"},
+            {tag: "known outcome without board", type: "FinalPositionUnavailable"},
+            {tag: "legacy outcome without board", type: "GameOver"}
+        ]
+    }
+
+    function test_finishedStreamRefusalKeepsExportCooldownAndLateResult(data) {
+        app.openGame("finished")
+        var board = screen.item
+        endpoint.reply(boardState("finished"))
+        endpoint.reply({type: "GameFinished", game_id: "finished"})
+        endpoint.reply({type: "GameStreamFailed", game_id: "finished", message: "Board unavailable"})
+        var review = findChild(board, "reviewFinishedGameButton")
+        review.clicked()
+        var first = gameMoveRequests().slice(-1)[0]
+        endpoint.reply({type: "GameMovesFailed", request_id: first.request_id, retry_after_ms: 60000,
+                        message: "Lichess limited game export requests."})
+        verify(!review.enabled)
+        compare(review.text, "Retry available shortly")
+        endpoint.reply(boardState("finished"))
+        verify(board.gameOver && board.finalPositionUnavailable)
+        compare(board.gameResult, "")
+
+        app.gameExportRetryAt = Date.now() + 50
+        tryVerify(function() { return review.enabled })
+        review.clicked()
+        var retry = gameMoveRequests().slice(-1)[0]
+        verify(retry.request_id > first.request_id)
+        endpoint.reply({type: "GameMovesFailed", request_id: retry.request_id, review_supported: false,
+                        message: "This game is too large for Review. Export its PGN instead."})
+        var outcome = {result: "black", reason: "Resignation"}
+        var actualFinal = data.type === "BoardState" ? boardState("finished")
+            : {type: data.type, game_id: "finished", your_color: "white"}
+        actualFinal.outcome = outcome
+        if (data.type === "GameOver") Object.assign(actualFinal, outcome)
+        endpoint.reply(actualFinal)
+        verify(board.gameOver)
+        compare(board.finalPositionUnavailable, data.type !== "BoardState")
+        compare(board.gameResult, "loss")
+        compare(findChild(board, "gameOverSummary").text, "You lost · Resignation")
+        var exportButton = findChild(board, "exportFinishedGameButton")
+        verify(exportButton.visible && exportButton.enabled)
+        exportButton.clicked()
+        var dialog = findChild(app, "pgnExportDialog")
+        verify(dialog.visible)
+        compare(dialog.gameId, "finished")
+    }
+
+    function test_finishedStreamRefusalOffersPgnAndRetryWhenTheArchiveCannotReplay() {
+        app.openGame("finished")
+        var board = screen.item
+        endpoint.reply({type: "GameStreamFailed", game_id: "finished", message: "Board unavailable"})
+        endpoint.reply({type: "GameFinished", game_id: "finished"})
+        var review = findChild(board, "reviewFinishedGameButton")
+        review.clicked()
+        var request = gameMoveRequests().slice(-1)[0]
+        endpoint.reply({type: "GameMovesFailed", request_id: request.request_id, pgn_fallback: true,
+                        message: "Could not replay this game. Try again or export its PGN."})
+        var exportButton = findChild(board, "exportFinishedGameButton")
+        verify(review.visible && review.enabled)
+        verify(exportButton.visible && exportButton.enabled)
+        exportButton.clicked()
+        var dialog = findChild(app, "pgnExportDialog")
+        verify(dialog.visible)
+        compare(dialog.gameId, "finished")
+        findChild(dialog, "savePgnButton").clicked()
+        var exported = pgnRequests().slice(-1)[0]
+        compare(exported.game_id, request.game_id)
+    }
+
+    function test_lateFinalBoardKeepsThePendingFinishedGameReview() {
+        app.openGame("finished")
+        endpoint.reply(boardState("finished"))
+        endpoint.reply({type: "GameFinished", game_id: "finished"})
+        endpoint.reply({type: "GameStreamFailed", game_id: "finished"})
+        var board = screen.item
+        findChild(board, "reviewFinishedGameButton").clicked()
+        var request = gameMoveRequests().slice(-1)[0]
+        verify(board.openingReview)
+
+        var snapshot = boardState("finished")
+        snapshot.outcome = {result: "black", reason: "Resignation"}
+        endpoint.reply(snapshot)
+        verify(board.openingReview)
+        compare(findChild(board, "gameOverSummary").text, "You lost · Resignation")
+        endpoint.reply({type: "GameMoves", request_id: request.request_id, game_id: "finished",
+                        moves: [], fens: [startFen]})
+        compare(screen.item.pgnGameId, "finished")
+    }
+
     function test_ratingBeforeFirstBoardSnapshot_data() {
         return [{tag: "first snapshot terminal", firstSnapshotFinished: true},
                 {tag: "first snapshot active", firstSnapshotFinished: false}]
