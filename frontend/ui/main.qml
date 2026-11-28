@@ -807,6 +807,8 @@ Rectangle {
             }
             if (item.hasOwnProperty("openGameReview")) {
                 item.openGameReview = root.openGameReview
+            }
+            if (item.hasOwnProperty("cancelGameReview")) {
                 item.cancelGameReview = root.cancelPendingReview
             }
             if (item.hasOwnProperty("openPgnExport")) {
