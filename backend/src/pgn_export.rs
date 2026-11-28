@@ -28,10 +28,10 @@ impl PgnExport {
         anyhow::ensure!(first.starts_with("[Event "), "Lichess returned an invalid PGN");
         // Generated exports always have one GameId. Site can refer to the imported
         // original, and trusting the request URL leaves mismatched bodies unchecked.
-        let mut lines = first.lines().map(str::trim).peekable();
+        let mut lines = first.lines().peekable();
         let (mut returned_id, mut result) = (None, None);
-        while let Some(line) = lines.next_if(|line| line.starts_with('[')) {
-            let tag = line[1..].trim_start();
+        while let Some(line) = lines.next_if(|line| line.trim_start().starts_with('[')) {
+            let tag = line.trim()[1..].trim_start();
             let (name, value) = tag.split_at(tag.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(tag.len()));
             let (expected_name, slot) = if name.eq_ignore_ascii_case("GameId") {
                 ("GameId", &mut returned_id)
@@ -48,25 +48,7 @@ impl PgnExport {
         let returned_id = returned_id.context("Lichess PGN is missing the GameId tag")?;
         anyhow::ensure!(returned_id == game_id.as_str(), "Lichess returned a different game");
         let result = result.context("Lichess PGN is missing the Result tag")?;
-        // Only brackets outside comments can begin a second record. Rejecting all
-        // brackets loses clock annotations; replaying SAN excludes some variants.
-        let mut in_comment = false;
-        for line in lines {
-            for byte in line.bytes() {
-                match (in_comment, byte) {
-                    (true, b'}') => in_comment = false,
-                    (false, b'{') => in_comment = true,
-                    (false, b';') => break,
-                    (false, b'[') => anyhow::bail!("Lichess PGN has a tag outside the game header"),
-                    _ => (),
-                }
-            }
-        }
-        anyhow::ensure!(
-            !in_comment && matches!(result, "1-0" | "0-1" | "1/2-1/2" | "*") &&
-                first.split_whitespace().last() == Some(result),
-            "Lichess PGN is missing a matching final result",
-        );
+        validate_movetext(lines, result)?;
         Ok(Self { game_id, bytes })
     }
 
@@ -77,6 +59,67 @@ impl PgnExport {
         crate::storage::replace(&destination, &self.bytes)?;
         Ok(destination)
     }
+}
+
+fn validate_movetext<'a>(lines: impl Iterator<Item = &'a str>, result: &str) -> Result<()> {
+    // Raw whitespace tokens confuse results with comments. Replaying SAN
+    // would make saving the original depend on support for every variant.
+    let mut in_comment = false;
+    let mut variation_depth = 0_usize;
+    let mut saw_result = false;
+    for mut line in lines {
+        if !in_comment && line.starts_with('%') {
+            continue;
+        }
+        loop {
+            if in_comment {
+                let Some((_, rest)) = line.split_once('}') else { break };
+                line = rest;
+                in_comment = false;
+            }
+            line = line.trim_start();
+            let Some(&first) = line.as_bytes().first() else { break };
+            match first {
+                b';' => break,
+                b'{' => {
+                    in_comment = true;
+                    line = &line[1..];
+                    continue;
+                }
+                b'[' | b']' | b'"' => anyhow::bail!("Lichess PGN has a tag outside the game header"),
+                b'}' | b'%' => anyhow::bail!("Lichess PGN has invalid movetext"),
+                _ => (),
+            }
+            anyhow::ensure!(!saw_result, "Lichess PGN has movetext after the final result");
+            match first {
+                b'(' => variation_depth += 1,
+                b')' => {
+                    variation_depth = variation_depth.checked_sub(1)
+                        .context("Lichess PGN has an unmatched variation")?;
+                }
+                _ => {
+                    let end = if first == b'*' {
+                        1
+                    } else {
+                        line.find(|c: char| c.is_whitespace() || "{}();[]\"%*".contains(c))
+                            .unwrap_or(line.len())
+                    };
+                    let (token, rest) = line.split_at(end);
+                    if matches!(token, "1-0" | "0-1" | "1/2-1/2" | "*") {
+                        anyhow::ensure!(variation_depth == 0 && token == result,
+                            "Lichess PGN is missing a matching final result");
+                        saw_result = true;
+                    }
+                    line = rest;
+                    continue;
+                }
+            }
+            line = &line[1..];
+        }
+    }
+    anyhow::ensure!(saw_result && !in_comment && variation_depth == 0,
+        "Lichess PGN is missing a matching final result");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -126,11 +169,34 @@ mod tests {
         for moves in [
             "1. e4",
             "1. e4 { running comment 1-0",
+            "1. e4 ; only a comment 1-0",
+            "1. e4\n% private annotation 1-0",
+            "1. e4 (1. d4 1-0",
+            "1. e4 (1. d4 1-0) 1-0",
+            "1. e4 ) 1-0",
+            "1. e4 0-1",
+            "1. e4 1-0 1-0",
+            "1. e4 1-0 e5",
+            "1. e4 1-0 { comment never closed",
             "1. e4 1-0\n\n[Event \"Other\"]\n[GameId \"else1234\"]\n[Result \"1-0\"]\n\n1. d4 1-0",
         ] {
             let pgn = format!("{header}{moves}");
             assert!(PgnExport::from_response(game(), pgn.into_bytes()).is_err(), "{moves}");
         }
         assert!(PgnExport::from_response(game(), b"<html>error</html>".to_vec()).is_err());
+    }
+
+    #[test]
+    fn keeps_comments_and_balanced_variations_around_the_mainline_result() {
+        let game = || PgnGameId::parse("abcd1234".into()).unwrap();
+        let header = "[Event \"Fixture\"]\r\n[GameId \"abcd1234\"]\r\n[Result \"1-0\"]\r\n\r\n";
+        for moves in [
+            "1. e4 (1. d4 (1. c4 {score: 0-1 [%clk 0:01:00]}) d5) e5 1-0{Final note.}",
+            "1. e4 ; [comment]\r\n% ignore [metadata]\r\ne5 1-0; final note",
+            "1. N@f3 {Variant move.} 1-0\r\n% trailing metadata",
+        ] {
+            let bytes = format!("{header}{moves}").into_bytes();
+            assert_eq!(PgnExport::from_response(game(), bytes.clone()).unwrap().bytes, bytes);
+        }
     }
 }
