@@ -561,9 +561,19 @@ Rectangle {
                 if (msg.type === "GameMovesFailed") {
                     screenLoader.item.handleMessage(Object.assign({game_id: request.gameId}, msg))
                 } else {
-                    root.reviewGame = request.game && typeof msg.rating_diff === "number"
-                        ? Object.assign({}, request.game, {rating_diff: msg.rating_diff})
-                        : request.game
+                    var game = request.game
+                    var outcome = msg.game_id === request.gameId ? msg.archive_outcome : null
+                    if (outcome || (game && typeof msg.rating_diff === "number")) {
+                        game = Object.assign({game_id: request.gameId}, game || {})
+                        if (outcome) {
+                            if (typeof outcome.result === "string" && outcome.result.length > 0)
+                                game.result = outcome.result
+                            if (typeof outcome.termination === "string" && outcome.termination.length > 0)
+                                game.termination = outcome.termination
+                        }
+                        if (typeof msg.rating_diff === "number") game.rating_diff = msg.rating_diff
+                    }
+                    root.reviewGame = game
                     root.reviewRequestId = request.id
                     root.reviewMoves = msg.moves || []
                     root.reviewFens = msg.fens || []

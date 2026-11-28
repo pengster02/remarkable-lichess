@@ -435,6 +435,15 @@ pub struct GameOutcome {
     pub rating_diff: Option<i32>,
 }
 
+// The archive can establish a finish reason without a result. A required
+// result would guess a winner, and separate top-level fields can drift.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReviewOutcome {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<&'static str>,
+    pub termination: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CloudEvaluationLine {
     pub eval_cp: Option<i32>,
@@ -961,6 +970,8 @@ pub enum BackendMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         rating_diff: Option<i32>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        archive_outcome: Option<ReviewOutcome>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         variation_storage: Option<bool>,
     },
     GameMovesFailed {
@@ -1442,6 +1453,9 @@ mod tests {
             clock_ms: vec![],
             analysis: vec![],
             rating_diff: Some(0),
+            archive_outcome: Some(ReviewOutcome {
+                result: Some("loss"), termination: "Resignation".into(),
+            }),
             variation_storage: None,
         })
         .unwrap();
@@ -1451,6 +1465,8 @@ mod tests {
         assert!(json.contains(r#""moves":["e4","e5"]"#));
         assert!(json.contains(r#""initial_in_check":false"#));
         assert!(json.contains(r#""rating_diff":0"#));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["archive_outcome"],
+                   serde_json::json!({"result": "loss", "termination": "Resignation"}));
 
         let failure = serde_json::to_value(BackendMessage::GameMovesFailed {
             request_id: 7,
@@ -1511,9 +1527,11 @@ mod tests {
                 judgment_comment: Some("Blunder. Nxg6 was best.".into()),
             }],
             rating_diff: None,
+            archive_outcome: None,
         })
         .unwrap();
         assert!(!json.contains("request_id"));
+        assert!(!json.contains("archive_outcome"));
         assert!(json.contains(r#""initial_in_check":true"#));
         assert!(json.contains(r#""clock_ms":[4294967300,null,29900]"#));
         assert!(json.contains(r#""mate_in":3"#));

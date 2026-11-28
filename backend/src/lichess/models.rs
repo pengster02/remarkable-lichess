@@ -1,5 +1,4 @@
 use serde::Deserialize;
-#[cfg(any(feature = "transport", test))]
 use shakmaty::Color;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -586,6 +585,10 @@ pub struct GameExport {
     pub variant: Option<String>,
     #[serde(default, deserialize_with = "deserialize_review_metadata")]
     players: Option<ReviewPlayers>,
+    #[serde(default, deserialize_with = "deserialize_review_metadata")]
+    status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_review_winner")]
+    winner: ReviewWinner,
     #[serde(rename = "initialFen")]
     pub initial_fen: Option<String>,
     // A missing sequence cannot be replayed. Defaulting it invents a board,
@@ -599,7 +602,7 @@ pub struct GameExport {
 
 #[cfg(any(feature = "transport", test))]
 impl GameExport {
-    pub(crate) fn rating_diff(&self, account_id: &str) -> Option<i32> {
+    fn participant_color(&self, account_id: &str) -> Option<Color> {
         fn user_id(player: Option<&ReviewPlayer>) -> Option<&str> {
             player?.user.as_ref()?.id.as_deref()
         }
@@ -607,11 +610,68 @@ impl GameExport {
         let white = players.white.as_ref();
         let black = players.black.as_ref();
         match ParticipantPerspective::from_ids(account_id, user_id(white), user_id(black)) {
-            ParticipantPerspective::Known(Color::White) => white?.rating_diff,
-            ParticipantPerspective::Known(Color::Black) => black?.rating_diff,
+            ParticipantPerspective::Known(color) => Some(color),
             _ => None,
         }
     }
+
+    pub(crate) fn rating_diff(&self, account_id: &str) -> Option<i32> {
+        let players = self.players.as_ref()?;
+        match self.participant_color(account_id)? {
+            Color::White => players.white.as_ref()?.rating_diff,
+            Color::Black => players.black.as_ref()?.rating_diff,
+        }
+    }
+
+    pub(crate) fn review_outcome(&self, account_id: &str) -> Option<crate::protocol::ReviewOutcome> {
+        let status = self.status.as_deref()?;
+        let winner = match self.winner {
+            ReviewWinner::Missing => None,
+            ReviewWinner::Color(color) => Some(color),
+            ReviewWinner::Invalid => return None,
+        };
+        match status {
+            "mate" | "resign" | "timeout" | "outoftime" | "cheat" | "noStart" | "variantEnd" => {}
+            "aborted" | "draw" | "stalemate" | "insufficientMaterialClaim" | "unknownFinish"
+                if winner.is_none() => {}
+            _ => return None,
+        }
+        let settled = crate::game::outcome::outcome(status, winner.map(|color| color.fold_wb("white", "black")));
+        let result = match (winner, self.participant_color(account_id)) {
+            (Some(winner), Some(ours)) => Some(if winner == ours { "win" } else { "loss" }),
+            (Some(winner), None) => Some(winner.fold_wb("white", "black")),
+            (None, _) if settled.result == "draw" => Some("draw"),
+            _ => None,
+        };
+        Some(crate::protocol::ReviewOutcome { result, termination: settled.reason })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+enum ReviewWinner {
+    #[default]
+    Missing,
+    Color(Color),
+    Invalid,
+}
+
+fn deserialize_review_winner<'de, D>(deserializer: D) -> Result<ReviewWinner, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Treating malformed winners as absent can invent a draw. Rejecting the
+    // export for that field would discard a usable replay.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum WinnerField {
+        Name(String),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match WinnerField::deserialize(deserializer)? {
+        WinnerField::Name(name) if name == "white" => ReviewWinner::Color(Color::White),
+        WinnerField::Name(name) if name == "black" => ReviewWinner::Color(Color::Black),
+        _ => ReviewWinner::Invalid,
+    })
 }
 
 // Review only needs account IDs and rating changes. The History model lets
@@ -1069,6 +1129,51 @@ mod tests {
         assert_eq!(export.analysis[0].score, Some(ArchivedScore::Centipawns(25)));
         assert_eq!(export.analysis[1].judgment.as_ref().unwrap().name, "Inaccuracy");
         assert_eq!(export.analysis[2].score, Some(ArchivedScore::Mate(3)));
+    }
+
+    #[test]
+    fn game_export_projects_only_supported_archive_results() {
+        let export = |outcome: serde_json::Value| {
+            let mut json = serde_json::json!({
+                "id": "abcd1234", "moves": "d4 d5",
+                "players": {"white": {"user": {"id": "white-user"}},
+                            "black": {"user": {"id": "black-user"}}},
+            });
+            json.as_object_mut().unwrap().extend(outcome.as_object().unwrap().clone());
+            serde_json::from_value::<GameExport>(json).unwrap()
+        };
+        let resigned = export(serde_json::json!({"status": "resign", "winner": "black"}));
+        for (id, result) in [("white-user", "loss"), ("black-user", "win"), ("other", "black")] {
+            let outcome = resigned.review_outcome(id).unwrap();
+            assert_eq!(outcome.result, Some(result));
+            assert_eq!(outcome.termination, "Resignation");
+        }
+        let white = export(serde_json::json!({"status": "mate", "winner": "white", "players": false}));
+        assert_eq!(white.review_outcome("white-user").unwrap().result, Some("white"));
+
+        for (status, result, reason) in [
+            ("draw", Some("draw"), "Draw"),
+            ("outoftime", Some("draw"), "Time expired"),
+            ("resign", None, "Resignation"),
+            ("aborted", None, "Aborted"),
+        ] {
+            let outcome = export(serde_json::json!({"status": status})).review_outcome("white-user").unwrap();
+            assert_eq!(outcome.result, result, "{status}");
+            assert_eq!(outcome.termination, reason);
+        }
+        for fields in [
+            serde_json::json!({}),
+            serde_json::json!({"status": false, "winner": "black"}),
+            serde_json::json!({"status": "started", "winner": "black"}),
+            serde_json::json!({"status": "draw", "winner": "black"}),
+            serde_json::json!({"status": "outoftime", "winner": null}),
+            serde_json::json!({"status": "outoftime", "winner": {"color": "black"}}),
+            serde_json::json!({"status": "outoftime", "winner": "red"}),
+        ] {
+            let decoded = export(fields);
+            assert!(decoded.review_outcome("white-user").is_none());
+            assert_eq!(decoded.moves, "d4 d5");
+        }
     }
 
     #[test]

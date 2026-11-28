@@ -1357,6 +1357,7 @@ impl LichessBackend {
             }
         };
         let rating_diff = export.rating_diff(&player_id);
+        let archive_outcome = export.review_outcome(&player_id);
         let exported_moves: Vec<&str> = export.moves.split_whitespace().collect();
         let replay = match crate::game::replay::replay_export(
             export.variant.as_deref(), export.initial_fen.as_deref(), &exported_moves,
@@ -1389,7 +1390,7 @@ impl LichessBackend {
             .collect();
         let mut reply = BackendMessage::GameMoves {
             game_id: export.id, request_id, moves: replay.moves, fens: replay.fens, initial_in_check: replay.initial_in_check,
-            clock_ms, analysis, rating_diff,
+            clock_ms, analysis, rating_diff, archive_outcome,
             variation_storage: request_id.map(|_| true),
         };
         let Some(json) = encode_review_reply(&mut reply) else {
@@ -2388,6 +2389,13 @@ fn encode_bounded_reply(reply: &BackendMessage) -> Option<String> {
 fn encode_review_reply(reply: &mut BackendMessage) -> Option<String> {
     if let Some(json) = encode_bounded_reply(reply) {
         return Some(json);
+    }
+    let BackendMessage::GameMoves { archive_outcome, .. } = reply else { return None; };
+    // Near the socket limit the outcome is smaller than the detailed replay metadata.
+    if archive_outcome.take().is_some() {
+        if let Some(json) = encode_bounded_reply(reply) {
+            return Some(json);
+        }
     }
     // Dropping optional data keeps every ply. Truncating the replay hides the
     // ending, while splitting it requires a different frontend protocol.
@@ -4114,13 +4122,20 @@ mod review_packet_tests {
     fn review_packet_checks_the_encoded_byte_boundary() {
         let mut reply = BackendMessage::GameMoves {
             game_id: "scope001".into(), request_id: Some(1), moves: vec![], fens: vec![String::new()],
-            initial_in_check: false, clock_ms: vec![], analysis: vec![], rating_diff: None,
+            initial_in_check: false, clock_ms: vec![], analysis: vec![], rating_diff: None, archive_outcome: None,
             variation_storage: Some(true),
         };
         let overhead = serde_json::to_string(&reply).unwrap().len();
         let BackendMessage::GameMoves { fens, .. } = &mut reply else { unreachable!() };
         fens[0] = "a".repeat(MAX_APPLOAD_REPLY_BYTES - overhead);
         assert_eq!(encode_review_reply(&mut reply).unwrap().len(), MAX_APPLOAD_REPLY_BYTES);
+        let BackendMessage::GameMoves { archive_outcome, .. } = &mut reply else { unreachable!() };
+        *archive_outcome = Some(crate::protocol::ReviewOutcome {
+            result: Some("loss"), termination: "Resignation".into(),
+        });
+        let exact = encode_review_reply(&mut reply).unwrap();
+        assert_eq!(exact.len(), MAX_APPLOAD_REPLY_BYTES);
+        assert!(!exact.contains("archive_outcome"));
         let BackendMessage::GameMoves { fens, .. } = &mut reply else { unreachable!() };
         fens[0].push('é');
         assert!(encode_review_reply(&mut reply).is_none());

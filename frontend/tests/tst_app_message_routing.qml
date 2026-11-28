@@ -6518,6 +6518,29 @@ TestCase {
         compare(screen.item.pgnGameId, "finished")
     }
 
+    function test_archiveOutcomeEnrichesOnlyTheRequestedReview() {
+        app.openGameReview("archive1", null)
+        var first = gameMoveRequests().slice(-1)[0]
+        var packet = {type: "GameMoves", request_id: first.request_id, game_id: "other001",
+                      moves: [], fens: [startFen], rating_diff: 0,
+                      archive_outcome: {result: "black", termination: "Resignation"}}
+        endpoint.reply(packet)
+        verify(String(screen.source).endsWith("GameHistoryScreen.qml"))
+        endpoint.reply(Object.assign({}, packet, {game_id: "archive1"}))
+        compare(screen.item.game.result, "black")
+        compare(screen.item.game.rating_diff, 0)
+        compare(screen.item.gameDetailsLabel(), "Resignation")
+
+        app.navigateTo("GameHistoryScreen.qml")
+        app.openGameReview("archive2", {game_id: "archive2", opponent_name: "Owl", result: "loss"})
+        var second = gameMoveRequests().slice(-1)[0]
+        endpoint.reply({type: "GameMoves", request_id: second.request_id, game_id: "archive2",
+                        moves: [], fens: [startFen], archive_outcome: {termination: "Resignation"}})
+        compare(screen.item.game.result, "loss")
+        compare(screen.item.game.opponent_name, "Owl")
+        compare(screen.item.gameDetailsLabel(), "Resignation")
+    }
+
     function test_ratingBeforeFirstBoardSnapshot_data() {
         return [{tag: "first snapshot terminal", firstSnapshotFinished: true},
                 {tag: "first snapshot active", firstSnapshotFinished: false}]
