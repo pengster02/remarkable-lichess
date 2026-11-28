@@ -6,6 +6,7 @@ Rectangle {
     property string title: ""
     property string subtitle: ""
     property bool wrapSubtitle: false
+    property real minimumHeight: theme.buttonMinHeight
     property string marker: ""
     property bool highlighted: false
     signal clicked
@@ -13,7 +14,7 @@ Rectangle {
     Theme { id: theme; darkMode: menuRow.darkMode }
 
     width: parent ? parent.width : implicitWidth
-    height: Math.max(theme.buttonMinHeight, copyColumn.height + theme.spacingSmall * 2)
+    height: Math.max(minimumHeight, copyColumn.height + theme.spacingSmall * 2)
     radius: theme.cardRadius
     border.width: menuRow.highlighted ? 2 : 1
     border.color: menuRow.highlighted ? theme.accentBackground : theme.buttonBorder

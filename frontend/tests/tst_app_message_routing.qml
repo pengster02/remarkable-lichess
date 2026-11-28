@@ -2413,6 +2413,48 @@ TestCase {
         verify(!returnedOlder.visible)
     }
 
+    function test_olderHistoryRetryStaysReachableWhenTheFooterGrows() {
+        width = 620
+        var requestId = applyHistoryFilters("rapid")
+        var cursor = {until_ms: 1765526400001}
+        endpoint.reply({type: "GameHistory", request_id: requestId, next_cursor: cursor, games: [
+            {game_id: "recent", opponent_name: "Opponent", speed: "rapid", result: "draw"}
+        ]})
+        var history = screen.item
+        var pager = findChild(history, "historyList")
+        var older = findChild(history, "loadOlderGamesButton")
+        verify(waitForRendering(older))
+        height += Math.ceil(older.y + older.height + 16 - pager.pageHeight)
+        verify(waitForRendering(older))
+        compare(pager.pageCount, 1)
+        var originalHeight = older.height
+
+        mouseClick(older, older.width / 2, older.height / 2)
+        var request = historyRequests().slice(-1)[0]
+        compare(request.cursor, cursor)
+        var message = "Could not load games.\nYour games are still here.\nTry loading this page."
+        endpoint.reply({type: "GameHistoryFailed", request_id: request.request_id, message: message})
+        tryVerify(function() {
+            var top = older.mapToItem(pager, 0, 0).y
+            return older.height > originalHeight && pager.currentPage > 1 &&
+                top >= 0 && top + older.height <= pager.pageHeight + 0.5
+        })
+        var subtitle = findChild(older, "menuRowSubtitle")
+        compare(subtitle.text, message)
+        verify(!subtitle.truncated)
+        compare(history.games.length, 1)
+
+        mouseClick(older, older.width / 2, older.height / 2)
+        var retry = historyRequests().slice(-1)[0]
+        verify(retry.request_id > request.request_id)
+        compare(retry.cursor, cursor)
+        endpoint.reply({type: "GameHistoryFailed", request_id: request.request_id, message: "Late failure"})
+        verify(history.loadingOlder)
+        endpoint.reply({type: "GameHistory", request_id: retry.request_id, games: [{game_id: "older"}]})
+        compare(history.games.map(function(game) { return game.game_id }), ["recent", "older"])
+        compare(history.olderLoadError, "")
+    }
+
     function test_loadOlderGamesPreservesFiltersAndTheArchiveVisit() {
         var requestId = applyHistoryFilters("rapid")
         var games = []
