@@ -1,6 +1,6 @@
 use crate::lichess::models::{
     Account, ChallengeDetails, ChallengeListResponse, ChallengeOpenJson, ChallengeTerms, CloudEvaluation, CreatedGame, GameExport,
-    GameHistoryFilters, HistoryGame, IncomingChallenge, PlayingGame,
+    GameHistoryFilters, HistoryGame, IncomingChallenge, OpeningExplorerSourceMove, PlayingGame,
     PlayingResponse, UserStatus,
 };
 #[cfg(any(feature = "transport", test))]
@@ -478,13 +478,13 @@ impl LichessClient {
 
     pub async fn get_opening_explorer(
         &self, database: OpeningDatabase, root_fen: &str, play: &[String],
-    ) -> Result<OpeningExplorerData> {
+    ) -> Result<OpeningExplorerData<OpeningExplorerSourceMove>> {
         self.get_opening_explorer_at(OPENING_EXPLORER_URL, database, root_fen, play).await
     }
 
     async fn get_opening_explorer_at(
         &self, base_url: &str, database: OpeningDatabase, root_fen: &str, play: &[String],
-    ) -> Result<OpeningExplorerData> {
+    ) -> Result<OpeningExplorerData<OpeningExplorerSourceMove>> {
         let route = match database {
             OpeningDatabase::Masters => "masters",
             OpeningDatabase::Lichess => "lichess",
@@ -1627,7 +1627,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "white": 5, "draws": 3, "black": 4,
                 "opening": {"eco": "C20", "name": "King's Pawn Game"},
-                "moves": [{"san": "Nf3", "uci": "g1f3", "white": 3, "draws": 2, "black": 2}],
+                "moves": [{"uci": "g1f3", "white": 3, "draws": 2, "black": 2}],
             }))).expect(1).mount(&server).await;
         Mock::given(method("GET")).and(path("/lichess"))
             .and(header("Authorization", "Bearer test-token")).and(query_param("recentGames", "0"))
@@ -1637,7 +1637,9 @@ mod tests {
         let data = client.get_opening_explorer_at(&server.uri(), OpeningDatabase::Masters, fen,
                                                 &["e2e4".into(), "e7e5".into()]).await.unwrap();
         assert_eq!(data.opening.unwrap().eco.as_deref(), Some("C20"));
-        assert_eq!(data.moves[0].san, "Nf3");
+        let row = &data.moves[0];
+        assert_eq!(row.uci, "g1f3");
+        assert_eq!((row.white, row.draws, row.black), (3, 2, 2));
         assert!(client.get_opening_explorer_at(&server.uri(), OpeningDatabase::Lichess, fen, &[]).await.is_err());
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
